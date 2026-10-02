@@ -255,3 +255,76 @@ func TestReportBugRefusesUnboundCallers(t *testing.T) {
 		t.Fatalf("err = %v, want refusal", err)
 	}
 }
+
+// seedClaudeTranscript makes the seed caller a claude session with a transcript on disk.
+func seedClaudeTranscript(t *testing.T, s *Server, seed reportBugSeed) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, seed.Caller.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE sessions SET provider_session_id = 'prov-1' WHERE id = ?`, seed.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	var cwd string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT cwd FROM sessions WHERE id = ?`, seed.SessionID).Scan(&cwd); err != nil {
+		t.Fatal(err)
+	}
+	src, err := advisor.TranscriptPath(runtime.Claude, s.Advisor.UserHome, cwd, "prov-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte(`{"type":"user"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func bugReportDirs(t *testing.T, s *Server) []os.DirEntry {
+	t.Helper()
+	es, err := os.ReadDir(filepath.Join(s.RT.Home, "bug-reports"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return es
+}
+
+// The copy happens before the write tx, so a failure anywhere in the call must remove it.
+func TestReportBugFailedCommitLeavesNoTranscriptCopy(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	seedClaudeTranscript(t, s, seed)
+	if _, err := s.RT.DB.ExecContext(ctx, `CREATE TRIGGER fail_idem BEFORE INSERT ON idempotency
+		BEGIN SELECT RAISE(ABORT, 'idempotency write failed'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_report_bug", `{"title":"Fails late","what_happened":"x","request_id":"r1"}`); err == nil {
+		t.Fatal("want the idempotency failure")
+	}
+	if es := bugReportDirs(t, s); len(es) != 0 {
+		t.Fatalf("orphan bug-reports dirs: %v", es)
+	}
+}
+
+func TestReportBugReplayLeavesOneTranscriptCopy(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	seedClaudeTranscript(t, s, seed)
+	args := `{"title":"Replayed","what_happened":"x","request_id":"r1"}`
+	var first, second reportBugOut
+	for _, got := range []*reportBugOut{&first, &second} {
+		out, err := s.call(ctx, seed.Caller, "swarm_report_bug", args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		json.Unmarshal(mustJSON(out), got)
+	}
+	if first != second {
+		t.Fatalf("replay = %+v, want %+v", second, first)
+	}
+	if es := bugReportDirs(t, s); len(es) != 1 || es[0].Name() != first.ID {
+		t.Fatalf("bug-reports dirs = %v, want only %s", es, first.ID)
+	}
+}

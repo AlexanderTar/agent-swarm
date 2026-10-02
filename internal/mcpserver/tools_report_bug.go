@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,23 +68,20 @@ func reportBugTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			// The cached idempotency result carries the transcript too, so a
-			// replay returns the same answer.
+			// The copy streams before the write tx opens; any failure (or a
+			// replay, which returns the cached id) removes it. The cached
+			// idempotency result carries the transcript too, so a replay
+			// returns the same answer.
+			id := ids.New("bug")
+			transcript := s.copyTranscript(ctx, c, a, id)
 			var res struct {
 				ID         string `json:"id"`
 				Transcript string `json:"transcript"`
 				ItemKey    string `json:"item_key,omitempty"`
 			}
-			if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_report_bug", &res,
+			_, err = runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_report_bug", &res,
 				func(tx *sql.Tx) (err error) {
-					res.ID = ids.New("bug")
-					res.Transcript = s.copyTranscript(ctx, tx, c, a, res.ID)
-					id := res.ID
-					defer func() {
-						if err != nil { // the tx rolls back; don't leave an orphan copy
-							_ = os.RemoveAll(filepath.Join(s.RT.Home, "bug-reports", id))
-						}
-					}()
+					res.ID, res.Transcript = id, transcript
 					var rootKey string
 					if err = tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).Scan(&rootKey); err != nil {
 						return err
@@ -104,7 +102,11 @@ func reportBugTool(s *Server) ToolDef {
 					}
 					_, err = tx.ExecContext(ctx, `UPDATE bug_reports SET board_item_key = ? WHERE id = ?`, res.ItemKey, id)
 					return err
-				}); err != nil {
+				})
+			if err != nil || res.ID != id { // don't leave an orphan copy
+				_ = os.RemoveAll(filepath.Join(s.RT.Home, "bug-reports", id))
+			}
+			if err != nil {
 				return nil, err
 			}
 			out := map[string]any{"id": res.ID, "transcript": res.Transcript}
@@ -155,9 +157,9 @@ func bugBrief(whatHappened, repro, evidence, userSaid, cause, area string) strin
 // <home>/bug-reports/<id>/transcript<ext> (the agent's work dir is deleted
 // once it finishes). It returns the copied path, or "unavailable (<reason>)";
 // a transcript problem never fails the report.
-func (s *Server) copyTranscript(ctx context.Context, tx *sql.Tx, c Caller, a runtime.Agent, id string) string {
+func (s *Server) copyTranscript(ctx context.Context, c Caller, a runtime.Agent, id string) string {
 	var cwd, providerID string
-	if err := tx.QueryRowContext(ctx, `SELECT cwd, COALESCE(provider_session_id, '') FROM sessions WHERE id = ?`, c.SessionID).
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT cwd, COALESCE(provider_session_id, '') FROM sessions WHERE id = ?`, c.SessionID).
 		Scan(&cwd, &providerID); err != nil {
 		return "unavailable (" + err.Error() + ")"
 	}
@@ -170,16 +172,25 @@ func (s *Server) copyTranscript(ctx context.Context, tx *sql.Tx, c Caller, a run
 	if err != nil {
 		return "unavailable (" + err.Error() + ")"
 	}
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Sprintf("unavailable (%v)", err)
 	}
+	defer in.Close()
 	dir := filepath.Join(s.RT.Home, "bug-reports", id)
 	dst := filepath.Join(dir, "transcript"+filepath.Ext(src))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "unavailable (" + err.Error() + ")"
 	}
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err == nil {
+		_, err = io.Copy(out, in)
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		_ = os.RemoveAll(dir)
 		return "unavailable (" + err.Error() + ")"
 	}
 	return dst
