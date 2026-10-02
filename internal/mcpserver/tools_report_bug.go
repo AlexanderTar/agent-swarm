@@ -64,6 +64,15 @@ func reportBugTool(s *Server) ToolDef {
 			if strings.TrimSpace(in.WhatHappened) == "" {
 				return nil, errors.New("what_happened is required: say what went wrong in Swarm")
 			}
+			for _, f := range []struct {
+				name, v string
+				max     int
+			}{{"what_happened", in.WhatHappened, 8000}, {"repro", in.Repro, 8000}, {"evidence", in.Evidence, 8000},
+				{"user_said", in.UserSaid, 8000}, {"cause", in.Cause, 8000}, {"area", in.Area, 120}} {
+				if n := utf8.RuneCountInString(f.v); n > f.max {
+					return nil, fmt.Errorf("%s must be at most %d characters, got %d", f.name, f.max, n)
+				}
+			}
 			a, err := callerAgent(ctx, s, c)
 			if err != nil {
 				return nil, err

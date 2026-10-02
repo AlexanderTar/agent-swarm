@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -326,5 +327,31 @@ func TestReportBugReplayLeavesOneTranscriptCopy(t *testing.T) {
 	}
 	if es := bugReportDirs(t, s); len(es) != 1 || es[0].Name() != first.ID {
 		t.Fatalf("bug-reports dirs = %v, want only %s", es, first.ID)
+	}
+}
+
+func TestReportBugCapsFreeTextFields(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		field string
+		max   int
+	}{{"what_happened", 8000}, {"repro", 8000}, {"evidence", 8000}, {"user_said", 8000}, {"cause", 8000}, {"area", 120}} {
+		t.Run(tc.field, func(t *testing.T) {
+			args := func(n int) string {
+				m := map[string]string{"title": "A fine title", "what_happened": "x"}
+				m[tc.field] = strings.Repeat("é", n) // runes, not bytes
+				b, _ := json.Marshal(m)
+				return string(b)
+			}
+			_, err := s.call(ctx, seed.Caller, "swarm_report_bug", args(tc.max+1))
+			want := tc.field + " must be at most " + strconv.Itoa(tc.max) + " characters"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("err = %v, want %q", err, want)
+			}
+			if _, err := s.call(ctx, seed.Caller, "swarm_report_bug", args(tc.max)); err != nil {
+				t.Fatalf("at the cap: %v", err)
+			}
+		})
 	}
 }
