@@ -1523,3 +1523,23 @@ func TestSkillsCarryTheProgressListRule(t *testing.T) {
 		t.Error("swarm-spike must point at the todos rule")
 	}
 }
+
+// swarm_report_bug is mandated for Swarm misbehavior: every agent via the swarm
+// skill, and orchestrators where they handle child blockers.
+func TestSkillsMandateSwarmReportBug(t *testing.T) {
+	body := string(install.SkillBody("swarm"))
+	for _, want := range []string{
+		"13. When Swarm itself misbehaves",
+		"`swarm_report_bug`",
+		"once per distinct issue",
+		"Never use it for bugs in the user's project code",
+		"`board: true` only when the user's Swarm instructions ask for it",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm SKILL.md lacks %q", want)
+		}
+	}
+	if orch := string(install.SkillBody("swarm-orchestrator")); !strings.Contains(orch, "`swarm_report_bug`") {
+		t.Error("swarm-orchestrator must mention swarm_report_bug where it handles child blockers")
+	}
+}

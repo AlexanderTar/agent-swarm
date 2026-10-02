@@ -185,6 +185,10 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`DROP TABLE agent_lineage`); err != nil {
 		t.Fatal(err)
 	}
+	// 0026_bug_reports.sql likewise uses plain CREATE TABLE.
+	if _, err := raw.Exec(`DROP TABLE bug_reports`); err != nil {
+		t.Fatal(err)
+	}
 	raw.Close()
 
 	d, err = db.Open(ctx, path)

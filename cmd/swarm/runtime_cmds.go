@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -452,6 +453,42 @@ func cmdRequests(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(tw, "ID\tKIND\tITEM\tPROMPT")
 	for _, r := range list {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.ItemKey, r.Prompt)
+	}
+	tw.Flush()
+	return 0
+}
+
+type bugRow struct {
+	ID           string `json:"id"`
+	CreatedAt    int64  `json:"created_at"`
+	Reporter     string `json:"reporter"`
+	RootItemKey  string `json:"root_item_key"`
+	Title        string `json:"title"`
+	BoardItemKey string `json:"board_item_key"`
+}
+
+func cmdBugs(args []string, stdout, stderr io.Writer) int {
+	c, _, code, done := connect("bugs", args, stderr, nil)
+	if done {
+		return code
+	}
+	var list []bugRow
+	if err := c.do("GET", "/api/bugs", nil, &list); err != nil {
+		return fail(stderr, err)
+	}
+	if len(list) == 0 {
+		fmt.Fprintln(stdout, "No bug reports.")
+		return 0
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tCREATED\tREPORTER\tROOT\tTITLE\tBOARD")
+	for _, b := range list {
+		board := b.BoardItemKey
+		if board == "" {
+			board = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", b.ID, time.UnixMilli(b.CreatedAt).Format("2006-01-02 15:04"),
+			b.Reporter, b.RootItemKey, b.Title, board)
 	}
 	tw.Flush()
 	return 0

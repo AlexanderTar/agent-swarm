@@ -525,3 +525,24 @@ func TestStartOrchestrator(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+
+func TestBugsListsStoredReports(t *testing.T) {
+	srv, _, home := stubDaemon(t, map[string]string{
+		"GET /api/bugs": `[{"id":"bug_b","created_at":1790000000000,"reporter":"coder-1","root_item_key":"CHORE-1","title":"Newer bug","board_item_key":"BUG-4"},
+			{"id":"bug_a","created_at":1780000000000,"reporter":"coder-2","root_item_key":"CHORE-2","title":"Older bug","board_item_key":""}]`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	if code := run([]string{"bugs", "--home", home, "--url", srv.URL}, &out, &out); code != 0 {
+		t.Fatalf("exit %d: %s", code, out.String())
+	}
+	s := out.String()
+	for _, want := range []string{"ID", "BOARD", "bug_b", "coder-1", "CHORE-1", "Newer bug", "BUG-4", "bug_a", "Older bug"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("output missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Index(s, "bug_b") > strings.Index(s, "bug_a") {
+		t.Errorf("not newest first:\n%s", s)
+	}
+}
