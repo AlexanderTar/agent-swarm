@@ -37,6 +37,7 @@ Commands:
   ack NAME                         move a failed, crashed or interrupted agent to history
   lineage NAME [--repair]          show an agent's canonical identity and generation history
   requests                         list open requests
+  bugs                             list stored swarm_report_bug reports, newest first
   answer REQ TEXT
   approve REQ
   confirm-repos REQ PATH... [--comment TEXT]
@@ -112,6 +113,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdLineage(args[1:], stdout, stderr)
 	case "requests":
 		return cmdRequests(args[1:], stdout, stderr)
+	case "bugs":
+		return cmdBugs(args[1:], stdout, stderr)
 	case "answer":
 		return cmdAnswer(args[1:], stdout, stderr)
 	case "approve":
