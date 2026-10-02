@@ -708,6 +708,9 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		if err := s.changed(ctx, tx, it); err != nil {
 			return Item{}, err
 		}
+		if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
+			return Item{}, err
+		}
 	}
 	if p.OverrideReason != "" && p.Status == nil {
 		return Item{}, errf(CodeBadRequest, "override_reason needs a status to force.")
@@ -777,7 +780,10 @@ func (s *Store) waiveTx(ctx context.Context, tx *sql.Tx, it *Item, in []WaiveInp
 	}
 	it.Waivers = ws
 	it.Revision++
-	return s.changed(ctx, tx, *it)
+	if err := s.changed(ctx, tx, *it); err != nil {
+		return err
+	}
+	return s.staleApprovedFinish(ctx, tx, *it)
 }
 
 // Ancestors returns the chain from the top-level item down to the parent.

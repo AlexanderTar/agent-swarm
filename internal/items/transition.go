@@ -131,6 +131,39 @@ func (s *Store) staleAccepts(ctx context.Context, tx *sql.Tx, it Item) error {
 	return nil
 }
 
+// staleApprovedFinish stales the approved finish request of a root that isn't Done
+// after a material edit (brief, acceptance, waivers…): the user approved the item as
+// it was. Open requests need nothing here; reconcileRoot stales them on the revision.
+func (s *Store) staleApprovedFinish(ctx context.Context, tx *sql.Tx, it Item) error {
+	if it.ID != it.RootID || !isAcceptRoot(it.Type) || it.Status == Done {
+		return nil
+	}
+	kind := acceptKind(it.Type)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM requests WHERE item_id = ? AND kind = ? AND state = 'approved'`, it.ID, kind)
+	if err != nil {
+		return err
+	}
+	var approved []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		approved = append(approved, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range approved {
+		if err := s.resolveStale(ctx, tx, id, kind, it.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // cancelDescendants cancels every descendant of parentID that is not Done or
 // Cancelled yet (root-finish spec, locked decision 4). It runs wherever the
 // parent's cancel was allowed, so there is no per-child check(). Archived
@@ -531,6 +564,9 @@ func (s *Store) FinishApprovalTx(ctx context.Context, q querier, rootID string) 
 	return s.finishApproval(ctx, q, it, st)
 }
 
+// An approved row is bound to its integrated checkpoint only, not to the item revision:
+// status moves (blocked and back) bump the revision but change nothing the user approved.
+// Material edits stale the approval explicitly (staleApprovedFinish).
 func (s *Store) finishApproval(ctx context.Context, q querier, it Item, st rootState) (fa FinishApproval, ok bool, err error) {
 	if st.ckpID == "" {
 		return fa, false, nil
@@ -539,8 +575,7 @@ func (s *Store) finishApproval(ctx context.Context, q querier, it Item, st rootS
 		COALESCE(json_extract(binding_json, '$.choice'), '')
 		FROM requests WHERE item_id = ? AND state = 'approved' AND kind IN ('accept_epic', 'accept_fix')
 		AND json_extract(binding_json, '$.integrated_checkpoint') = ?
-		AND json_extract(binding_json, '$.item_revision') = ?
-		ORDER BY responded_at DESC LIMIT 1`, it.ID, st.ckpID, it.Revision).Scan(&fa.RequestID, &fa.AgentID, &fa.Merge, &fa.Choice)
+		ORDER BY responded_at DESC LIMIT 1`, it.ID, st.ckpID).Scan(&fa.RequestID, &fa.AgentID, &fa.Merge, &fa.Choice)
 	if errors.Is(err, sql.ErrNoRows) {
 		return FinishApproval{}, false, nil
 	}
@@ -551,8 +586,7 @@ func (s *Store) finishApproval(ctx context.Context, q querier, it Item, st rootS
 	return fa, true, nil
 }
 
-// approvedCurrent reports an approved finish request for the current integration and
-// revision, and its $.merge ("" for a pre-0022 approval).
+// approvedCurrent reports an approved finish request for the current integration, and its $.merge ("" for a pre-0022 approval).
 func (s *Store) approvedCurrent(ctx context.Context, q querier, it Item, st rootState) (bool, string, error) {
 	fa, ok, err := s.finishApproval(ctx, q, it, st)
 	return ok, fa.Merge, err
@@ -833,7 +867,7 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	}
 
 	if it.Status == InReview {
-		// 2. an approval bound to the current integration and revision finishes the item
+		// 2. an approval bound to the current integration finishes the item
 		// once every integrated repo is merged (a pre-0022 approval has no merge: Done)
 		approved, merge, err := s.approvedCurrent(ctx, tx, it, st)
 		if err != nil {

@@ -462,14 +462,19 @@ func TestAcceptRequestsGoStale(t *testing.T) {
 	if states, _ := acceptRequests(t, s, b); count(states, "accept_fix:open") != 0 {
 		t.Fatalf("after reopen: %v", states)
 	}
-	// an approval bound to an old revision never completes the bug
+	// an approval followed by an edit to the bug never completes it
 	setStatus(t, s, task, items.Done)
 	seedCheckpoint(t, s.DB, b, "integrated", 1, later(s), gitJSON)
 	s.Reconcile(ctx, b.Key)
 	exec(t, s.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ? AND state = 'open'`, b.ID)
-	exec(t, s.DB, `UPDATE items SET revision = revision + 1 WHERE id = ?`, b.ID)
-	s.Reconcile(ctx, b.Key)
+	brief := "Also covers the SSO path"
+	if _, err := s.Update(ctx, b.Key, items.Patch{Brief: &brief, Revision: mustGet(t, s, b.Key).Revision}, user); err != nil {
+		t.Fatal(err)
+	}
 	wantStatus(t, s, b.Key, items.InProgress)
+	if states, _ := acceptRequests(t, s, b); count(states, "accept_fix:approved") != 0 {
+		t.Fatalf("after edit of approved: %v", states)
+	}
 	wantDenied(t, move(t, s, b.Key, items.Done, items.Daemon()), "Finish this fix to mark it Done.")
 }
 
@@ -1053,10 +1058,39 @@ func TestFinishApprovalTx(t *testing.T) {
 	if fa.RequestID != reqID || fa.AgentID != agentID || fa.Merge != "auto" || fa.CheckpointID != ckp || string(fa.Git) != gitJSONAB {
 		t.Fatalf("fa = %+v", fa)
 	}
-	exec(t, s.DB, `UPDATE items SET revision = revision + 1 WHERE id = ?`, e.ID)
-	if _, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID); err != nil || ok {
-		t.Fatalf("revision moved: ok = %v, err = %v", ok, err)
+	// TASK-457: blocking and unblocking moves the revision but keeps the approval
+	if err := move(t, s, e.Key, items.Blocked, user); err != nil {
+		t.Fatal(err)
 	}
+	if err := move(t, s, e.Key, items.InReview, user); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, e.Key, items.InReview)
+	if _, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID); err != nil || !ok {
+		t.Fatalf("after block round trip: ok = %v, err = %v", ok, err)
+	}
+	acc := []string{"Login works with SSO"}
+	if _, err := s.Update(ctx, e.Key, items.Patch{Acceptance: &acc, Revision: mustGet(t, s, e.Key).Revision}, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID); err != nil || ok {
+		t.Fatalf("after acceptance edit: ok = %v, err = %v", ok, err)
+	}
+}
+
+func TestFinishApprovalStaledByWaiverEdit(t *testing.T) {
+	s := newStore(t)
+	e, _ := finishRoot(t, s, items.Epic)
+	approveFinish(t, s, e, "auto")
+	orch := items.Orchestrator("agt_o", e.ID)
+	if _, err := s.Update(ctx, e.Key, items.Patch{Revision: e.Revision,
+		Waive: []items.WaiveInput{{Gate: items.WaivableGates[0], Reason: "flaky CI"}}}, orch); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID); err != nil || ok {
+		t.Fatalf("after waiver: ok = %v, err = %v", ok, err)
+	}
+	wantStatus(t, s, e.Key, items.InProgress)
 }
 
 func forceTo(it items.Item, to items.Status, reason string) items.Patch {

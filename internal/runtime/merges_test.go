@@ -443,3 +443,61 @@ func TestMergesReturnsKeptNote(t *testing.T) {
 		t.Fatalf("notes = %+v", notes)
 	}
 }
+
+// TASK-457: a blocked checkpoint after the user approved finishing must not cost a
+// second approval, whether progress resolves the block first or finishing does.
+func TestFinishingSurvivesBlockedCheckpoint(t *testing.T) {
+	for _, resolve := range []bool{true, false} {
+		s, _, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+		fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenArmed}})
+		ctx := context.Background()
+		if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: BlockedCkp, Summary: "gh auth expired",
+			Blockers: []string{"gh auth"}}); err != nil {
+			t.Fatal(err)
+		}
+		if resolve {
+			if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Progress, Summary: "gh auth fixed"}); err != nil {
+				t.Fatal(err)
+			}
+			if st := itemStatus(t, s, key); st != items.InReview {
+				t.Fatalf("resolve=%v: status after progress = %s, want in_review", resolve, st)
+			}
+		}
+		res, err := finishPR(s, ses)
+		if err != nil {
+			t.Fatalf("resolve=%v: finishing: %v", resolve, err)
+		}
+		if res.ItemStatus != items.InReview {
+			t.Fatalf("resolve=%v: result = %+v", resolve, res)
+		}
+	}
+}
+
+// TASK-457: what does still cost the approval — a newer integration or a change request,
+// even across a blocked checkpoint.
+func TestFinishingApprovalInvalidated(t *testing.T) {
+	const want = "Nothing to finish: CHORE-1 has no approved finish request for its latest integration."
+	for name, invalidate := range map[string]func(t *testing.T, s *Store, ses, reqID string){
+		"newer integrated": func(t *testing.T, s *Store, ses, _ string) {
+			if _, err := s.WriteCheckpoint(context.Background(), ses, CheckpointInput{Kind: Integrated, Summary: "again",
+				Git:          []GitRef{{Repo: "proj", Branch: "swarm/chore-1", SHA: "4a0d1bc0000"}},
+				Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"changes requested": func(t *testing.T, s *Store, _, reqID string) {
+			mustExec(t, s.DB, `UPDATE requests SET state = 'changes_requested' WHERE id = ?`, reqID)
+		},
+	} {
+		s, _, ses, _, reqID := finishFixture(t, "https://github.com/o/proj.git", "auto")
+		fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenArmed}})
+		if _, err := s.WriteCheckpoint(context.Background(), ses, CheckpointInput{Kind: BlockedCkp, Summary: "waiting",
+			Blockers: []string{"x"}}); err != nil {
+			t.Fatal(err)
+		}
+		invalidate(t, s, ses, reqID)
+		if _, err := finishPR(s, ses); err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", name, err, want)
+		}
+	}
+}
