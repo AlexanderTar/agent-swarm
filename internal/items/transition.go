@@ -592,28 +592,66 @@ func (s *Store) approvedCurrent(ctx context.Context, q querier, it Item, st root
 	return ok, fa.Merge, err
 }
 
-// mergeState counts the current integrated checkpoint's repos and their item_merges rows.
-func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState) (merged, total int, closed bool, err error) {
+// ResolveRepoIDTx resolves a ref's repo spelling (a catalog id or name) to its catalog id, preferring
+// the root's confirmed repos, then an id match, then the most recently used; "" when unknown.
+func ResolveRepoIDTx(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, rootItemID, repo string) (string, error) {
+	var id string
+	err := q.QueryRowContext(ctx, `SELECT id FROM repos WHERE (id = ? OR name = ?) AND id IN (SELECT value FROM json_each(
+		(SELECT confirmed_repos_json FROM items WHERE id = ?))) ORDER BY id = ? DESC LIMIT 1`,
+		repo, repo, rootItemID, repo).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = q.QueryRowContext(ctx, `SELECT id FROM repos WHERE id = ? OR name = ? ORDER BY id = ? DESC, last_used_at DESC LIMIT 1`,
+			repo, repo, repo).Scan(&id)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// IntegratedRepoIDsTx is the set of distinct repos in integrated git refs (git_json), keyed by
+// resolved catalog id; an unknown repo keeps its spelling.
+func IntegratedRepoIDsTx(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, rootItemID string, git []byte) (map[string]bool, error) {
 	var refs []struct {
 		Repo string `json:"repo"`
 	}
-	json.Unmarshal([]byte(st.ckpGit), &refs)
+	json.Unmarshal(git, &refs)
 	repos := map[string]bool{}
 	for _, r := range refs {
-		repos[r.Repo] = true
+		id, err := ResolveRepoIDTx(ctx, q, rootItemID, r.Repo)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" {
+			id = r.Repo
+		}
+		repos[id] = true
+	}
+	return repos, nil
+}
+
+// mergeState counts the current integrated checkpoint's repos and their item_merges rows, by repo id.
+func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState) (merged, total int, closed bool, err error) {
+	repos, err := IntegratedRepoIDsTx(ctx, q, it.ID, []byte(st.ckpGit))
+	if err != nil {
+		return 0, 0, false, err
 	}
 	total = len(repos)
-	rows, err := q.QueryContext(ctx, `SELECT repo, state FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`, it.ID, st.ckpID)
+	rows, err := q.QueryContext(ctx, `SELECT repo_id, state FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`, it.ID, st.ckpID)
 	if err != nil {
 		return 0, 0, false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var repo, state string
-		if err := rows.Scan(&repo, &state); err != nil {
+		var repoID, state string
+		if err := rows.Scan(&repoID, &state); err != nil {
 			return 0, 0, false, err
 		}
-		if state == "merged" && repos[repo] {
+		if state == "merged" && repos[repoID] {
 			merged++
 		}
 		if state == "closed" {

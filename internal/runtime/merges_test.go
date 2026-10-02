@@ -605,3 +605,43 @@ func TestFinishingApprovalInvalidated(t *testing.T) {
 		}
 	}
 }
+
+// respellIntegrated rewrites the fixture's integrated refs (checkpoint and finish request) to git.
+func respellIntegrated(t *testing.T, s *Store, key, git string) {
+	t.Helper()
+	id := mustItemID(t, s, key)
+	mustExec(t, s.DB, `UPDATE checkpoints SET git_json = ? WHERE item_id = ? AND kind = 'integrated'`, git, id)
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.git', json(?)) WHERE item_id = ?`, git, id)
+}
+
+// Orchestrators usually write integrated refs by catalog id; item_merges stores the name.
+func TestFinishingIDSpelledRefsReachDone(t *testing.T) {
+	s, _, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+	respellIntegrated(t, s, key, `[{"repo":"repo_proj","branch":"swarm/chore-1","sha":"3f9c2ab0000"}]`)
+	fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghMerged}})
+	if _, err := s.WriteCheckpoint(context.Background(), ses, CheckpointInput{Kind: Finishing, Summary: "PR merged",
+		PRs: []FinishPR{{Repo: "repo_proj", URL: prURL}}}); err != nil {
+		t.Fatal(err)
+	}
+	if st := itemStatus(t, s, key); st != items.Done {
+		t.Fatalf("status = %s, want done", st)
+	}
+}
+
+// One repo spelled by id and by name is one repo to merge.
+func TestMixedSpellingCountsOneRepo(t *testing.T) {
+	ctx := context.Background()
+	s, _, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+	respellIntegrated(t, s, key, `[{"repo":"repo_proj","branch":"swarm/chore-1","sha":"3f9c2ab0000"},
+		{"repo":"proj","branch":"swarm/chore-1","sha":"3f9c2ab0000"}]`)
+	if p, err := s.MergeProgressFor(ctx, mustItemID(t, s, key)); err != nil || p == nil || *p != (MergeProgress{0, 1}) {
+		t.Fatalf("progress = %+v, %v", p, err)
+	}
+	fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghMerged}})
+	if _, err := finishPR(s, ses); err != nil {
+		t.Fatal(err)
+	}
+	if st := itemStatus(t, s, key); st != items.Done {
+		t.Fatalf("status = %s, want done (mergeState must count the repo once)", st)
+	}
+}

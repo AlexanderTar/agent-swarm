@@ -111,19 +111,16 @@ func (s *Store) finishReposTx(ctx context.Context, q txQuerier, rootItemID strin
 		}
 		seen[ref.Repo] = true
 		r := finishRepo{Ref: ref, Key: ref.Repo}
-		cols := `SELECT id, name, path, COALESCE(remote_url,''), COALESCE(remote_owner,''), COALESCE(default_branch,'') FROM repos `
-		dest := []any{&r.RepoID, &r.Ref.Repo, &r.Path, &r.RemoteURL, &r.Owner, &r.Base}
-		err := q.QueryRowContext(ctx, cols+`WHERE (id = ? OR name = ?) AND id IN (SELECT value FROM json_each(
-			(SELECT confirmed_repos_json FROM items WHERE id = ?))) ORDER BY id = ? DESC LIMIT 1`,
-			ref.Repo, ref.Repo, rootItemID, ref.Repo).Scan(dest...)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = q.QueryRowContext(ctx, cols+`WHERE id = ? OR name = ? ORDER BY id = ? DESC, last_used_at DESC LIMIT 1`,
-				ref.Repo, ref.Repo, ref.Repo).Scan(dest...)
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		id, err := items.ResolveRepoIDTx(ctx, q, rootItemID, ref.Repo)
+		if err != nil {
 			return nil, err
 		}
-		if r.RepoID != "" {
+		if id != "" {
+			if err := q.QueryRowContext(ctx, `SELECT id, name, path, COALESCE(remote_url,''), COALESCE(remote_owner,''),
+				COALESCE(default_branch,'') FROM repos WHERE id = ?`, id).Scan(
+				&r.RepoID, &r.Ref.Repo, &r.Path, &r.RemoteURL, &r.Owner, &r.Base); err != nil {
+				return nil, err
+			}
 			if seenID[r.RepoID] {
 				continue // the same repo, spelled by id and by name
 			}
@@ -591,13 +588,9 @@ func (s *Store) MergeProgressFor(ctx context.Context, rootItemID string) (*Merge
 	if err != nil || !ok || fa.Merge == "" {
 		return nil, err
 	}
-	var refs []GitRef
-	if err := json.Unmarshal(fa.Git, &refs); err != nil {
+	distinct, err := items.IntegratedRepoIDsTx(ctx, s.DB, rootItemID, fa.Git)
+	if err != nil {
 		return nil, err
-	}
-	distinct := map[string]bool{}
-	for _, r := range refs {
-		distinct[r.Repo] = true
 	}
 	p := &MergeProgress{Total: len(distinct)}
 	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?
