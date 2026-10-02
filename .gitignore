@@ -15,3 +15,6 @@ web/e2e/__screenshots__/
 /bin/
 .superpowers/
 __pycache__/
+
+# Watchman cookie files (created by Metro/Expo file watching)
+.watchman-cookie-*
