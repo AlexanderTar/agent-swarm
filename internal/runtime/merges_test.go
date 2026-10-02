@@ -443,3 +443,72 @@ func TestMergesReturnsKeptNote(t *testing.T) {
 		t.Fatalf("notes = %+v", notes)
 	}
 }
+
+// chore19Fixture is customFinishFixture with four catalog repos whose integrated refs (checkpoint
+// and finish request) name repos by catalog id, the shape CHORE-19 hit.
+func chore19Fixture(t *testing.T) (s *Store, ses, key string) {
+	t.Helper()
+	s, orch, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "custom")
+	mustExec(t, s.DB, `INSERT INTO repos (id, name, path, remote_url, remote_owner, default_branch, source, created_at, updated_at)
+		VALUES ('repo_docs', 'docs', '/tmp/docs', NULL, 'o', 'main', 'manual', 1, 1),
+		       ('repo_web', 'web', '/tmp/web', 'https://github.com/o/web.git', 'o', 'main', 'manual', 1, 1),
+		       ('repo_api', 'api', '/tmp/api', 'https://github.com/o/api.git', 'o', 'main', 'manual', 1, 1)`)
+	git := `[{"repo":"repo_proj","branch":"swarm/chore-1","sha":"3f9c2ab0000"},{"repo":"repo_docs","branch":"swarm/chore-1","sha":"aaa1110000"},
+		{"repo":"repo_web","branch":"swarm/chore-1","sha":"bbb2220000"},{"repo":"repo_api","branch":"swarm/chore-1","sha":"ccc3330000"}]`
+	mustExec(t, s.DB, `UPDATE checkpoints SET git_json = ? WHERE agent_id = ? AND kind = 'integrated'`, git, orch.ID)
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.git', json(?)) WHERE item_id = ?`, git, mustItemID(t, s, key))
+	return s, ses, key
+}
+
+func TestFinishingResolvesIntegratedReposByID(t *testing.T) {
+	for name, in := range map[string]CheckpointInput{
+		"keyed by id": {PRs: []FinishPR{{Repo: "repo_proj", URL: prURL}},
+			Merged: []FinishMerged{{Repo: "repo_web", SHA: "d00d"}},
+			Kept:   []KeptRepo{{Repo: "repo_docs", Note: "kept"}, {Repo: "repo_api", Note: "kept"}}},
+		"keyed by name": {PRs: []FinishPR{{Repo: "proj", URL: prURL}},
+			Merged: []FinishMerged{{Repo: "web", SHA: "d00d"}},
+			Kept:   []KeptRepo{{Repo: "docs", Note: "kept"}, {Repo: "repo_api", Note: "kept"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, ses, key := chore19Fixture(t)
+			fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenUnarmed}})
+			if _, err := finishCustom(s, ses, in); err != nil {
+				t.Fatal(err)
+			}
+			ms, _ := s.Merges(context.Background(), mustItemID(t, s, key))
+			var repos []string
+			for _, m := range ms {
+				repos = append(repos, m.Repo)
+			}
+			slices.Sort(repos)
+			if !slices.Equal(repos, []string{"api", "docs", "proj", "web"}) {
+				t.Fatalf("merge rows = %v, want catalog names", repos)
+			}
+		})
+	}
+}
+
+func TestFinishingRefusesARepoNamedTwiceBySpelling(t *testing.T) {
+	s, ses, _ := chore19Fixture(t)
+	_, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{{Repo: "repo_proj", Note: "a"}, {Repo: "proj", Note: "b"},
+		{Repo: "docs", Note: "c"}, {Repo: "web", Note: "d"}, {Repo: "api", Note: "e"}}})
+	if err == nil || err.Error() != "Report every integrated repo once under prs, merged or kept: proj." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFinishReposResolveIDsToCatalogNames(t *testing.T) {
+	s, _, key := chore19Fixture(t)
+	repos, err := s.finishReposTx(context.Background(), s.DB, mustItemID(t, s, key), []GitRef{
+		{Repo: "repo_web"}, {Repo: "docs"}, {Repo: "web"}, {Repo: "nope"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(repos))
+	for i, r := range repos {
+		got[i] = r.RepoID + ":" + r.Ref.Repo
+	}
+	if !slices.Equal(got, []string{"repo_web:web", "repo_docs:docs", ":nope"}) {
+		t.Fatalf("repos = %v", got)
+	}
+}

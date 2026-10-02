@@ -55,7 +55,8 @@ type MergeProgress struct {
 
 // finishRepo is one integrated repo resolved against the catalog.
 type finishRepo struct {
-	Ref                                  GitRef
+	Ref                                  GitRef // Repo is the catalog name once resolved
+	Key                                  string // the ref's own spelling (id or name)
 	RepoID, Path, RemoteURL, Owner, Base string
 	GitHub                               bool
 }
@@ -97,31 +98,51 @@ func (s *Store) runner() execx.Runner {
 	return s.Exec
 }
 
-// finishReposTx resolves each distinct ref repo, in first-seen order; an unknown repo has RepoID "".
+// finishReposTx resolves each distinct ref repo (a catalog id or name, id first), in first-seen
+// order; a resolved ref's Repo becomes the catalog name, Key keeps the ref's spelling. An unknown
+// repo has RepoID "".
 func (s *Store) finishReposTx(ctx context.Context, q txQuerier, rootItemID string, refs []GitRef) ([]finishRepo, error) {
 	var out []finishRepo
-	seen := map[string]bool{}
+	seen, seenID := map[string]bool{}, map[string]bool{}
 	for _, ref := range refs {
 		if seen[ref.Repo] {
 			continue
 		}
 		seen[ref.Repo] = true
-		r := finishRepo{Ref: ref}
-		cols := `SELECT id, path, COALESCE(remote_url,''), COALESCE(remote_owner,''), COALESCE(default_branch,'') FROM repos `
-		err := q.QueryRowContext(ctx, cols+`WHERE name = ? AND id IN (SELECT value FROM json_each(
-			(SELECT confirmed_repos_json FROM items WHERE id = ?)))`, ref.Repo, rootItemID).
-			Scan(&r.RepoID, &r.Path, &r.RemoteURL, &r.Owner, &r.Base)
+		r := finishRepo{Ref: ref, Key: ref.Repo}
+		cols := `SELECT id, name, path, COALESCE(remote_url,''), COALESCE(remote_owner,''), COALESCE(default_branch,'') FROM repos `
+		dest := []any{&r.RepoID, &r.Ref.Repo, &r.Path, &r.RemoteURL, &r.Owner, &r.Base}
+		err := q.QueryRowContext(ctx, cols+`WHERE (id = ? OR name = ?) AND id IN (SELECT value FROM json_each(
+			(SELECT confirmed_repos_json FROM items WHERE id = ?))) ORDER BY id = ? DESC LIMIT 1`,
+			ref.Repo, ref.Repo, rootItemID, ref.Repo).Scan(dest...)
 		if errors.Is(err, sql.ErrNoRows) {
-			err = q.QueryRowContext(ctx, cols+`WHERE name = ? ORDER BY last_used_at DESC LIMIT 1`, ref.Repo).
-				Scan(&r.RepoID, &r.Path, &r.RemoteURL, &r.Owner, &r.Base)
+			err = q.QueryRowContext(ctx, cols+`WHERE id = ? OR name = ? ORDER BY id = ? DESC, last_used_at DESC LIMIT 1`,
+				ref.Repo, ref.Repo, ref.Repo).Scan(dest...)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
+		}
+		if r.RepoID != "" {
+			if seenID[r.RepoID] {
+				continue // the same repo, spelled by id and by name
+			}
+			seenID[r.RepoID] = true
 		}
 		r.GitHub = isGitHubRemote(r.RemoteURL)
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// canonicalRepo maps a finishing input repo key (an integrated repo's id, name or ref spelling) to
+// its resolved name; an unknown key is returned as given.
+func canonicalRepo(repos []finishRepo, key string) string {
+	for _, r := range repos {
+		if key == r.Ref.Repo || key == r.Key || (r.RepoID != "" && key == r.RepoID) {
+			return r.Ref.Repo
+		}
+	}
+	return key
 }
 
 func (s *Store) ghPRView(ctx context.Context, url string) (ghPR, error) {
@@ -231,6 +252,15 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 	}
 
 	// 2. coverage
+	for i := range in.PRs {
+		in.PRs[i].Repo = canonicalRepo(repos, in.PRs[i].Repo)
+	}
+	for i := range in.Merged {
+		in.Merged[i].Repo = canonicalRepo(repos, in.Merged[i].Repo)
+	}
+	for i := range in.Kept {
+		in.Kept[i].Repo = canonicalRepo(repos, in.Kept[i].Repo)
+	}
 	custom := fa.Merge == "custom"
 	if len(in.Kept) > 0 && !custom {
 		return out, badRequest("kept is only valid when the user chose one of your finish options.")
