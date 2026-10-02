@@ -376,6 +376,11 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 			return &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf(
 				"Nothing to finish: %s has no approved finish request for its latest integration.", key)}
 		}
+		if it.Status == items.Blocked {
+			if err := s.tryTransition(ctx, tx, key, it.StatusBeforeBlock); err != nil {
+				return err
+			}
+		}
 		now := db.Millis(s.Now())
 		for _, v := range checked {
 			state, checks, number, sha, url := "merged", "", any(nil), nullIf(v.localSHA), nullIf(v.url)
@@ -426,14 +431,16 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 	return out, err
 }
 
-// finishStateTx checks the root is in review with an approved finish and no finishing yet,
+// finishStateTx checks the root is in review (or blocked from it) with an approved finish and no finishing yet,
 // and resolves its integrated repos.
 func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (items.FinishApproval, []finishRepo, error) {
 	fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID)
 	if err != nil {
 		return fa, nil, err
 	}
-	if it.Status != items.InReview || !ok || fa.Merge == "" {
+	// a root blocked while in review stays finishable; the finishing write resolves the block
+	inReview := it.Status == items.InReview || it.Status == items.Blocked && it.StatusBeforeBlock == items.InReview
+	if !inReview || !ok || fa.Merge == "" {
 		return fa, nil, badRequest("Nothing to finish: %s has no approved finish request for its latest integration.", it.Key)
 	}
 	var n int
