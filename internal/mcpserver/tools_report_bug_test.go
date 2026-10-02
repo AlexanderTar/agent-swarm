@@ -174,3 +174,37 @@ func TestReportBugMissingTranscriptStillCreatesTheItem(t *testing.T) {
 		t.Fatalf("no bug-reports dir expected without a transcript: %v", err)
 	}
 }
+
+func TestReportBugRefusesInvalidInput(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	long := strings.Repeat("x", 121)
+	for _, tc := range []struct{ name, args, want string }{
+		{"missing title", `{"what_happened":"x"}`, "title is required"},
+		{"short title", `{"title":"ab","what_happened":"x"}`, "title must be 3-120 characters"},
+		{"long title", `{"title":"` + long + `","what_happened":"x"}`, "title must be 3-120 characters"},
+		{"missing what_happened", `{"title":"A fine title"}`, "what_happened is required"},
+		{"blank what_happened", `{"title":"A fine title","what_happened":"  "}`, "what_happened is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.call(ctx, seed.Caller, "swarm_report_bug", tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	var n int
+	s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM items WHERE type = 'bug'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("a refused report created %d bug items", n)
+	}
+}
+
+func TestReportBugRefusesUnboundCallers(t *testing.T) {
+	s, _ := newReportBugServer(t)
+	_, err := s.call(context.Background(), Caller{Unbound: true}, "swarm_report_bug",
+		`{"title":"A fine title","what_happened":"x"}`)
+	if err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("err = %v, want refusal", err)
+	}
+}

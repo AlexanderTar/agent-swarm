@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -47,6 +48,16 @@ func reportBugTool(s *Server) ToolDef {
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
+			}
+			in.Title = strings.TrimSpace(in.Title)
+			switch n := utf8.RuneCountInString(in.Title); {
+			case n == 0:
+				return nil, errors.New("title is required (3-120 characters)")
+			case n < 3 || n > 120:
+				return nil, fmt.Errorf("title must be 3-120 characters, got %d", n)
+			}
+			if strings.TrimSpace(in.WhatHappened) == "" {
+				return nil, errors.New("what_happened is required: say what went wrong in Swarm")
 			}
 			a, err := callerAgent(ctx, s, c)
 			if err != nil {
