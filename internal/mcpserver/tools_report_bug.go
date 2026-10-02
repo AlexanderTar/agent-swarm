@@ -12,7 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -66,50 +67,34 @@ func reportBugTool(s *Server) ToolDef {
 			// The cached idempotency result carries the transcript too, so a
 			// replay returns the same answer.
 			var res struct {
-				Item       items.Item `json:"item"`
-				Transcript string     `json:"transcript"`
+				ID         string `json:"id"`
+				Transcript string `json:"transcript"`
 			}
 			if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_report_bug", &res,
 				func(tx *sql.Tx) (err error) {
-					var suggested []string
-					var repoID string
-					switch err := tx.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = ? LIMIT 1`, agentSwarmRepoName).Scan(&repoID); {
-					case err == nil:
-						suggested = []string{repoID}
-					case !errors.Is(err, sql.ErrNoRows):
-						return err
-					}
-					brief := bugBrief(in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area)
-					res.Item, err = s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
-						Type: items.Bug, Title: in.Title, Brief: brief,
-						SuggestedRepos: suggested, OriginSpikeID: a.RootItemID,
-					}, items.Daemon())
-					if err != nil {
-						return err
-					}
-					// The copy's path embeds the key CreateTx just assigned, so
-					// the transcript line goes in with a follow-up brief update.
-					out := res.Item
-					res.Transcript = s.copyTranscript(ctx, tx, c, a, out.Key)
+					res.ID = ids.New("bug")
+					res.Transcript = s.copyTranscript(ctx, tx, c, a, res.ID)
+					id := res.ID
 					defer func() {
 						if err != nil { // the tx rolls back; don't leave an orphan copy
-							_ = os.RemoveAll(filepath.Join(s.RT.Home, "bug-reports", out.Key))
+							_ = os.RemoveAll(filepath.Join(s.RT.Home, "bug-reports", id))
 						}
 					}()
-					brief += "\n- Transcript: " + res.Transcript
-					if _, err = s.RT.Items.UpdateTx(ctx, tx, out.Key, items.Patch{Revision: out.Revision, Brief: &brief}, items.Daemon()); err != nil {
+					var rootKey string
+					if err = tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).Scan(&rootKey); err != nil {
 						return err
 					}
-					var originKey string
-					if err = tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).Scan(&originKey); err != nil {
-						return err
-					}
-					err = s.RT.NotifyItemCreated(ctx, tx, originKey, out.Key, out.Title, out.Type)
+					_, err = tx.ExecContext(ctx, `INSERT INTO bug_reports
+						(id, created_at, reporter_agent_id, reporter_agent_name, session_id, root_item_key, title,
+						 what_happened, repro, evidence, user_said, cause, area, transcript_path)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						id, db.Millis(s.RT.Now()), a.ID, a.Name, c.SessionID, rootKey, in.Title,
+						in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area, res.Transcript)
 					return err
 				}); err != nil {
 				return nil, err
 			}
-			return map[string]any{"key": res.Item.Key, "id": res.Item.ID, "status": res.Item.Status, "transcript": res.Transcript}, nil
+			return map[string]any{"id": res.ID, "transcript": res.Transcript}, nil
 		},
 	}
 }
@@ -129,10 +114,10 @@ func bugBrief(whatHappened, repro, evidence, userSaid, cause, area string) strin
 }
 
 // copyTranscript best-effort copies the reporter's own transcript to
-// <home>/bug-reports/<key>/transcript<ext> (the agent's work dir is deleted
+// <home>/bug-reports/<id>/transcript<ext> (the agent's work dir is deleted
 // once it finishes). It returns the copied path, or "unavailable (<reason>)";
 // a transcript problem never fails the report.
-func (s *Server) copyTranscript(ctx context.Context, tx *sql.Tx, c Caller, a runtime.Agent, key string) string {
+func (s *Server) copyTranscript(ctx context.Context, tx *sql.Tx, c Caller, a runtime.Agent, id string) string {
 	var cwd, providerID string
 	if err := tx.QueryRowContext(ctx, `SELECT cwd, COALESCE(provider_session_id, '') FROM sessions WHERE id = ?`, c.SessionID).
 		Scan(&cwd, &providerID); err != nil {
@@ -151,7 +136,7 @@ func (s *Server) copyTranscript(ctx context.Context, tx *sql.Tx, c Caller, a run
 	if err != nil {
 		return fmt.Sprintf("unavailable (%v)", err)
 	}
-	dir := filepath.Join(s.RT.Home, "bug-reports", key)
+	dir := filepath.Join(s.RT.Home, "bug-reports", id)
 	dst := filepath.Join(dir, "transcript"+filepath.Ext(src))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "unavailable (" + err.Error() + ")"

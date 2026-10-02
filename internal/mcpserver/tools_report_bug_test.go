@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -49,13 +50,21 @@ func newReportBugServer(t *testing.T) (*Server, reportBugSeed) {
 }
 
 type reportBugOut struct {
-	Key        string `json:"key"`
 	ID         string `json:"id"`
-	Status     string `json:"status"`
 	Transcript string `json:"transcript"`
+	ItemKey    string `json:"item_key"`
 }
 
-func TestReportBugCreatesDraftBugWithComposedBrief(t *testing.T) {
+func bugItemCount(t *testing.T, s *Server) int {
+	t.Helper()
+	var n int
+	if err := s.RT.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM items WHERE type = 'bug'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestReportBugStoresLocalRowAndCreatesNoBoardItem(t *testing.T) {
 	s, seed := newReportBugServer(t)
 	ctx := context.Background()
 	out, err := s.call(ctx, seed.Caller, "swarm_report_bug",
@@ -65,43 +74,22 @@ func TestReportBugCreatesDraftBugWithComposedBrief(t *testing.T) {
 	}
 	var got reportBugOut
 	json.Unmarshal(mustJSON(out), &got)
-	if got.Key == "" || got.ID == "" || got.Status != "draft" {
+	if !strings.HasPrefix(got.ID, "bug_") || got.ItemKey != "" {
 		t.Fatalf("out = %+v", got)
 	}
-	it, err := s.RT.Items.Get(ctx, got.Key)
-	if err != nil {
+	var title, what, repro, area, reporter, rootKey, session string
+	var boardKey sql.NullString
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT title, what_happened, repro, area, reporter_agent_name,
+		root_item_key, session_id, board_item_key FROM bug_reports WHERE id = ?`, got.ID).
+		Scan(&title, &what, &repro, &area, &reporter, &rootKey, &session, &boardKey); err != nil {
 		t.Fatal(err)
 	}
-	if string(it.Type) != "bug" || string(it.Status) != "draft" || it.ParentKey != "" {
-		t.Fatalf("item = %s/%s parent %q", it.Type, it.Status, it.ParentKey)
+	if title != "Sync drops acks" || what != "ack ignored" || repro != "call sync twice" || area != "mcpserver" ||
+		reporter != seed.Caller.AgentName || rootKey != seed.ChoreKey || session != seed.SessionID || boardKey.Valid {
+		t.Fatalf("row = %q %q %q %q %q %q %q %v", title, what, repro, area, reporter, rootKey, session, boardKey)
 	}
-	for _, want := range []string{"- What happened: ack ignored", "- Repro: call sync twice", "- Area: mcpserver"} {
-		if !strings.Contains(it.Brief, want) {
-			t.Fatalf("brief missing %q:\n%s", want, it.Brief)
-		}
-	}
-	for _, unwanted := range []string{"- Evidence:", "- User said:", "- Cause:"} {
-		if strings.Contains(it.Brief, unwanted) {
-			t.Fatalf("brief has empty field %q:\n%s", unwanted, it.Brief)
-		}
-	}
-	if len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID || len(it.Repos) != 0 {
-		t.Fatalf("repos = %v suggested = %v", it.Repos, it.SuggestedRepos)
-	}
-	if it.OriginSpikeID != "itm_chore" {
-		t.Fatalf("origin = %q, want the reporter's root", it.OriginSpikeID)
-	}
-	f := s.RT.Notify.(*fakeNotifier)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var found bool
-	for _, n := range f.raised {
-		if n.Kind == "item.created.bug" && n.Args["SPIKE-KEY"] == seed.ChoreKey && n.Args["ROOT-KEY"] == got.Key {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("no item.created.bug notification from %s: %+v", seed.ChoreKey, f.raised)
+	if n := bugItemCount(t, s); n != 0 {
+		t.Fatalf("default report created %d bug items", n)
 	}
 }
 
@@ -136,7 +124,7 @@ func TestReportBugCopiesTheReportersTranscript(t *testing.T) {
 	}
 	var got reportBugOut
 	json.Unmarshal(mustJSON(out), &got)
-	want := filepath.Join(s.RT.Home, "bug-reports", got.Key, "transcript.jsonl")
+	want := filepath.Join(s.RT.Home, "bug-reports", got.ID, "transcript.jsonl")
 	if got.Transcript != want {
 		t.Fatalf("transcript = %q, want %q", got.Transcript, want)
 	}
@@ -147,13 +135,14 @@ func TestReportBugCopiesTheReportersTranscript(t *testing.T) {
 	if fi, _ := os.Stat(want); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
 	}
-	it, _ := s.RT.Items.Get(ctx, got.Key)
-	if !strings.Contains(it.Brief, "- Transcript: "+want) {
-		t.Fatalf("brief missing transcript line:\n%s", it.Brief)
+	var stored string
+	s.RT.DB.QueryRowContext(ctx, `SELECT transcript_path FROM bug_reports WHERE id = ?`, got.ID).Scan(&stored)
+	if stored != want {
+		t.Fatalf("stored transcript_path = %q, want %q", stored, want)
 	}
 }
 
-func TestReportBugMissingTranscriptStillCreatesTheItem(t *testing.T) {
+func TestReportBugMissingTranscriptStillStoresTheReport(t *testing.T) {
 	s, seed := newReportBugServer(t)
 	ctx := context.Background()
 	// The fake agent kind has no derivable transcript path.
@@ -166,11 +155,12 @@ func TestReportBugMissingTranscriptStillCreatesTheItem(t *testing.T) {
 	if !strings.HasPrefix(got.Transcript, "unavailable (") {
 		t.Fatalf("transcript = %q, want unavailable (...)", got.Transcript)
 	}
-	it, _ := s.RT.Items.Get(ctx, got.Key)
-	if !strings.Contains(it.Brief, "- Transcript: unavailable (") {
-		t.Fatalf("brief missing unavailable line:\n%s", it.Brief)
+	var stored string
+	s.RT.DB.QueryRowContext(ctx, `SELECT transcript_path FROM bug_reports WHERE id = ?`, got.ID).Scan(&stored)
+	if stored != got.Transcript {
+		t.Fatalf("stored transcript_path = %q, want %q", stored, got.Transcript)
 	}
-	if _, err := os.Stat(filepath.Join(s.RT.Home, "bug-reports", got.Key)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(s.RT.Home, "bug-reports", got.ID)); !os.IsNotExist(err) {
 		t.Fatalf("no bug-reports dir expected without a transcript: %v", err)
 	}
 }
@@ -194,9 +184,9 @@ func TestReportBugRefusesInvalidInput(t *testing.T) {
 		})
 	}
 	var n int
-	s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM items WHERE type = 'bug'`).Scan(&n)
+	s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM bug_reports`).Scan(&n)
 	if n != 0 {
-		t.Fatalf("a refused report created %d bug items", n)
+		t.Fatalf("a refused report stored %d rows", n)
 	}
 }
 

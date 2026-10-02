@@ -24,6 +24,7 @@ var prefixes = map[string]bool{
 	"wf": true, "wfr": true, // workflows / workflow_runs (spec B1)
 	"op": true, "lin": true, // agent_operations / agent_lineage (continuity)
 	"mrg": true, // item_merges (finish-with-pr)
+	"bug": true, // bug_reports
 }
 
 // New returns "<prefix>_<ULID>". ulid.Make is monotonic and goroutine-safe.
