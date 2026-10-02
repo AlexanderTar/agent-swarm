@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -454,7 +455,7 @@ func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (i
 
 func (s *Store) verifyPR(ctx context.Context, r finishRepo, url, merge string) (ghPR, error) {
 	m := prURLRe.FindStringSubmatch(url)
-	if m == nil || !strings.EqualFold(m[1], r.Owner) {
+	if m == nil || !strings.EqualFold(m[1], r.Owner) && !s.movedTo(ctx, r, m[1]+"/"+m[2]) {
 		return ghPR{}, badRequest("%s is not a PR in %s's %s repository.", url, r.Owner, r.Ref.Repo)
 	}
 	p, err := s.ghPRView(ctx, url)
@@ -474,6 +475,17 @@ func (s *Store) verifyPR(ctx context.Context, r finishRepo, url, merge string) (
 			url, url, url, s.mergeMethod(ctx, m[1], m[2]))
 	}
 	return p, nil
+}
+
+// movedTo reports whether gh resolves the catalog's owner/repo to nameWithOwner, i.e. the repo was
+// transferred or renamed on GitHub after it was cataloged.
+func (s *Store) movedTo(ctx context.Context, r finishRepo, nameWithOwner string) bool {
+	name := path.Base(strings.TrimSuffix(r.RemoteURL, ".git"))
+	out, err := s.runner()(ctx, "gh", "repo", "view", r.Owner+"/"+name, "--json", "nameWithOwner")
+	var v struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	}
+	return err == nil && json.Unmarshal(out, &v) == nil && strings.EqualFold(v.NameWithOwner, nameWithOwner)
 }
 
 // mergeMethod is the repo's default merge method (locked decision 2); squash when gh can't say.

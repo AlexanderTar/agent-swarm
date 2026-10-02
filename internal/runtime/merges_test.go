@@ -512,3 +512,38 @@ func TestFinishReposResolveIDsToCatalogNames(t *testing.T) {
 		t.Fatalf("repos = %v", got)
 	}
 }
+
+// A repo transferred on GitHub keeps its old owner in the catalog; gh resolves the old name to the new one.
+func TestFinishingAcceptsAPRInATransferredRepo(t *testing.T) {
+	const moved = "https://github.com/NewOrg/proj/pull/412"
+	s, _, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+	fakeGH(s, map[string]execx.Result{
+		"gh repo view o/proj --json nameWithOwner": {Out: `{"nameWithOwner":"NewOrg/proj"}`},
+		prView(moved): {Out: ghOpenArmed},
+	})
+	if _, err := s.WriteCheckpoint(context.Background(), ses, CheckpointInput{Kind: Finishing, Summary: "PR open",
+		PRs: []FinishPR{{Repo: "proj", URL: moved}}}); err != nil {
+		t.Fatal(err)
+	}
+	if ms, _ := s.Merges(context.Background(), mustItemID(t, s, key)); len(ms) != 1 || ms[0].URL != moved {
+		t.Fatalf("merges = %+v", ms)
+	}
+}
+
+func TestFinishingRefusesAForeignOwnerEvenAfterATransfer(t *testing.T) {
+	for name, gh := range map[string]execx.Result{
+		"other canonical owner": {Out: `{"nameWithOwner":"NewOrg/proj"}`},
+		"gh fails":              {Err: errors.New("exit status 1: not found")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			const foreign = "https://github.com/evil/proj/pull/412"
+			s, _, ses, _, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+			fakeGH(s, map[string]execx.Result{"gh repo view o/proj --json nameWithOwner": gh, prView(foreign): {Out: ghOpenArmed}})
+			_, err := s.WriteCheckpoint(context.Background(), ses, CheckpointInput{Kind: Finishing, Summary: "PR open",
+				PRs: []FinishPR{{Repo: "proj", URL: foreign}}})
+			if err == nil || err.Error() != foreign+" is not a PR in o's proj repository." {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
