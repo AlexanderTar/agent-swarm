@@ -14,6 +14,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -30,11 +31,12 @@ const agentSwarmRepoName = "agent-swarm"
 func reportBugTool(s *Server) ToolDef {
 	return ToolDef{
 		Name: "swarm_report_bug",
-		Description: "Report a bug in Swarm itself. Creates a Draft top-level bug item that the user triages; " +
-			"any bound agent may call it. Never use it for bugs in the code you were assigned.",
+		Description: "Report a bug in Swarm itself. Always records the report in Swarm's local bug store (read with `swarm bugs`); " +
+			"any bound agent may call it. Never for bugs in your assigned code. " +
+			"Only pass board:true, which also creates a Draft top-level bug item on the board, when the user's Swarm instructions ask for it.",
 		Schema: objSchemaRequired(`"title":{"type":"string"},"what_happened":{"type":"string"},
 			"repro":{"type":"string"},"evidence":{"type":"string"},"user_said":{"type":"string"},
-			"cause":{"type":"string"},"area":{"type":"string"},"request_id":{"type":"string"}`,
+			"cause":{"type":"string"},"area":{"type":"string"},"board":{"type":"boolean"},"request_id":{"type":"string"}`,
 			[]string{"title", "what_happened"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -45,6 +47,7 @@ func reportBugTool(s *Server) ToolDef {
 				UserSaid     string `json:"user_said"`
 				Cause        string `json:"cause"`
 				Area         string `json:"area"`
+				Board        bool   `json:"board"`
 				RequestID    string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
@@ -69,6 +72,7 @@ func reportBugTool(s *Server) ToolDef {
 			var res struct {
 				ID         string `json:"id"`
 				Transcript string `json:"transcript"`
+				ItemKey    string `json:"item_key,omitempty"`
 			}
 			if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_report_bug", &res,
 				func(tx *sql.Tx) (err error) {
@@ -90,13 +94,47 @@ func reportBugTool(s *Server) ToolDef {
 						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 						id, db.Millis(s.RT.Now()), a.ID, a.Name, c.SessionID, rootKey, in.Title,
 						in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area, res.Transcript)
+					if err != nil || !in.Board {
+						return err
+					}
+					res.ItemKey, err = s.createBoardBug(ctx, tx, a, rootKey, in.Title,
+						bugBrief(in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area)+"\n- Transcript: "+res.Transcript)
+					if err != nil {
+						return err
+					}
+					_, err = tx.ExecContext(ctx, `UPDATE bug_reports SET board_item_key = ? WHERE id = ?`, res.ItemKey, id)
 					return err
 				}); err != nil {
 				return nil, err
 			}
-			return map[string]any{"id": res.ID, "transcript": res.Transcript}, nil
+			out := map[string]any{"id": res.ID, "transcript": res.Transcript}
+			if res.ItemKey != "" {
+				out["item_key"] = res.ItemKey
+			}
+			return out, nil
 		},
 	}
+}
+
+// createBoardBug creates the Draft top-level bug item for a board:true report
+// as the daemon and notifies the reporter's root's orchestrator.
+func (s *Server) createBoardBug(ctx context.Context, tx *sql.Tx, a runtime.Agent, rootKey, title, brief string) (string, error) {
+	var suggested []string
+	var repoID string
+	switch err := tx.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = ? LIMIT 1`, agentSwarmRepoName).Scan(&repoID); {
+	case err == nil:
+		suggested = []string{repoID}
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", err
+	}
+	it, err := s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
+		Type: items.Bug, Title: title, Brief: brief,
+		SuggestedRepos: suggested, OriginSpikeID: a.RootItemID,
+	}, items.Daemon())
+	if err != nil {
+		return "", err
+	}
+	return it.Key, s.RT.NotifyItemCreated(ctx, tx, rootKey, it.Key, it.Title, it.Type)
 }
 
 // bugBrief composes the report's fields as labeled bullets, omitting empty ones.

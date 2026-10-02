@@ -93,6 +93,63 @@ func TestReportBugStoresLocalRowAndCreatesNoBoardItem(t *testing.T) {
 	}
 }
 
+func TestReportBugBoardTrueAlsoCreatesDraftBugAndRecordsKey(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug",
+		`{"title":"Sync drops acks","what_happened":"ack ignored","repro":"call sync twice","area":"mcpserver","board":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	if !strings.HasPrefix(got.ID, "bug_") || got.ItemKey == "" {
+		t.Fatalf("out = %+v", got)
+	}
+	var stored sql.NullString
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT board_item_key FROM bug_reports WHERE id = ?`, got.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.String != got.ItemKey {
+		t.Fatalf("stored board_item_key = %v, want %q", stored, got.ItemKey)
+	}
+	it, err := s.RT.Items.Get(ctx, got.ItemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(it.Type) != "bug" || string(it.Status) != "draft" || it.ParentKey != "" {
+		t.Fatalf("item = %s/%s parent %q", it.Type, it.Status, it.ParentKey)
+	}
+	for _, want := range []string{"- What happened: ack ignored", "- Repro: call sync twice", "- Area: mcpserver", "- Transcript: "} {
+		if !strings.Contains(it.Brief, want) {
+			t.Fatalf("brief missing %q:\n%s", want, it.Brief)
+		}
+	}
+	for _, unwanted := range []string{"- Evidence:", "- User said:", "- Cause:"} {
+		if strings.Contains(it.Brief, unwanted) {
+			t.Fatalf("brief has empty field %q:\n%s", unwanted, it.Brief)
+		}
+	}
+	if len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID || len(it.Repos) != 0 {
+		t.Fatalf("repos = %v suggested = %v", it.Repos, it.SuggestedRepos)
+	}
+	if it.OriginSpikeID != "itm_chore" {
+		t.Fatalf("origin = %q, want the reporter's root", it.OriginSpikeID)
+	}
+	f := s.RT.Notify.(*fakeNotifier)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var found bool
+	for _, n := range f.raised {
+		if n.Kind == "item.created.bug" && n.Args["SPIKE-KEY"] == seed.ChoreKey && n.Args["ROOT-KEY"] == got.ItemKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no item.created.bug notification from %s: %+v", seed.ChoreKey, f.raised)
+	}
+}
+
 func TestReportBugCopiesTheReportersTranscript(t *testing.T) {
 	s, seed := newReportBugServer(t)
 	ctx := context.Background()
