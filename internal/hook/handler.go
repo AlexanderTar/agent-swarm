@@ -467,6 +467,7 @@ type Handler struct {
 	WorktreesDir string
 	mu           sync.Mutex
 	noticeAt     map[string]time.Time
+	deferred     map[string]string            // agy: PostToolUse context held for the next PreInvocation
 	readFile     func(string) ([]byte, error) // nil means os.ReadFile
 }
 
@@ -612,6 +613,27 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	d, err := h.decide(ctx, kind, a, s, ev, in)
 	if err != nil {
 		return nil, err
+	}
+	// AGY accepts injected context only on PreInvocation, but PostToolUse has
+	// already consumed it (answered question, compaction flag). Hold it for
+	// the next PreInvocation instead of dropping it.
+	if s0.Kind == runtime.Agy && !d.Block {
+		h.mu.Lock()
+		if h.deferred == nil {
+			h.deferred = make(map[string]string)
+		}
+		switch ev {
+		case "PostToolUse":
+			if d.Context != "" {
+				h.deferred[s.ID] = strings.TrimSpace(h.deferred[s.ID] + " " + d.Context)
+			}
+		case "UserPromptSubmit":
+			if held := h.deferred[s.ID]; held != "" {
+				delete(h.deferred, s.ID)
+				d.Context = strings.TrimSpace(held + " " + d.Context)
+			}
+		}
+		h.mu.Unlock()
 	}
 	if d.Context == "" && !d.Block && len(d.UpdatedInput) == 0 {
 		return nil, nil

@@ -1902,6 +1902,19 @@ func TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep(t *testing.T) 
 	if strings.TrimSpace(string(out)) != "{}" {
 		t.Fatalf("PostToolUse output = %s, want {}", out)
 	}
+	// The next step is deferred, not dropped: the next PreInvocation (where
+	// injectSteps is valid) delivers it.
+	next, err := h.Handle(ctx, runtime.Agy, "PreInvocation", ses.ID, []byte(`{"session_id":"`+ses.ID+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(next), "injectSteps") || !strings.Contains(string(next), "req_PLAN1") {
+		t.Fatalf("PreInvocation output = %s, want the deferred picked-option next step in injectSteps", next)
+	}
+	again, _ := h.Handle(ctx, runtime.Agy, "PreInvocation", ses.ID, []byte(`{"session_id":"`+ses.ID+`"}`))
+	if strings.Contains(string(again), "req_PLAN1") {
+		t.Fatalf("deferred context delivered twice: %s", again)
+	}
 }
 
 // TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep confirms a plain

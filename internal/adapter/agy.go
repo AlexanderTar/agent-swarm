@@ -294,7 +294,7 @@ func (a *Agy) HookOutput(event string, d HookDecision) ([]byte, error) {
 	}
 	// AGY's hook contract: PostToolUse output is an empty object; injectSteps
 	// is PreInvocation-only and the CLI rejects it elsewhere.
-	if event == "PostToolUse" {
+	if event == "PostToolUse" || event == "PostInvocation" {
 		return []byte("{}"), nil
 	}
 	// P0-2: ephemeralMessage is visible to the model for this invocation only;
