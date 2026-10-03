@@ -63,3 +63,9 @@ Merge A, B, C into `chore-31-integration`; run `go vet ./...`, `go test ./...`,
 Finish: merge to main, push, `make install`, restart daemon. Then resolve the
 stale roots and fixed bugs, and add EPIC-7 context/subtasks via the new
 cross-root edit.
+
+## Known debt (final review at 65c2f08)
+
+- `internal/runtime/checkpoint.go:1380` (ponytail marker): a git-less chore `integrated` is trusted to have no worktree commits; a chore with real commits could skip `git`. Follow-up: refuse when any task in the chore has a commit-gated completed checkpoint.
+- `internal/runtime/reclaimlock.go:18`: `flock(LOCK_EX)` blocks without ctx/timeout, so a long `swarm cleanup` stalls the daemon reclaim loop and its shutdown. Follow-up: `LOCK_NB` with retry honouring ctx.
+- Spec names the event `item_cross_root_edit`; the code uses `item.cross_root_edit` to match existing constants (payload also carries key/root_key). The code's name is the correct one.
