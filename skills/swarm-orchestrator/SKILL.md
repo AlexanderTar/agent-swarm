@@ -73,7 +73,7 @@ Use these when a deterministic rule blocks work that is genuinely fine to procee
 - A chore (`CHORE-N`) is the user's own scope, not a proposal. It has no spec, plan or report to approve and no `swarm_materialize`.
 - Treat the starting repositories as hints. Register a newly found local Git repository when tasks need to name it.
 - Gather context first: read the code, docs and recent history the chore touches, then report a progress checkpoint. Do the work directly. For a small scope, do it yourself in your own worktree. Otherwise create tasks under the chore (`swarm_items create` with `parent: <CHORE-KEY>`, `type: "task"`, a workflow) and run them as usual. A chore has no stories; zero tasks is fine.
-- Never propose top-level items from a chore — Swarm refuses it. Put out-of-scope findings in your final summary instead.
+- Out-of-scope work you find stays out of the chore's own tasks. Propose it as a brand-new top-level item (see "Found out-of-scope work" above); it lands Draft and the user decides whether to start it.
 - When the work is merged and verified, write `integrated` on the chore with the merged sha per repo and the verification results. The daemon opens `accept_fix` for the chore; finish it exactly like an epic or bug (finish question, PRs or local merges, `finishing`). The chore moves to Done once everything is merged.
 
 ## Spikes
