@@ -198,10 +198,7 @@ struct PopoverHost: View {
 
     var body: some View {
         PopoverView(model: model,
-                    openNewOrchestrator: {
-                        model.requestNewOrchestrator()
-                        openCentered("new-orchestrator")
-                    },
+                    openNewOrchestrator: { model.requestNewOrchestrator(); openCentered("new-orchestrator") },
                     openBoardHandoff: { name in
                         model.boardHandoffPreselect = name
                         openCentered("board-handoff")

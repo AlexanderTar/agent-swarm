@@ -53,16 +53,14 @@ public struct NewOrchestratorView: View {
                 if let caption = form.queuedCaption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
-                    .glassButtons()
                     .disabled(form.startedWithUnsavedImages != nil)
                 if let agent = form.startedWithUnsavedImages {
-                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction).prominentDefaultAction()
+                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction)
                 } else {
                     Button(form.startLabel) {
                         Task { if let agent = await form.submit(), form.startedWithUnsavedImages == nil { onStarted(agent) } }
                     }
                     .keyboardShortcut(.defaultAction)
-                    .prominentDefaultAction()
                     .disabled(!form.canStart)
                 }
             }
