@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -644,4 +645,21 @@ func TestMixedSpellingCountsOneRepo(t *testing.T) {
 	if st := itemStatus(t, s, key); st != items.Done {
 		t.Fatalf("status = %s, want done (mergeState must count the repo once)", st)
 	}
+}
+
+func TestCompletedRefusedAfterApprovedFinish(t *testing.T) {
+	s, _, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+	ctx := context.Background()
+	_, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil || !strings.Contains(err.Error(), "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`.") {
+		t.Fatalf("completed after approved finish: %v", err)
+	}
+	fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenArmed}})
+	if _, err := finishPR(s, ses); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err != nil {
+		t.Fatalf("completed after finishing: %v", err)
+	}
+	_ = key
 }

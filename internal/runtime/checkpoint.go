@@ -1557,6 +1557,22 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
+		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator && a.ParentAgentID == "" && it.ID == a.RootItemID {
+			// the user approved the finish: only a finishing checkpoint moves the root on
+			if fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID); err != nil {
+				return err
+			} else if ok && fa.Merge != "" {
+				var n int
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`,
+					it.ID, fa.CheckpointID).Scan(&n); err != nil {
+					return err
+				}
+				if n == 0 {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`."}
+				}
+			}
+		}
 		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator {
 			if kind := requiredArtifactKind(it); kind != "" && !waived(it, "required_artifact") {
 				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)
