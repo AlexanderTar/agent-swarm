@@ -2770,3 +2770,68 @@ func TestMessagesToTheRenamedOrchestratorReachIt(t *testing.T) {
 		t.Fatalf("old name err = %v", err)
 	}
 }
+
+// BUG-22: a child's blocked checkpoint blocks the root it is assigned to; its
+// own later completed must restore the root rather than strand it.
+func TestChildCompletedRestoresRootItBlocked(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Bug)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oSes, _ := s.LatestSession(ctx, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{Kind: Accepted, Summary: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: it.Key, Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: BlockedCkp, Summary: "gate refused",
+		Blockers: []string{"gate"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := itemStatus(t, s, it.Key); got != items.Blocked {
+		t.Fatalf("after child blocked: %s, want blocked", got)
+	}
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := itemStatus(t, s, it.Key); got != items.InProgress {
+		t.Fatalf("after child completed: %s, want in_progress", got)
+	}
+}
+
+// BUG-22: integrated on a Blocked root restores it first, so the finish
+// request still opens.
+func TestIntegratedOnBlockedRootOpensAcceptFix(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "chore", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "bumping"}); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `UPDATE items SET status = 'blocked', status_before_block = 'in_progress' WHERE key = ?`, key)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	it, _ := s.Items.Get(ctx, key)
+	if it.Status != items.InReview {
+		t.Fatalf("after integrated: %s, want in_review", it.Status)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'accept_fix'
+		AND state = 'open'`, it.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("open accept_fix = %d (err %v), want 1", n, err)
+	}
+}

@@ -1659,7 +1659,29 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err := s.tryTransition(ctx, tx, itemKey, items.Blocked); err != nil {
 				return err
 			}
+		case Integrated:
+			// Restore first: reconcileRoot ignores a Blocked root, so the
+			// finish request would never open.
+			if it.Status == items.Blocked {
+				if err := s.tryTransition(ctx, tx, itemKey, it.StatusBeforeBlock); err != nil {
+					return err
+				}
+			}
 		case CompletedCkp:
+			if it.Status == items.Blocked && a.Role != RoleOrchestrator {
+				// Only undo a block this agent's own blocked checkpoint caused.
+				var last string
+				err := tx.QueryRowContext(ctx, `SELECT kind FROM checkpoints WHERE agent_id = ? AND item_id = ? AND id <> ?
+					ORDER BY created_at DESC, rowid DESC LIMIT 1`, a.ID, it.ID, out.CheckpointID).Scan(&last)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				if last == string(BlockedCkp) {
+					if err := s.tryTransition(ctx, tx, itemKey, it.StatusBeforeBlock); err != nil {
+						return err
+					}
+				}
+			}
 			if it.Type == items.Task {
 				if err := s.tryTransition(ctx, tx, itemKey, items.InReview); err != nil {
 					return err
