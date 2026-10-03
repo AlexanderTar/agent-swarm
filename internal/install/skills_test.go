@@ -1543,3 +1543,19 @@ func TestSkillsMandateSwarmReportBug(t *testing.T) {
 		t.Error("swarm-orchestrator must mention swarm_report_bug where it handles child blockers")
 	}
 }
+
+// TASK-505: the orchestrator skill documents the audited resolved_by close and the rule to use it.
+func TestOrchestratorSkillDocumentsResolvedBy(t *testing.T) {
+	orch := string(install.SkillBody("swarm-orchestrator"))
+	for _, want := range []string{
+		`resolved_by`,
+		"deliberate, audited exception",
+		"once your root is Done",
+		"Don't use it for items you didn't actually resolve",
+		"list the resolved keys in your final summary",
+	} {
+		if !strings.Contains(orch, want) {
+			t.Errorf("swarm-orchestrator is missing %q", want)
+		}
+	}
+}
