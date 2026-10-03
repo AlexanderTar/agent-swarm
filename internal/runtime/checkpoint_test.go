@@ -1937,7 +1937,50 @@ func TestCommitGateRefusesShaMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a sha-mismatch error")
 	}
-	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s."+hintCopy, head[:7], stale[:7])
+	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s. Pass the full sha of your committed HEAD."+hintCopy, head, stale)
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// BUG-14/15/19: a >=7 hex prefix of HEAD passes and the full HEAD is stored;
+// a short sha that is not a prefix is refused with full shas in the copy.
+func TestCommitGateAcceptsShortShaPrefix(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, workflowID := buildOnly(t, s, workflow.GateCommit)
+	_, head := seedCommitRepo(t, s, coder)
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head[:7], Dirty: false}}}); err != nil {
+		t.Fatalf("a 7-hex prefix of HEAD should pass the commit gate: %v", err)
+	}
+	var stored string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(sha, '') FROM workflow_runs WHERE workflow_id = ?`,
+		workflowID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != head {
+		t.Fatalf("workflow_runs.sha = %q, want full HEAD %q", stored, head)
+	}
+}
+
+func TestCommitGateRefusesShortShaNotPrefix(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	_, head := seedCommitRepo(t, s, coder)
+
+	other := "1111111"
+	if strings.HasPrefix(head, other) {
+		other = "2222222"
+	}
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: other, Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a sha-mismatch error")
+	}
+	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s. Pass the full sha of your committed HEAD."+hintCopy, head, other)
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}

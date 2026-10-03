@@ -861,10 +861,10 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		if err != nil {
 			return err
 		}
-		if head != g.SHA {
+		if len(g.SHA) < 7 || !strings.HasPrefix(head, strings.ToLower(g.SHA)) {
 			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
-				"Commit your work before completing: %s HEAD is %s, checkpoint says %s",
-				wt.Repo, workflow.SHA7(head), workflow.SHA7(g.SHA))}
+				"Commit your work before completing: %s HEAD is %s, checkpoint says %s. Pass the full sha of your committed HEAD.",
+				wt.Repo, head, g.SHA)}
 		}
 		if sha == "" {
 			sha = head
