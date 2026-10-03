@@ -1881,8 +1881,7 @@ func TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt(t *testing.T
 // TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep is the Opus
 // review's minor item 4: agy's PostToolUse carries no response text (spec
 // 1.7), so a ref-bearing question resolves via the ResolvedInTerminal
-// placeholder; the next step must tell the agent to forward whichever
-// option the user actually picked, not quote the placeholder as their text.
+// placeholder. AGY rejects injectSteps on PostToolUse, so the output is {}.
 func TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep(t *testing.T) {
 	ctx := context.Background()
 	h, _, ses := newTestHandler(t)
@@ -1898,17 +1897,10 @@ func TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded struct {
-		InjectSteps []struct {
-			EphemeralMessage string `json:"ephemeralMessage"`
-		} `json:"injectSteps"`
-	}
-	if err := json.Unmarshal(out, &decoded); err != nil || len(decoded.InjectSteps) == 0 {
-		t.Fatalf("PostToolUse output = %s, not decodable: %v", out, err)
-	}
-	msg := decoded.InjectSteps[0].EphemeralMessage
-	if !strings.Contains(msg, "the option the user picked") {
-		t.Fatalf("ephemeralMessage = %q, want it to say to forward the option the user picked", msg)
+	// AGY rejects injectSteps on PostToolUse (BUG-13): the contract is an empty
+	// object, so the next step cannot ride this event.
+	if strings.TrimSpace(string(out)) != "{}" {
+		t.Fatalf("PostToolUse output = %s, want {}", out)
 	}
 }
 
