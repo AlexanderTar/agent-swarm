@@ -246,4 +246,15 @@ final class BoardHandoffRenderTests: XCTestCase {
         XCTAssertTrue(text.contains(Copy.chooseAgent), text)
         XCTAssertFalse(form.canSubmit)
     }
+
+    func testNoDefaultsFromSettingsCaption() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        let text = try ocrText(tallHost(form))
+        XCTAssertTrue(text.contains(Copy.workerOverrides), "OCR sanity: \(text)")
+        XCTAssertFalse(text.contains("Defaults from Settings"), text)
+    }
 }

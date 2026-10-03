@@ -70,7 +70,6 @@ struct AgentPickerGrid: View {
                     GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
                 }
             }
-            Text(Copy.defaultsFromSettings).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

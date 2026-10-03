@@ -211,7 +211,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await form.load()
         form.name = "x"
         client.spikeResult = .failure(.api(status: 422, code: "preflight_failed",
-                                           message: String(repeating: "Repository needs attention. ", count: 12)))
+                                           message: String(repeating: "Repository needs attention. ", count: 18)))
         _ = await form.submit()
         form.name = "🔥"
         form.picker.setAgent("agy")
@@ -435,6 +435,16 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertEqual(form.selection.count, 2)
         let text = try visibleText(host(form))
         XCTAssertFalse(text.contains("Selected:"), text)
+    }
+
+    func testNoDefaultsFromSettingsCaption() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let m = makeAppModel(client)
+        await m.refresh()
+        let form = m.makeNewOrchestratorForm()
+        await form.load()
+        let text = try visibleText(host(form))
+        XCTAssertFalse(text.contains("Defaults from Settings"), text)
     }
 
     // MARK: images

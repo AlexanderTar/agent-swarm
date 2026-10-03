@@ -97,7 +97,6 @@ public enum Copy {
     public static let effort = "Effort"
     public static let agentEffort = "Agent Effort"
     public static let advisorEffort = "Advisor Effort"
-    public static let defaultsFromSettings = "Defaults from Settings"
     public static let workerOverrides = "Worker overrides"
     public static let requestOptional = "Request (optional)"
     public static let startOrchestrator = "Start orchestrator"
