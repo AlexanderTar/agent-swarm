@@ -1557,7 +1557,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
-		if in.Kind == CompletedCkp {
+		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator {
 			if kind := requiredArtifactKind(it); kind != "" && !waived(it, "required_artifact") {
 				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)
 				if err != nil {

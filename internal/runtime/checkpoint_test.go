@@ -764,6 +764,37 @@ func TestCompletedOnBugRequiresARegisteredDebugReport(t *testing.T) {
 	}
 }
 
+// BUG-20/21: the required_artifact gate belongs to the root's orchestrator;
+// a reviewer completing on the bug root is not refused for a missing report.
+func TestRequiredArtifactGateAppliesOnlyToRootOrchestrator(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Bug)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: it.Key, Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, err := s.LatestSession(ctx, rev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed"}); err != nil {
+		t.Fatalf("a reviewer must not need the root's debug_report: %v", err)
+	}
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "bug closed"}); err == nil {
+		t.Fatal("the orchestrator must still be refused without a debug_report")
+	}
+}
+
 func TestCompletedOnBugSucceedsOnceADebugReportIsRegistered(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
