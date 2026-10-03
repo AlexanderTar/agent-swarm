@@ -1015,7 +1015,7 @@ func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {
 	return nil
 }
 
-// resolveTx closes a Draft/Ready root as Done because another, Done root resolved it. It is a
+// resolveTx closes an open (Draft, Ready, In progress, In review or Blocked) root as Done because another, Done root resolved it. It is a
 // deliberate, audited exception to "a root reaches Done only through the finish flow"
 // (docs/specs/2026-10-03-resolved-by-close.md); the side effects are cancel's.
 func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by Actor) (Item, error) {
@@ -1033,8 +1033,10 @@ func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by 
 	if it.ID != it.RootID || !isAcceptRoot(it.Type) {
 		return Item{}, deny("Only a top-level epic, bug or chore can be resolved by another item; %s isn't one.", it.Key)
 	}
-	if it.Status != Draft && it.Status != Ready {
-		return Item{}, deny("Only a Draft or Ready item can be resolved by another item; %s is %s.", it.Key, StatusLabel(it.Status))
+	switch it.Status {
+	case Draft, Ready, InProgress, InReview, Blocked:
+	default:
+		return Item{}, deny("Only an open item can be resolved by another item; %s is %s.", it.Key, StatusLabel(it.Status))
 	}
 	by0 := strings.TrimSpace(*p.ResolvedBy)
 	target, err := s.getTx(ctx, tx, by0)

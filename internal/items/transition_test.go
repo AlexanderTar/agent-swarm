@@ -1300,11 +1300,11 @@ func resolve(s *items.Store, it items.Item, by string, a items.Actor) error {
 }
 
 func TestResolvedByAllowed(t *testing.T) {
-	for _, from := range []items.Status{items.Draft, items.Ready} {
+	for _, from := range []items.Status{items.Draft, items.Ready, items.InProgress, items.InReview, items.Blocked} {
 		s, bug, chore := resolveFixture(t)
 		child := mk(t, s, items.Task, bug.Key, "Child")
-		if from == items.Ready {
-			setStatus(t, s, bug, items.Ready)
+		if from != items.Draft {
+			setStatus(t, s, bug, from)
 		}
 		if err := resolve(s, bug, chore.Key, user); err != nil {
 			t.Fatalf("from %s: %v", from, err)
@@ -1368,8 +1368,12 @@ func TestResolvedByRefused(t *testing.T) {
 	story := mk(t, s, items.Story, mk(t, s, items.Epic, "", "E").Key, "S")
 	setStatus(t, s, story, items.Done)
 	task := mk(t, s, items.Task, bug.Key, "T")
-	inProg := mk(t, s, items.Bug, "", "Busy")
-	setStatus(t, s, inProg, items.InProgress)
+	var closed []items.Item
+	for _, st := range []items.Status{items.Done, items.Cancelled, items.AwaitingApproval} {
+		c := mk(t, s, items.Bug, "", "Closed "+string(st))
+		setStatus(t, s, c, st)
+		closed = append(closed, c)
+	}
 	worker := items.Actor{Kind: items.ActorAgent, AgentID: "agt_w", Role: "coder", RootID: bug.ID}
 	cases := []struct {
 		name string
@@ -1384,7 +1388,9 @@ func TestResolvedByRefused(t *testing.T) {
 		{"target non-root", bug, story.Key, user},
 		{"subject non-root", task, chore.Key, user},
 		{"subject spike", mk(t, s, items.Spike, "", "S2"), chore.Key, user},
-		{"wrong from status", inProg, chore.Key, user},
+		{"from done", closed[0], chore.Key, user},
+		{"from cancelled", closed[1], chore.Key, user},
+		{"from awaiting approval", closed[2], chore.Key, user},
 		{"worker", bug, chore.Key, worker},
 		{"daemon", bug, chore.Key, items.Daemon()},
 	}
