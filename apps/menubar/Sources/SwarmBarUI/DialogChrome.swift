@@ -48,18 +48,29 @@ public struct TranslucentWindowAccessor: NSViewRepresentable {
     public final class AccessorView: NSView {
         override public func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let window { DialogChrome.configure(window) }
+            configureSoon()
+        }
+
+        /// Never configure from inside view insertion: AppKit calls viewDidMoveToWindow
+        /// from within -[NSWindow setContentView:], and clearing the background there
+        /// drops the theme frame's backdrop view that setContentView is about to insert
+        /// the content above. The content then lands over the title bar and its
+        /// material hides the Settings tabs, title and traffic lights (CHORE-24).
+        func configureSoon() {
+            DispatchQueue.main.async { [weak self] in
+                guard let window = self?.window else { return }
+                guard window.isOpaque || window.backgroundColor != .clear
+                    || !window.titlebarAppearsTransparent
+                    || !window.styleMask.contains(.fullSizeContentView) else { return }
+                DialogChrome.configure(window)
+            }
         }
     }
 
     public func makeNSView(context: Context) -> AccessorView { AccessorView(frame: .zero) }
 
     public func updateNSView(_ nsView: AccessorView, context: Context) {
-        guard let window = nsView.window else { return }
-        guard window.isOpaque || window.backgroundColor != .clear
-            || !window.titlebarAppearsTransparent
-            || !window.styleMask.contains(.fullSizeContentView) else { return }
-        DialogChrome.configure(window)
+        if nsView.window != nil { nsView.configureSoon() }
     }
 }
 

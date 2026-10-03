@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Vision
 import XCTest
 @testable import SwarmBarKit
 @testable import SwarmBarUI
@@ -45,6 +46,59 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertEqual(scroll.scrollerStyle, .overlay)
         XCTAssertTrue(scroll.autohidesScrollers)
         XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
+    }
+
+    /// CHORE-24: Settings lost its toolbar tabs and title on the macOS 27 SDK. The
+    /// accessor configured the window from viewDidMoveToWindow, which AppKit calls
+    /// inside -[NSWindow setContentView:]. Clearing the background there drops the
+    /// theme frame's backdrop view, the anchor setContentView then inserts the content
+    /// above, so in a SwiftUI scene window the content landed on top of the title bar
+    /// and its material hid the tabs, title and traffic lights (backtraces from the
+    /// live app). A plain test window re-adds a backdrop and hides the flip, so this
+    /// pins the cause: no configuration while the content view is being installed.
+    @MainActor
+    func testTranslucentContentStaysBelowTitlebar() throws {
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 520, height: 260),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "Chrome Probe"
+        let toolbar = NSToolbar(identifier: "chrome-probe")
+        let delegate = ProbeToolbar()
+        toolbar.delegate = delegate
+        toolbar.displayMode = .iconAndLabel
+        window.toolbar = toolbar
+        // SwiftUI scenes build the hosting view's subtree before installing it, so the
+        // accessor joins the window from inside setContentView, as in the app.
+        let host = NSHostingView(rootView: Color.clear.frame(width: 520, height: 260)
+            .translucentDialogBackground()
+            .background(TranslucentWindowAccessor()))
+        host.frame = NSRect(x: 0, y: 0, width: 520, height: 260)
+        host.layoutSubtreeIfNeeded()
+        window.contentView = host
+        XCTAssertTrue(window.isOpaque, "accessor must not reconfigure the window inside setContentView")
+        window.orderFront(nil)
+        defer { window.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView), "accessor must still make the window translucent")
+        let theme = try XCTUnwrap(window.contentView?.superview)
+        let content = try XCTUnwrap(theme.subviews.firstIndex { $0 === window.contentView })
+        let titlebar = try XCTUnwrap(theme.subviews.firstIndex { String(describing: type(of: $0)) == "NSTitlebarContainerView" })
+        XCTAssertLessThan(content, titlebar, "content view must sit below the title bar, not cover it")
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", url.path]
+        try capture.run()
+        capture.waitUntilExit()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: url)))
+        let request = VNRecognizeTextRequest()
+        try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage), options: [:]).perform([request])
+        let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+        XCTAssertTrue(text.contains("Chrome Probe"), "window title must render; OCR saw: \(text)")
+        XCTAssertTrue(text.contains("Probe Tab"), "toolbar tab label must render; OCR saw: \(text)")
     }
 
     @MainActor
@@ -221,5 +275,19 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertTrue(boxFrame.contains(labelBox.insetBy(dx: 0.5, dy: 0.5)), "label inside the container")
         XCTAssertTrue(boxFrame.contains(dividerBox.insetBy(dx: -0.5, dy: -0.5)), "divider inside the container")
         XCTAssertTrue(boxFrame.contains(chevronBox.insetBy(dx: 0.5, dy: 0.5)), "chevron inside the container")
+    }
+}
+
+/// One labelled toolbar item, standing in for the Settings tab strip.
+private final class ProbeToolbar: NSObject, NSToolbarDelegate {
+    let id = NSToolbarItem.Identifier("probe-tab")
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [id] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [id] }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = "Probe Tab"
+        item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        return item
     }
 }
