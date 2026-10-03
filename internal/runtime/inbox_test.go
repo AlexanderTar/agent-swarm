@@ -268,6 +268,53 @@ func TestWakeClassFor(t *testing.T) {
 	}
 }
 
+// BUG-16: the inbox notice cuts a summary at 400 runes; an agent that acks
+// the id straight from that notice must still get the full body back from
+// the same swarm_sync, since acks used to land before the fetch and the
+// never-delivered message was swallowed.
+func TestSyncAckOfUndeliveredMessageStillReturnsFullBody(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, _ := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	worker, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oSes, _ := s.LatestSession(ctx, orch.ID)
+	wSes, _ := s.LatestSession(ctx, worker.ID)
+	body := strings.Repeat("no store write per scroll frame. ", 45) + "END-OF-BODY"
+	id, err := s.Send(ctx, oSes.ID, worker.Name, "finding", body, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Sync(ctx, wSes.ID, []string{id}, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	for _, m := range res.Messages {
+		if m.MsgID == id {
+			var p struct{ Body string }
+			if err := json.Unmarshal(m.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			got = p.Body
+		}
+	}
+	if got != body {
+		t.Fatalf("sync acking an undelivered %d-char finding returned body %q, want it whole", len(body), got)
+	}
+	again, _ := s.Sync(ctx, wSes.ID, nil, 20)
+	for _, m := range again.Messages {
+		if m.MsgID == id {
+			t.Fatal("the acked message must not come back on the next sync")
+		}
+	}
+}
+
 // §8.1 swarm_send: "parent" resolves, and cross-root sends are refused.
 func TestSendResolvesParentAndRefusesCrossRoot(t *testing.T) {
 	s, _, _ := newStore(t)

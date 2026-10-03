@@ -282,15 +282,27 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 			return err
 		}
 		out.SessionState = ses.State
+		// BUG-16: an ack of a still-pending message (acked straight from the
+		// inbox notice, whose summary is cut at maxItemSummary) is applied
+		// only after this sync has delivered the full body below.
+		var late []string
 		for _, id := range ack {
-			res, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?
-				WHERE id = ? AND to_agent_id = ? AND state <> 'acked'`, db.Millis(s.Now()), id, a.ID)
+			var state string
+			err := tx.QueryRowContext(ctx, `SELECT state FROM messages WHERE id = ? AND to_agent_id = ?`, id, a.ID).Scan(&state)
+			if errors.Is(err, sql.ErrNoRows) || state == "acked" {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf("Unknown message %s.", id)}
+			}
 			if err != nil {
 				return err
 			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return &items.Error{Code: items.CodeBadRequest,
-					Message: fmt.Sprintf("Unknown message %s.", id)}
+			if state == "pending" {
+				late = append(late, id)
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ? WHERE id = ?`,
+				db.Millis(s.Now()), id); err != nil {
+				return err
 			}
 		}
 		// Before envelopes: a message reaching its third delivery in this very
@@ -316,6 +328,13 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 		}
 		if out.Messages, err = s.envelopes(ctx, tx, a, immediate); err != nil {
 			return err
+		}
+		// A late ack beyond this page's limit stays pending for a later sync.
+		for _, id := range late {
+			if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?
+				WHERE id = ? AND state = 'delivered'`, db.Millis(s.Now()), id); err != nil {
+				return err
+			}
 		}
 		if a.Role == RoleOrchestrator && a.ItemID == a.RootItemID {
 			out.Todos, err = s.todosToSend(ctx, tx, sessionID, a.ItemID)
