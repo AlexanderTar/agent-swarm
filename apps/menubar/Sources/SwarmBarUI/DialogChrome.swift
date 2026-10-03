@@ -74,9 +74,9 @@ public struct TranslucentWindowAccessor: NSViewRepresentable {
     }
 }
 
-/// Keeps a dialog's window centered on its screen: once it joins a window and on every
-/// resize (Orchestrate task opens as a small spinner, then grows to the form; the
-/// restored origin would leave it off-centre).
+/// Centers a dialog's window on its screen when it opens and once more on the first resize
+/// (Orchestrate task opens as a small spinner, then grows to the form; the restored origin
+/// would leave it off-centre). After that the user's placement wins.
 public struct WindowCenterAccessor: NSViewRepresentable {
     public init() {}
 
@@ -89,8 +89,12 @@ public struct WindowCenterAccessor: NSViewRepresentable {
             observer = nil
             guard let window else { return }
             observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window,
-                                                              queue: .main) { [weak window] _ in
-                MainActor.assumeIsolated { window.map(Self.center) }
+                                                              queue: .main) { [weak self, weak window] _ in
+                MainActor.assumeIsolated {
+                    window.map(Self.center)
+                    self?.observer.map(NotificationCenter.default.removeObserver)
+                    self?.observer = nil
+                }
             }
             DispatchQueue.main.async { [weak window] in window.map(Self.center) }
         }

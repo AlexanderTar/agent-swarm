@@ -138,6 +138,28 @@ final class DialogChromeTests: XCTestCase {
         window.close()
     }
 
+    /// Centering is for the open and the spinner-to-form grow only: a later resize or a
+    /// user drag must not snap the window back.
+    @MainActor
+    func testWindowCenterStopsAfterTheFormGrow() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: Color.clear.background(WindowCenterAccessor()))
+        window.orderFront(nil)
+        defer { window.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        window.setContentSize(NSSize(width: 820, height: 300))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        window.setFrameOrigin(NSPoint(x: 3, y: 5))
+        let top = window.frame.maxY
+        window.setContentSize(NSSize(width: 700, height: 280))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        // AppKit keeps the top-left corner fixed on a resize, so compare that, not the origin.
+        XCTAssertEqual(window.frame.minX, 3, accuracy: 1, "a later resize must not recenter")
+        XCTAssertEqual(window.frame.maxY, top, accuracy: 1, "a later resize must not recenter")
+    }
+
     /// The footer split button is a primary button plus a borderless chevron menu
     /// sharing one row — never one segmented control. The segmented chevron cell
     /// drew its pressed pill ~3 pt below the label segment with the menu open
