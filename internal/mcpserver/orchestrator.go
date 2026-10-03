@@ -213,6 +213,7 @@ func itemsTool(s *Server) ToolDef {
 				return nil, err
 			}
 			actor := items.Orchestrator(a.ID, a.RootItemID)
+			actor.Child = a.ParentAgentID != ""
 			// Idempotency (I11) is wired here rather than inside internal/items:
 			// that package has no session concept, and runtime already imports it
 			// (the reverse import would cycle), so CreateTx/UpdateTx/AddDepTx/

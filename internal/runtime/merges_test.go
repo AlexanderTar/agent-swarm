@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -643,5 +644,103 @@ func TestMixedSpellingCountsOneRepo(t *testing.T) {
 	}
 	if st := itemStatus(t, s, key); st != items.Done {
 		t.Fatalf("status = %s, want done (mergeState must count the repo once)", st)
+	}
+}
+
+func TestCompletedRefusedAfterApprovedFinish(t *testing.T) {
+	s, _, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+	ctx := context.Background()
+	_, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil || !strings.Contains(err.Error(), "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`.") {
+		t.Fatalf("completed after approved finish: %v", err)
+	}
+	fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenArmed}})
+	if _, err := finishPR(s, ses); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err != nil {
+		t.Fatalf("completed after finishing: %v", err)
+	}
+	_ = key
+}
+
+// gitlessFixture: a root of the given intent whose orchestrator wrote integrated with verification and no git.
+func gitlessFixture(t *testing.T, intent string) (s *Store, ses, key string, err error) {
+	t.Helper()
+	s, _, _ = newStore(t)
+	s.Items.RootDone = s.OnRootDone
+	ctx := context.Background()
+	key, orch, _, serr := s.StartSpike(ctx, SpikeInput{Name: "Tidy notes", Intent: intent, Kind: Fake, Model: "fake-1"})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	ses = mustSessionID(t, s, orch.ID)
+	if _, serr := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "tidying"}); serr != nil {
+		t.Fatal(serr)
+	}
+	_, err = s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "nothing to merge",
+		Verification: []Verify{{Cmd: "make check", Phase: "green", OK: true}}})
+	return
+}
+
+func approveGitless(t *testing.T, s *Store, key, merge string) {
+	t.Helper()
+	mustExec(t, s.DB, `UPDATE requests SET state = 'approved', responded_at = 2,
+		binding_json = json_set(binding_json, '$.merge', ?) WHERE item_id = ? AND kind = 'accept_fix' AND state = 'open'`,
+		merge, mustItemID(t, s, key))
+}
+
+func TestGitlessChoreIntegratedOpensAcceptFix(t *testing.T) {
+	s, _, key, err := gitlessFixture(t, "chore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'accept_fix' AND state = 'open'`,
+		mustItemID(t, s, key)).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("open accept_fix = %d, %v", n, err)
+	}
+	if st := itemStatus(t, s, key); st != items.InReview {
+		t.Fatalf("status = %s", st)
+	}
+}
+
+func TestGitlessChoreFinishingClosesIt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		merge string
+		in    CheckpointInput
+	}{
+		"empty":     {"auto", CheckpointInput{}},
+		"kept only": {"custom", CheckpointInput{Kept: []KeptRepo{{Repo: "notes", Note: "edited in place"}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, ses, key, err := gitlessFixture(t, "chore")
+			if err != nil {
+				t.Fatal(err)
+			}
+			approveGitless(t, s, key, tc.merge)
+			ctx := context.Background()
+			if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err == nil {
+				t.Fatal("completed accepted after approved finish")
+			}
+			tc.in.Kind, tc.in.Summary = Finishing, "nothing to merge"
+			if _, err := s.WriteCheckpoint(ctx, ses, tc.in); err != nil {
+				t.Fatal(err)
+			}
+			if st := itemStatus(t, s, key); st != items.Done {
+				t.Fatalf("status = %s, want done", st)
+			}
+			if _, err := s.WriteCheckpoint(ctx, ses, tc.in); err == nil {
+				t.Fatal("repeat finishing accepted")
+			}
+		})
+	}
+}
+
+func TestGitlessIntegratedRefusedForEpicAndBug(t *testing.T) {
+	for _, intent := range []string{"feature", "debug"} {
+		if _, _, _, err := gitlessFixture(t, intent); err == nil || !strings.Contains(err.Error(), "needs git and verification") {
+			t.Errorf("%s: err = %v", intent, err)
+		}
 	}
 }

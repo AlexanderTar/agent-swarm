@@ -295,7 +295,7 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 		integrated[r.Ref.Repo] = true
 	}
 	for _, name := range append(append(repoNames(in.PRs), mergedNames(in.Merged)...), keptNames(in.Kept)...) {
-		if !integrated[name] {
+		if !integrated[name] && !(len(repos) == 0 && slices.Contains(keptNames(in.Kept), name)) {
 			return out, badRequest("%s is not in %s's integrated checkpoint.", name, key)
 		}
 	}
@@ -400,12 +400,16 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 				return err
 			}
 		}
+		var marker string // an integration with no repos leaves no item_merges row; this records its finishing
+		if len(checked) == 0 {
+			marker = items.FinishedMarker(fa.CheckpointID)
+		}
 		ckpID := ids.New("ckp")
 		if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 			attempt, summary, next_json, blockers_json, git_json, verify_json, artifacts_json,
-			processed_json, findings_json, daemon_written, created_at)
-			VALUES (?,?,?,?,'progress',?,?,'[]','[]',?,'[]','[]','[]','[]',0,?)`,
-			ckpID, sessionID, a.ID, it.ID, ses.Attempt, in.Summary, string(fa.Git), now); err != nil {
+			processed_json, findings_json, resolution, daemon_written, created_at)
+			VALUES (?,?,?,?,'progress',?,?,'[]','[]',?,'[]','[]','[]','[]',?,0,?)`,
+			ckpID, sessionID, a.ID, it.ID, ses.Attempt, in.Summary, string(fa.Git), nullIf(marker), now); err != nil {
 			return err
 		}
 		if _, err := s.Events.Append(ctx, tx, events.ItemChanged, map[string]string{"key": it.Key, "root_key": it.RootKey}); err != nil {
@@ -440,12 +444,11 @@ func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (i
 	if !inReview || !ok || fa.Merge == "" {
 		return fa, nil, badRequest("Nothing to finish: %s has no approved finish request for its latest integration.", it.Key)
 	}
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`,
-		it.ID, fa.CheckpointID).Scan(&n); err != nil {
+	recorded, err := s.finishRecordedTx(ctx, tx, it.ID, fa.CheckpointID)
+	if err != nil {
 		return fa, nil, err
 	}
-	if n > 0 {
+	if recorded {
 		return fa, nil, &items.Error{Code: items.CodeConflict,
 			Message: fmt.Sprintf("Finishing for %s is already recorded for this integration.", it.Key)}
 	}
@@ -455,6 +458,16 @@ func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (i
 	}
 	repos, err := s.finishReposTx(ctx, tx, it.ID, refs)
 	return fa, repos, err
+}
+
+// finishRecordedTx reports a finishing already written for the integrated checkpoint: item_merges rows,
+// or, for an integration with no repos, the marker checkpoint writeFinishing leaves.
+func (s *Store) finishRecordedTx(ctx context.Context, tx *sql.Tx, itemID, ckpID string) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?)
+		+ (SELECT COUNT(*) FROM checkpoints WHERE item_id = ? AND resolution = ?)`,
+		itemID, ckpID, itemID, items.FinishedMarker(ckpID)).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) verifyPR(ctx context.Context, r finishRepo, url, merge string) (ghPR, error) {

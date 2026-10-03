@@ -53,6 +53,8 @@ type Actor struct {
 	Role    string `json:"role,omitempty"`
 	RootID  string `json:"root_id,omitempty"`
 	Via     string `json:"via,omitempty"` // menubar | board | cli
+	// Child marks an orchestrator spawned by another orchestrator; only a top-level one gets cross-root edits.
+	Child bool `json:"child,omitempty"`
 }
 
 func User(via string) Actor { return Actor{Kind: ActorUser, Via: via} }

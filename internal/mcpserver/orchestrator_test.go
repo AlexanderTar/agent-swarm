@@ -27,6 +27,10 @@ func TestItemsIsScopedToTheCallersRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := seedOtherRoot(t, s)
+	// a Draft/Ready foreign root takes title/brief edits (EPIC-7); an In progress one doesn't
+	if _, err := s.RT.DB.Exec(`UPDATE items SET status = 'in_progress' WHERE key = ?`, other); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_items",
 		`{"op":"update","key":"`+other+`","title":"not mine","revision":1}`); err == nil {
 		t.Fatal("an orchestrator cannot touch another root's items")
@@ -2626,6 +2630,47 @@ func TestSwarmItemsCreateChildOrchestratorCannotProposeTopLevel(t *testing.T) {
 		`{"op":"create","type":"epic","title":"x"}`)
 	if err == nil || err.Error() != "Only a top-level orchestrator can propose a top-level item. Relay it to your parent." {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestSwarmItemsCrossRootEditOnDraftRoot is the EPIC-7 exception: a top-level orchestrator may fill in a
+// foreign Draft root that has no live orchestrator (here, its own proposal); a child orchestrator may not.
+func TestSwarmItemsCrossRootEditOnDraftRoot(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_items", `{"op":"create","type":"epic","title":"Proposal"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		Key      string `json:"key"`
+		Revision int    `json:"revision"`
+	}
+	json.Unmarshal(mustJSON(out), &it)
+	child := spawnChildOrchestrator(t, s, seed)
+	if _, err := s.call(ctx, child, "swarm_items",
+		fmt.Sprintf(`{"op":"update","key":%q,"brief":"x","revision":%d}`, it.Key, it.Revision)); err == nil || !strings.Contains(err.Error(), "is outside") {
+		t.Fatalf("child orchestrator edited a foreign root: %v", err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		fmt.Sprintf(`{"op":"update","key":%q,"brief":"context for later","revision":%d}`, it.Key, it.Revision)); err != nil {
+		t.Fatalf("top-level orchestrator edit: %v", err)
+	}
+	if got, err := s.RT.Items.Get(ctx, it.Key); err != nil || got.Brief != "context for later" {
+		t.Fatalf("brief = %q, %v", got.Brief, err)
+	}
+	evs, err := s.RT.Events.After(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	for _, ev := range evs {
+		if ev.Type == "item.cross_root_edit" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("cross-root events = %d, want 1", n)
 	}
 }
 

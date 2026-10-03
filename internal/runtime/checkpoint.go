@@ -1376,7 +1376,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "Only an orchestrator can write an integrated checkpoint."}
 			}
-			if len(in.Git) == 0 || len(in.Verification) == 0 {
+			// ponytail: a git-less chore is trusted to have no worktree commits; it only needs verification.
+			if len(in.Verification) == 0 || len(in.Git) == 0 && it.Type != items.Chore {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
 			}
@@ -1557,6 +1558,21 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
+		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator && a.ParentAgentID == "" && it.ID == a.RootItemID {
+			// the user approved the finish: only a finishing checkpoint moves the root on
+			if fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID); err != nil {
+				return err
+			} else if ok && fa.Merge != "" {
+				recorded, err := s.finishRecordedTx(ctx, tx, it.ID, fa.CheckpointID)
+				if err != nil {
+					return err
+				}
+				if !recorded {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`."}
+				}
+			}
+		}
 		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator {
 			if kind := requiredArtifactKind(it); kind != "" && !waived(it, "required_artifact") {
 				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)

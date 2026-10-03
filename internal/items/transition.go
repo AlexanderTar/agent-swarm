@@ -635,6 +635,9 @@ func IntegratedRepoIDsTx(ctx context.Context, q interface {
 	return repos, nil
 }
 
+// FinishedMarker is the resolution runtime stamps on the finishing checkpoint of an integration with no repos.
+func FinishedMarker(integratedCheckpoint string) string { return "finished:" + integratedCheckpoint }
+
 // mergeState counts the current integrated checkpoint's repos and their item_merges rows, by repo id.
 func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState) (merged, total int, closed bool, err error) {
 	repos, err := IntegratedRepoIDsTx(ctx, q, it.ID, []byte(st.ckpGit))
@@ -642,6 +645,17 @@ func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState
 		return 0, 0, false, err
 	}
 	total = len(repos)
+	if total == 0 {
+		// an integration with no repos (a git-less chore) is merged once its finishing marker exists
+		var n int
+		if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints WHERE item_id = ? AND resolution = ?`,
+			it.ID, FinishedMarker(st.ckpID)).Scan(&n); err != nil {
+			return 0, 0, false, err
+		}
+		if n > 0 {
+			return 1, 1, false, nil
+		}
+	}
 	rows, err := q.QueryContext(ctx, `SELECT repo_id, state FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`, it.ID, st.ckpID)
 	if err != nil {
 		return 0, 0, false, err
@@ -1015,7 +1029,7 @@ func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {
 	return nil
 }
 
-// resolveTx closes a Draft/Ready root as Done because another, Done root resolved it. It is a
+// resolveTx closes an open (Draft, Ready, In progress, In review or Blocked) root as Done because another, Done root resolved it. It is a
 // deliberate, audited exception to "a root reaches Done only through the finish flow"
 // (docs/specs/2026-10-03-resolved-by-close.md); the side effects are cancel's.
 func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by Actor) (Item, error) {
@@ -1033,8 +1047,10 @@ func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by 
 	if it.ID != it.RootID || !isAcceptRoot(it.Type) {
 		return Item{}, deny("Only a top-level epic, bug or chore can be resolved by another item; %s isn't one.", it.Key)
 	}
-	if it.Status != Draft && it.Status != Ready {
-		return Item{}, deny("Only a Draft or Ready item can be resolved by another item; %s is %s.", it.Key, StatusLabel(it.Status))
+	switch it.Status {
+	case Draft, Ready, InProgress, InReview, Blocked:
+	default:
+		return Item{}, deny("Only an open item can be resolved by another item; %s is %s.", it.Key, StatusLabel(it.Status))
 	}
 	by0 := strings.TrimSpace(*p.ResolvedBy)
 	target, err := s.getTx(ctx, tx, by0)

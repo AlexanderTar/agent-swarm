@@ -12,15 +12,16 @@ import (
 )
 
 const (
-	ItemChanged     = "item.changed"
-	ItemWaived      = "item.waived"
-	ItemOverridden  = "item.overridden"
-	ItemResolved    = "item.resolved"
-	RequestOpened   = "request.opened"
-	RequestResolved = "request.resolved"
-	SettingsChanged = "settings.changed"
-	CatalogChanged  = "catalog.changed"
-	ReposChanged    = "repos.changed"
+	ItemChanged       = "item.changed"
+	ItemWaived        = "item.waived"
+	ItemOverridden    = "item.overridden"
+	ItemResolved      = "item.resolved"
+	ItemCrossRootEdit = "item.cross_root_edit"
+	RequestOpened     = "request.opened"
+	RequestResolved   = "request.resolved"
+	SettingsChanged   = "settings.changed"
+	CatalogChanged    = "catalog.changed"
+	ReposChanged      = "repos.changed"
 
 	AgentChanged        = "agent.changed"
 	CheckpointCreated   = "checkpoint.created"

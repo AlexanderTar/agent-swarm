@@ -8,6 +8,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 func move(t *testing.T, s *items.Store, key string, to items.Status, by items.Actor) error {
@@ -1300,11 +1301,11 @@ func resolve(s *items.Store, it items.Item, by string, a items.Actor) error {
 }
 
 func TestResolvedByAllowed(t *testing.T) {
-	for _, from := range []items.Status{items.Draft, items.Ready} {
+	for _, from := range []items.Status{items.Draft, items.Ready, items.InProgress, items.InReview, items.Blocked} {
 		s, bug, chore := resolveFixture(t)
 		child := mk(t, s, items.Task, bug.Key, "Child")
-		if from == items.Ready {
-			setStatus(t, s, bug, items.Ready)
+		if from != items.Draft {
+			setStatus(t, s, bug, from)
 		}
 		if err := resolve(s, bug, chore.Key, user); err != nil {
 			t.Fatalf("from %s: %v", from, err)
@@ -1354,6 +1355,7 @@ func TestResolvedByOrchestratorOfAnotherRoot(t *testing.T) {
 	wantStatus(t, s, bug.Key, items.Done)
 	// the exemption is for this transition only
 	other := mk(t, s, items.Bug, "", "Other")
+	setStatus(t, s, other, items.InProgress) // a Draft/Ready foreign root takes title/brief edits
 	_, err := s.Update(ctx, other.Key, items.Patch{Title: ptr("x"), Revision: other.Revision}, items.Orchestrator("agt_o", chore.ID))
 	if err == nil {
 		t.Fatal("orchestrator edited another root")
@@ -1368,8 +1370,12 @@ func TestResolvedByRefused(t *testing.T) {
 	story := mk(t, s, items.Story, mk(t, s, items.Epic, "", "E").Key, "S")
 	setStatus(t, s, story, items.Done)
 	task := mk(t, s, items.Task, bug.Key, "T")
-	inProg := mk(t, s, items.Bug, "", "Busy")
-	setStatus(t, s, inProg, items.InProgress)
+	var closed []items.Item
+	for _, st := range []items.Status{items.Done, items.Cancelled, items.AwaitingApproval} {
+		c := mk(t, s, items.Bug, "", "Closed "+string(st))
+		setStatus(t, s, c, st)
+		closed = append(closed, c)
+	}
 	worker := items.Actor{Kind: items.ActorAgent, AgentID: "agt_w", Role: "coder", RootID: bug.ID}
 	cases := []struct {
 		name string
@@ -1384,7 +1390,9 @@ func TestResolvedByRefused(t *testing.T) {
 		{"target non-root", bug, story.Key, user},
 		{"subject non-root", task, chore.Key, user},
 		{"subject spike", mk(t, s, items.Spike, "", "S2"), chore.Key, user},
-		{"wrong from status", inProg, chore.Key, user},
+		{"from done", closed[0], chore.Key, user},
+		{"from cancelled", closed[1], chore.Key, user},
+		{"from awaiting approval", closed[2], chore.Key, user},
 		{"worker", bug, chore.Key, worker},
 		{"daemon", bug, chore.Key, items.Daemon()},
 	}
@@ -1401,5 +1409,97 @@ func TestResolvedByRefused(t *testing.T) {
 	}
 	if _, err := s.Update(ctx, bug.Key, items.Patch{Status: ptr(items.Ready), ResolvedBy: &chore.Key, Revision: cur.Revision}, user); err == nil {
 		t.Error("resolved_by with status ready accepted")
+	}
+}
+
+func crossRootFixture(t *testing.T, from items.Status) (s *items.Store, foreign, story items.Item, orch items.Actor) {
+	t.Helper()
+	s = newStore(t)
+	mine := mk(t, s, items.Chore, "", "Mine")
+	foreign = mk(t, s, items.Epic, "", "Theirs")
+	story = mk(t, s, items.Story, foreign.Key, "Their story")
+	if from != items.Draft {
+		setStatus(t, s, foreign, from)
+	}
+	return s, mustGet(t, s, foreign.Key), mustGet(t, s, story.Key), items.Orchestrator("agt_o", mine.ID)
+}
+
+func crossRootEvents(t *testing.T, s *items.Store) []string {
+	t.Helper()
+	evs, err := s.Events.After(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, ev := range evs {
+		if ev.Type == events.ItemCrossRootEdit {
+			out = append(out, string(ev.Payload))
+		}
+	}
+	return out
+}
+
+func TestCrossRootEditsOnDraftAndReadyRoots(t *testing.T) {
+	for _, from := range []items.Status{items.Draft, items.Ready} {
+		s, foreign, story, orch := crossRootFixture(t, from)
+		task, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "Do it", Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch)
+		if err != nil {
+			t.Fatalf("%s: create: %v", from, err)
+		}
+		if _, err := s.Update(ctx, task.Key, items.Patch{Brief: ptr("why"), Title: ptr("Do it now"),
+			Acceptance: &[]string{"works"}, Revision: task.Revision}, orch); err != nil {
+			t.Fatalf("%s: update: %v", from, err)
+		}
+		if _, err := s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("context"), Revision: foreign.Revision}, orch); err != nil {
+			t.Fatalf("%s: update root: %v", from, err)
+		}
+		evs := crossRootEvents(t, s)
+		if len(evs) != 3 || !strings.Contains(evs[0], `"actor":"agt_o"`) || !strings.Contains(evs[0], `"actor_root"`) {
+			t.Fatalf("%s: cross-root events = %v", from, evs)
+		}
+	}
+}
+
+func TestCrossRootEditsRefused(t *testing.T) {
+	s, foreign, story, orch := crossRootFixture(t, items.Ready)
+	task := mk(t, s, items.Task, story.Key, "Existing")
+	cases := map[string]func() error{
+		"status change": func() error {
+			_, err := s.Update(ctx, task.Key, items.Patch{Status: ptr(items.Cancelled), Revision: task.Revision}, orch)
+			return err
+		},
+		"priority": func() error {
+			_, err := s.Update(ctx, task.Key, items.Patch{Priority: ptr(1), Revision: task.Revision}, orch)
+			return err
+		},
+		"transition": func() error { _, err := s.Transition(ctx, task.Key, items.Ready, orch); return err },
+	}
+	for name, f := range cases {
+		if err := f(); err == nil {
+			t.Errorf("%s: want refusal", name)
+		}
+	}
+	// a live orchestrator in the foreign root closes the door
+	seedSessionRole(t, s.DB, foreign, "orchestrator", "running")
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "x", Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch); err == nil {
+		t.Error("create under a root with a live orchestrator accepted")
+	}
+	if _, err := s.Update(ctx, task.Key, items.Patch{Brief: ptr("x"), Revision: task.Revision}, orch); err == nil {
+		t.Error("update under a root with a live orchestrator accepted")
+	}
+	if got := crossRootEvents(t, s); len(got) != 0 {
+		t.Fatalf("events for refused edits: %v", got)
+	}
+}
+
+func TestCrossRootEditsRefusedOnOpenRoot(t *testing.T) {
+	for _, from := range []items.Status{items.InProgress, items.InReview, items.Done} {
+		s, _, story, orch := crossRootFixture(t, from)
+		if _, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "x", Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch); err == nil {
+			t.Errorf("%s: create accepted", from)
+		}
+		if _, err := s.Update(ctx, story.Key, items.Patch{Brief: ptr("x"), Revision: story.Revision}, orch); err == nil {
+			t.Errorf("%s: update accepted", from)
+		}
 	}
 }
