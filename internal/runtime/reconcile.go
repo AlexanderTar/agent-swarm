@@ -1930,6 +1930,13 @@ type CleanupResult struct{ Path, Action, Reason string }
 
 // ReclaimWorktreesWith is ReclaimWorktrees, reporting each path's outcome.
 func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([]CleanupResult, error) {
+	// BUG-30: `swarm cleanup` runs in its own process, so the per-worktree mutex
+	// cannot stop it racing the daemon's loop into a double `git worktree remove`.
+	unlock, err := lockReclaim(s.Home)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	s.Worktree.BeginPass(opt.DryRun)
 	defer s.Worktree.EndPass()
 	cutoff := db.Millis(s.Now().Add(-reclaimGrace))
@@ -1998,7 +2005,11 @@ func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([
 			pruneRepos[wt.RepoID] = true
 			reclaimed++
 		default:
-			keep(wt, done.RetainedReason)
+			reason := done.RetainedReason
+			if done.RemoveError != "" {
+				reason += ": " + done.RemoveError
+			}
+			keep(wt, reason)
 		}
 	}
 	for repoID := range pruneRepos {
