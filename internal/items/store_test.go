@@ -200,8 +200,10 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 	e1 := mk(t, s, items.Epic, "", "One")
 	e2 := mk(t, s, items.Epic, "", "Two")
 	st2 := mk(t, s, items.Story, e2.Key, "Other")
+	// a Draft or Ready foreign root is open to cross-root edits; an In progress one is not
+	setStatus(t, s, e2, items.InProgress)
 	_, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st2.Key, Title: "x"}, items.Orchestrator("agt_1", e1.ID))
-	if err == nil || err.Error() != "STORY-1 is outside EPIC-1." || code(err) != items.CodeBadRequest {
+	if err == nil || err.Error() != "STORY-1 is outside EPIC-1, and its root is In progress or has a live orchestrator." || code(err) != items.CodeBadRequest {
 		t.Fatalf("err = %v", err)
 	}
 	// An orchestrator may now propose a brand-new top-level item (the
@@ -214,7 +216,7 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 	}
 	p := "new"
 	_, err = s.Update(ctx, st2.Key, items.Patch{Title: &p, Revision: st2.Revision}, items.Orchestrator("agt_1", e1.ID))
-	if err == nil || err.Error() != "STORY-1 is outside EPIC-1." {
+	if err == nil || err.Error() != "STORY-1 is outside EPIC-1, and its root is In progress or has a live orchestrator." {
 		t.Fatalf("update err = %v", err)
 	}
 }

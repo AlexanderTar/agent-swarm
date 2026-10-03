@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -499,7 +500,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 			return Item{}, errf(CodeBadRequest, "%s can't be a child of %s.",
 				capitalize(article(string(in.Type))), article(string(parent.Type)))
 		}
-		if err := s.orchestratorScope(ctx, tx, by, parent); err != nil {
+		if err := s.orchestratorScopeOrCrossRoot(ctx, tx, by, parent, true); err != nil {
 			return Item{}, err
 		}
 		rootID, parentID = parent.RootID, sql.NullString{String: parent.ID, Valid: true}
@@ -579,6 +580,44 @@ func (s *Store) orchestratorScope(ctx context.Context, q querier, by Actor, it I
 	return errf(CodeBadRequest, "%s is outside %s.", it.Key, own.Key)
 }
 
+// orchestratorScopeOrCrossRoot is orchestratorScope, except that when crossOK a top-level orchestrator may
+// write into another root whose status is Draft or Ready and that has no live orchestrator. Each such
+// write records an item.cross_root_edit event. crossOK is false for anything but a create or a
+// title/brief/acceptance update.
+func (s *Store) orchestratorScopeOrCrossRoot(ctx context.Context, tx *sql.Tx, by Actor, it Item, crossOK bool) error {
+	scopeErr := s.orchestratorScope(ctx, tx, by, it)
+	if scopeErr == nil || !crossOK || by.Child {
+		return scopeErr
+	}
+	root, err := s.getByID(ctx, tx, it.RootID)
+	if err != nil {
+		return err
+	}
+	if root.Status != Draft && root.Status != Ready {
+		return errf(CodeBadRequest, "%s is outside %s, and its root is %s or has a live orchestrator.",
+			it.Key, s.keyOf(ctx, tx, by.RootID), StatusLabel(root.Status))
+	}
+	var live int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE root_item_id = ? AND role = 'orchestrator'
+		AND state IN ('queued', 'active')`, root.ID).Scan(&live); err != nil {
+		return err
+	}
+	if live > 0 {
+		return errf(CodeBadRequest, "%s is outside %s, and its root is %s or has a live orchestrator.",
+			it.Key, s.keyOf(ctx, tx, by.RootID), StatusLabel(root.Status))
+	}
+	_, err = s.Events.Append(ctx, tx, events.ItemCrossRootEdit, map[string]string{"key": it.Key,
+		"root_key": root.Key, "actor_root": s.keyOf(ctx, tx, by.RootID), "actor": by.AgentID})
+	return err
+}
+
+func (s *Store) keyOf(ctx context.Context, q querier, id string) string {
+	if it, err := s.getByID(ctx, q, id); err == nil {
+		return it.Key
+	}
+	return id
+}
+
 func (s *Store) Get(ctx context.Context, key string) (Item, error) {
 	it, err := s.getTx(ctx, s.DB, key)
 	if err != nil {
@@ -612,7 +651,10 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 	}
 	// A resolved-by close is the one change an orchestrator may make outside its own tree.
 	if p.ResolvedBy == nil {
-		if err := s.orchestratorScope(ctx, tx, by, it); err != nil {
+		textOnly := p.Title != nil || p.Brief != nil || p.Acceptance != nil
+		rest := p
+		rest.Title, rest.Brief, rest.Acceptance, rest.Revision = nil, nil, nil, 0
+		if err := s.orchestratorScopeOrCrossRoot(ctx, tx, by, it, textOnly && reflect.DeepEqual(rest, Patch{})); err != nil {
 			return Item{}, err
 		}
 	}
