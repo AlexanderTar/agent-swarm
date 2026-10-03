@@ -1051,6 +1051,29 @@ func TestItemsToolLinkAndUnlink(t *testing.T) {
 	}
 }
 
+// BUG-25: create with blocked_by links the dependency and returns it.
+func TestItemsCreateHonoursBlockedBy(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Dep task","brief":"b","acceptance":["a"],"blocked_by":"`+seed.OtherTaskKey+`","workflow":{"template":"tdd-reviewed"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		Key       string   `json:"key"`
+		BlockedBy []string `json:"blocked_by"`
+	}
+	json.Unmarshal(mustJSON(out), &it)
+	if !strings.Contains(strings.Join(it.BlockedBy, ","), seed.OtherTaskKey) {
+		t.Fatalf("create result blocked_by = %+v, want %s", it, seed.OtherTaskKey)
+	}
+	got, err := s.RT.Items.Get(ctx, it.Key)
+	if err != nil || !strings.Contains(strings.Join(got.BlockedBy, ","), seed.OtherTaskKey) {
+		t.Fatalf("persisted blocked_by = %+v (%v)", got.BlockedBy, err)
+	}
+}
+
 func countItems(t *testing.T, s *Server) int {
 	t.Helper()
 	var n int

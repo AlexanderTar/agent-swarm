@@ -464,13 +464,6 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 		// is enforced by the caller in internal/mcpserver, which knows
 		// ParentAgentID; this package only knows it's an orchestrator.
 		if by.isOrchestrator() {
-			own, err := s.getByID(ctx, tx, by.RootID)
-			if err != nil {
-				return Item{}, err
-			}
-			if own.Type == Chore {
-				return Item{}, errf(CodeBadRequest, "A chore works only on its own scope. It can't propose top-level items.")
-			}
 			if in.Status == Ready {
 				return Item{}, errf(CodeBadRequest, "A proposed top-level item starts as Draft. The user starts it.")
 			}

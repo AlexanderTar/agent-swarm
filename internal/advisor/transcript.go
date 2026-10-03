@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -305,6 +306,8 @@ func readCursorLines(lines [][]byte) []Turn {
 
 // ---------- transcript path derivation ----------
 
+var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
+
 // encodeCwd turns a workspace path into the directory-name encoding an
 // agent's own transcript store uses: every "/" becomes "-". trimLeading
 // drops the resulting leading dash (cursor's convention); claude keeps it.
@@ -337,7 +340,8 @@ func TranscriptPath(kind runtime.AgentKind, userHome, cwd, providerSessionID str
 		return filepath.Join(userHome, ".gemini", "antigravity-cli", "brain", providerSessionID,
 			".system_generated", "logs", "transcript_full.jsonl"), nil
 	case runtime.Claude:
-		enc := encodeCwd(cwd, false)
+		// Claude Code maps every non-alphanumeric char to "-", not just "/".
+		enc := nonAlnum.ReplaceAllString(encodeCwd(cwd, false), "-")
 		return filepath.Join(userHome, ".claude", "projects", enc, providerSessionID+".jsonl"), nil
 	}
 	return "", fmt.Errorf("%s has no derivable transcript path; use the hook's transcript_path", kind.Display())

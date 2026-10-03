@@ -105,3 +105,15 @@ func TestTranscriptPath(t *testing.T) {
 		t.Fatalf("agy path = %q", agy)
 	}
 }
+
+// BUG-24: Claude Code encodes every non-alphanumeric char of the cwd as "-",
+// so a dot (as in ~/.swarm) becomes a dash too.
+func TestTranscriptPathClaudeEncodesDots(t *testing.T) {
+	got, err := TranscriptPath(runtime.Claude, "/Users/u", "/Users/x/.swarm/work/a", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/Users/u/.claude/projects/-Users-x--swarm-work-a/s1.jsonl"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}

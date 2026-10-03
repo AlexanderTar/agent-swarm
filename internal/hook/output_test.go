@@ -57,6 +57,7 @@ func TestHookOutputMatchesThePhase0Goldens(t *testing.T) {
 		{"codex", "PreToolUse-block.json", "PreToolUse", adapter.HookDecision{Block: true, Reason: goldenReason(t, "codex", "PreToolUse-block.json")}},
 		{"codex", "Stop-block.json", "Stop", adapter.HookDecision{Block: true, Reason: goldenReason(t, "codex", "Stop-block.json")}},
 		{"agy", "PreInvocation-ephemeral.json", "PreInvocation", adapter.HookDecision{Context: goldenEphemeral(t, "agy", "PreInvocation-ephemeral.json")}},
+		{"agy", "PostToolUse-empty.json", "PostToolUse", adapter.HookDecision{Context: "ignored"}},
 		{"agy", "PreToolUse-deny.json", "PreToolUse", adapter.HookDecision{Block: true, Reason: goldenReason(t, "agy", "PreToolUse-deny.json")}},
 		{"agy", "Stop-continue.json", "Stop", adapter.HookDecision{Block: true, Reason: goldenReason(t, "agy", "Stop-continue.json")}},
 		// cursor's three captures (P0-2). Its stop shape is the odd one across the
