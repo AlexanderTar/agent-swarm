@@ -20,6 +20,8 @@ For each unit:
 2. Write the minimal code to pass it (see ponytail below). Run the test again; record it too, in a `progress` checkpoint: `verification: [{"phase": "green", "ok": true, "unit": <n>}]`. Refactor if it clarifies the code, then rerun to confirm it's still green.
 3. Commit — small, signed, conventional message, on your worktree branch. Never leave a unit's work uncommitted before moving to the next one, and never leave your own work uncommitted at the end of a turn.
 
+A red `progress` checkpoint is never a stopping point. After recording it, continue in the same turn: green, commit, then the next unit's red. Don't end your turn on a `progress` checkpoint; the only reasons to stop are `completed`, `blocked`, or a question to your parent.
+
 This is `superpowers:test-driven-development` applied per unit: every behaviour change gets its own recorded red before its green, and a batched task's red/green pair is required **per unit**, not once for the whole package.
 
 ## Ponytail: how to write the code
