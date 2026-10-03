@@ -1376,7 +1376,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "Only an orchestrator can write an integrated checkpoint."}
 			}
-			if len(in.Git) == 0 || len(in.Verification) == 0 {
+			// ponytail: a git-less chore is trusted to have no worktree commits; it only needs verification.
+			if len(in.Verification) == 0 || len(in.Git) == 0 && it.Type != items.Chore {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
 			}
@@ -1562,12 +1563,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID); err != nil {
 				return err
 			} else if ok && fa.Merge != "" {
-				var n int
-				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`,
-					it.ID, fa.CheckpointID).Scan(&n); err != nil {
+				recorded, err := s.finishRecordedTx(ctx, tx, it.ID, fa.CheckpointID)
+				if err != nil {
 					return err
 				}
-				if n == 0 {
+				if !recorded {
 					return &items.Error{Code: items.CodeBadRequest,
 						Message: "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`."}
 				}

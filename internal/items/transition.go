@@ -635,6 +635,9 @@ func IntegratedRepoIDsTx(ctx context.Context, q interface {
 	return repos, nil
 }
 
+// FinishedMarker is the resolution runtime stamps on the finishing checkpoint of an integration with no repos.
+func FinishedMarker(integratedCheckpoint string) string { return "finished:" + integratedCheckpoint }
+
 // mergeState counts the current integrated checkpoint's repos and their item_merges rows, by repo id.
 func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState) (merged, total int, closed bool, err error) {
 	repos, err := IntegratedRepoIDsTx(ctx, q, it.ID, []byte(st.ckpGit))
@@ -642,6 +645,17 @@ func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState
 		return 0, 0, false, err
 	}
 	total = len(repos)
+	if total == 0 {
+		// an integration with no repos (a git-less chore) is merged once its finishing marker exists
+		var n int
+		if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints WHERE item_id = ? AND resolution = ?`,
+			it.ID, FinishedMarker(st.ckpID)).Scan(&n); err != nil {
+			return 0, 0, false, err
+		}
+		if n > 0 {
+			return 1, 1, false, nil
+		}
+	}
 	rows, err := q.QueryContext(ctx, `SELECT repo_id, state FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`, it.ID, st.ckpID)
 	if err != nil {
 		return 0, 0, false, err
