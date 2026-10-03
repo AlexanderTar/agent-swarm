@@ -2469,6 +2469,64 @@ func TestResumeRetryAfterBlocked(t *testing.T) {
 	}
 }
 
+// BUG-23: a resume retry after a blocked verdict spawns a fresh builder whose
+// brief overflowed the cap, so RenderBrief collapsed Context (the review
+// findings and the orchestrator note) to a swarm_read pointer that leads to
+// neither. The fresh builder must still receive both in full in its inbox.
+func TestResumeRetryDeliversFindingsAndNoteWhenBriefContextTruncated(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, agentSessionForStep(t, s, st.ID, "build").ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "done", Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, agentSessionForStep(t, s, st.ID, "review").ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "blocked", Verdict: "blocked", Findings: []workflow.Finding{{Severity: "major", File: "auth.go", Line: 12,
+			Summary: "which provider should this use?"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	note := "please pick JWT. " + strings.Repeat("Keep the token refresh path covered by a test. ", 130) + "END-OF-NOTE"
+	if _, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", note, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var round2Agent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2Agent); err != nil {
+		t.Fatal(err)
+	}
+	builder, err := s.agentByID(ctx, round2Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(builder.Brief, contextTruncated) {
+		t.Fatalf("setup: brief Context wasn't truncated, so this doesn't reproduce BUG-23:\n%s", builder.Brief)
+	}
+	ses := agentSessionForStep(t, s, st.ID, "build")
+	res, err := s.Sync(ctx, ses.ID, nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inbox strings.Builder
+	for _, m := range res.Messages {
+		inbox.Write(m.Payload)
+	}
+	if !strings.Contains(inbox.String(), "which provider should this use?") {
+		t.Errorf("fresh builder's inbox missing round 1's findings:\n%s", inbox.String())
+	}
+	if !strings.Contains(inbox.String(), "END-OF-NOTE") {
+		t.Errorf("fresh builder's inbox missing the full resume note:\n%s", inbox.String())
+	}
+}
+
 // A replay returns Wait when every review role row exists; the waiting-run path must attach the SHA worktree.
 func TestReplayAdvanceAttachesReviewWorktree(t *testing.T) {
 	s, _, _ := newStore(t)

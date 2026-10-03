@@ -9,7 +9,7 @@ import (
 func TestRenderBuildStepGolden(t *testing.T) {
 	s := Spec{Steps: Templates["ui-tdd-reviewed"]}
 
-	got := Render(s, "build", 2)
+	got := Render(s, "build", 2, 0)
 
 	want, err := os.ReadFile("testdata/render_build_r2.txt")
 	if err != nil {
@@ -24,7 +24,7 @@ func TestRenderBuildStepGolden(t *testing.T) {
 func TestRenderReviewStepGolden(t *testing.T) {
 	s := Spec{Steps: Templates["ui-tdd-reviewed"]}
 
-	got := Render(s, "review", 2)
+	got := Render(s, "review", 2, 0)
 
 	want, err := os.ReadFile("testdata/render_review_r2.txt")
 	if err != nil {
@@ -42,7 +42,7 @@ func TestRenderReviewStepGolden(t *testing.T) {
 func TestRenderReviewStepGoldenNoTDDGate(t *testing.T) {
 	s := Spec{Steps: Templates["design-reviewed"]}
 
-	got := Render(s, "review", 1)
+	got := Render(s, "review", 1, 0)
 
 	want, err := os.ReadFile("testdata/render_review_no_tdd_r1.txt")
 	if err != nil {
@@ -66,7 +66,7 @@ func TestRenderAfterTasksShape(t *testing.T) {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 
-	got := Render(storySpec, "review", 1)
+	got := Render(storySpec, "review", 1, 0)
 	// After_tasks has no loop, so there's no "of at most N" ceiling to
 	// report, and both a blocked and a changes_requested verdict escalate
 	// straight to the orchestrator - there's no fix step to retry.
@@ -75,5 +75,19 @@ func TestRenderAfterTasksShape(t *testing.T) {
 		"Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked or changes_requested verdict escalates to the orchestrator."
 	if got != want {
 		t.Fatalf("Render() =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// BUG-17: a resume retry grants extra rounds past max_rounds; the brief must
+// print the effective ceiling (max_rounds + extra rounds), never "round 4 of
+// at most 3".
+func TestRenderPrintsEffectiveMaxWithExtraRounds(t *testing.T) {
+	s := Spec{Steps: Templates["ui-tdd-reviewed"]}
+
+	for _, stepID := range []string{"build", "review"} {
+		got := Render(s, stepID, 4, 1)
+		if !strings.Contains(got, "round 4 of at most 4.") {
+			t.Fatalf("Render(%q, round 4, 1 extra) =\n%s\nwant \"round 4 of at most 4.\"", stepID, got)
+		}
 	}
 }

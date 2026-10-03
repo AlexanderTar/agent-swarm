@@ -370,6 +370,10 @@ func OrchestratorHandoffAddition(childNames []string) string {
 const ReviewerRecoveryAddition = "Re-read the review target and the recorded verdict evidence before " +
 	"setting a verdict; a recovered review never passes on memory alone."
 
+// contextTruncated replaces a workflow brief's Context when the cap collapses
+// it; spawnRunAgent then delivers the full lines as an assignment update.
+const contextTruncated = "(context truncated to fit the brief; the full text arrives as an assignment update: call swarm_sync)"
+
 // RenderBrief renders §9.4. Empty sections are left out. Spec B6: for a
 // workflow spawn (in.Workflow set), a brief that overflows the cap first
 // truncates Context to a single swarm_read pointer, then -- if still over
@@ -450,7 +454,7 @@ func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string 
 		}
 	}
 	if truncateContext && len(in.Context) > 0 {
-		fmt.Fprintf(&b, "\n## Context\n- (context truncated; swarm_read %s)\n", in.Key)
+		b.WriteString("\n## Context\n- " + contextTruncated + "\n")
 	} else {
 		bullets("Context", in.Context)
 	}
@@ -470,7 +474,7 @@ func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string 
 // (workflow.Render). The identity fields (Key, Title, Name, Role,
 // ParentName, RootKey, Worktrees) are filled by the caller/Spawn, not here --
 // same split BriefInput already had before this package existed.
-func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, ctxLines []string) BriefInput {
+func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round, extraRounds int, ctxLines []string) BriefInput {
 	return BriefInput{
 		Objective:  it.Brief,
 		Acceptance: it.Acceptance,
@@ -478,6 +482,6 @@ func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, c
 		Context:    ctxLines,
 		Steps:      it.Steps,
 		Units:      it.Units,
-		Workflow:   workflow.Render(spec, stepID, round),
+		Workflow:   workflow.Render(spec, stepID, round, extraRounds),
 	}
 }

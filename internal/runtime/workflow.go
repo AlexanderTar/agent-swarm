@@ -940,7 +940,7 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		}
 		ctxLines = append(ctxLines, findingLines...)
 	}
-	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, ctxLines)
+	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
 
 	var shareRW []WorkflowWorktree
 	if step.Run != "" {
@@ -1028,6 +1028,13 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	if step.Run == "" && run.ReviewWorktreeID != "" {
 		if err := s.Worktree.Share(ctx, run.ReviewWorktreeID, a.ID, "ro"); err != nil {
 			s.logf("advance: share %s with %s: %v", run.ReviewWorktreeID, a.Name, err)
+		}
+	}
+	// BUG-23: the brief cap collapsed Context (resume notes, previous
+	// round's findings) to a pointer; deliver the full lines instead.
+	if strings.Contains(a.Brief, contextTruncated) {
+		if err := s.deliverNote(ctx, a.ID, "Context:\n- "+strings.Join(brief.Context, "\n- ")); err != nil {
+			return true, err
 		}
 	}
 
