@@ -1030,6 +1030,13 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 			s.logf("advance: share %s with %s: %v", run.ReviewWorktreeID, a.Name, err)
 		}
 	}
+	// BUG-23: the brief cap collapsed Context (resume notes, previous
+	// round's findings) to a pointer; deliver the full lines instead.
+	if strings.Contains(a.Brief, contextTruncated) {
+		if err := s.deliverNote(ctx, a.ID, "Context:\n- "+strings.Join(brief.Context, "\n- ")); err != nil {
+			return true, err
+		}
+	}
 
 	return true, nil
 

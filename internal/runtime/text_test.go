@@ -277,7 +277,7 @@ func TestRenderBriefUnitsAndWorkflowSections(t *testing.T) {
 		if len(got) > 6000 {
 			t.Fatalf("brief still over cap after collapse: %d chars", len(got))
 		}
-		if !strings.Contains(got, "(context truncated; swarm_read TASK-1)") {
+		if !strings.Contains(got, contextTruncated) {
 			t.Errorf("missing context-truncated marker:\n%s", got)
 		}
 		if !strings.Contains(got, "1. Unit 1 (steps: swarm_read TASK-1)") {

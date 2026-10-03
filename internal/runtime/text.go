@@ -370,6 +370,10 @@ func OrchestratorHandoffAddition(childNames []string) string {
 const ReviewerRecoveryAddition = "Re-read the review target and the recorded verdict evidence before " +
 	"setting a verdict; a recovered review never passes on memory alone."
 
+// contextTruncated replaces a workflow brief's Context when the cap collapses
+// it; spawnRunAgent then delivers the full lines as an assignment update.
+const contextTruncated = "(context truncated to fit the brief; the full text arrives as an assignment update: call swarm_sync)"
+
 // RenderBrief renders §9.4. Empty sections are left out. Spec B6: for a
 // workflow spawn (in.Workflow set), a brief that overflows the cap first
 // truncates Context to a single swarm_read pointer, then -- if still over
@@ -450,7 +454,7 @@ func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string 
 		}
 	}
 	if truncateContext && len(in.Context) > 0 {
-		fmt.Fprintf(&b, "\n## Context\n- (context truncated; swarm_read %s)\n", in.Key)
+		b.WriteString("\n## Context\n- " + contextTruncated + "\n")
 	} else {
 		bullets("Context", in.Context)
 	}
