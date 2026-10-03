@@ -242,6 +242,11 @@ func itemsTool(s *Server) ToolDef {
 						if err != nil {
 							return err
 						}
+						if in.BlockedBy != "" {
+							if err := s.RT.Items.AddDepTx(ctx, tx, out.Key, in.BlockedBy, actor); err != nil {
+								return err
+							}
+						}
 						if in.Parent == "" {
 							var originKey string
 							if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).
@@ -253,6 +258,10 @@ func itemsTool(s *Server) ToolDef {
 						return nil
 					}); err != nil {
 					return nil, err
+				}
+				if in.BlockedBy != "" {
+					// re-read so the result carries the dependency (as update does)
+					return s.RT.Items.Get(ctx, out.Key)
 				}
 				return out, nil
 			case "update":
