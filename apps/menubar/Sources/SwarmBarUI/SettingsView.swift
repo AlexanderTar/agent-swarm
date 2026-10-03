@@ -252,9 +252,25 @@ struct InstructionsTab: View {
     @State private var copied = false
     @State private var saved = false
 
-    private var rendered: AttributedString {
-        (try? AttributedString(markdown: model.instructions, options: .init(interpretedSyntax: .full)))
-            ?? AttributedString(model.instructions)
+    private func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnly)))
+            ?? AttributedString(text)
+    }
+
+    @ViewBuilder private func block(_ b: MarkdownBlock) -> some View {
+        switch b {
+        case let .heading(level, text):
+            Text(inline(text)).font(level == 1 ? .title2.bold() : level == 2 ? .title3.bold() : .headline)
+                .padding(.top, 4)
+        case let .paragraph(text):
+            Text(inline(text))
+        case let .listItem(marker, text):
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(marker).foregroundStyle(.secondary)
+                Text(inline(text))
+            }
+            .padding(.leading, 12)
+        }
     }
 
     var body: some View {
@@ -274,11 +290,13 @@ struct InstructionsTab: View {
 
             if editing {
                 TextEditor(text: $draft)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.system(size: NSFont.systemFontSize))
                     .scrollContentBackground(.hidden)
                     .background(SubtleScrollerConfig(adjacentScrollView: true))
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 4)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                    .dialogFieldSurface()
                 HStack {
                     Text(Copy.instructionsHelp).font(.caption).foregroundStyle(.secondary)
                     Spacer()
@@ -297,13 +315,18 @@ struct InstructionsTab: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
             } else {
                 ScrollView {
-                    Text(rendered).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(SubtleScrollerConfig())
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(MarkdownBlocks.parse(model.instructions).enumerated()), id: \.offset) { block($1) }
+                    }
+                    .textSelection(.enabled)
+                    .font(.system(size: NSFont.systemFontSize))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(SubtleScrollerConfig())
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                .dialogFieldSurface()
                 HStack {
                     Spacer()
                     Button(copied ? Copy.copied : Copy.copyInstructions) { copyToClipboard() }.glassButtons()
