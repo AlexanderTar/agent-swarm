@@ -467,7 +467,7 @@ type Handler struct {
 	WorktreesDir string
 	mu           sync.Mutex
 	noticeAt     map[string]time.Time
-	deferred     map[string]string            // agy: PostToolUse context held for the next PreInvocation
+	deferred     map[string]string            // agy: PostToolUse context held for the next PreInvocation (in memory: lost on daemon restart)
 	readFile     func(string) ([]byte, error) // nil means os.ReadFile
 }
 
@@ -624,7 +624,9 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		}
 		switch ev {
 		case "PostToolUse":
-			if d.Context != "" {
+			// PostInvocation also normalizes here but accepts injectSteps,
+			// so its context goes out now; only raw PostToolUse is held.
+			if d.Context != "" && strings.EqualFold(event, "PostToolUse") {
 				h.deferred[s.ID] = strings.TrimSpace(h.deferred[s.ID] + " " + d.Context)
 			}
 		case "UserPromptSubmit":

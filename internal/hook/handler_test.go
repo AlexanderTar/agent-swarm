@@ -1917,6 +1917,29 @@ func TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep(t *testing.T) 
 	}
 }
 
+// PostInvocation accepts injectSteps, so its context is delivered at once and
+// must not also be deferred to the next PreInvocation (CHORE-27 final review).
+func TestAgyPostInvocationContextIsNotDeferredAgain(t *testing.T) {
+	ctx := context.Background()
+	h, _, ses := newTestHandler(t)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+	body := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"` + question + `"}]}}`)
+	if _, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, body); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Agy, "PostInvocation", ses.ID, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "injectSteps") || !strings.Contains(string(out), "req_PLAN1") {
+		t.Fatalf("PostInvocation output = %s, want the next step in injectSteps", out)
+	}
+	next, _ := h.Handle(ctx, runtime.Agy, "PreInvocation", ses.ID, []byte(`{"session_id":"`+ses.ID+`"}`))
+	if strings.Contains(string(next), "req_PLAN1") {
+		t.Fatalf("PostInvocation context delivered again on PreInvocation: %s", next)
+	}
+}
+
 // TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep confirms a plain
 // question's PostToolUse (no ⟦swarm:ref⟧) is untouched.
 func TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep(t *testing.T) {
