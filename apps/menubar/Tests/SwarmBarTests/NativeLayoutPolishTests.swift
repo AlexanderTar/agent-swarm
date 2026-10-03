@@ -98,6 +98,31 @@ final class NativeLayoutPolishTests: XCTestCase {
         assertSubtleScrollers(host(InstructionsTab(model: settings), width: 740, height: 520))
     }
 
+    /// One scan line through the field's left edge, inside the field in every state (the header and the
+    /// footer buttons differ between states, so only a mid-height line is comparable).
+    private func fieldEdgeRow(_ view: NSView, y: Int) -> [UInt32] {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return [] }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return (0..<40).map { x in
+            let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)
+            let v = { (f: CGFloat?) in UInt32((f ?? 0) * 255) }
+            return v(c?.redComponent) << 24 | v(c?.greenComponent) << 16 | v(c?.blueComponent) << 8 | v(c?.alphaComponent)
+        }
+    }
+
+    func testInstructionsEmptyStateSharesTheFieldSurface() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        let settings = model.makeSettings()
+        await settings.load()
+        await settings.setInstructions("Rule")
+        let filled = fieldEdgeRow(host(InstructionsTab(model: settings), width: 740, height: 520), y: 260)
+        await settings.setInstructions("")
+        let empty = fieldEdgeRow(host(InstructionsTab(model: settings), width: 740, height: 520), y: 260)
+        XCTAssertFalse(filled.isEmpty)
+        XCTAssertEqual(empty, filled, "empty state must use dialogFieldSurface like the read/edit field")
+    }
+
     func testPopoverOuterScrollUsesTransparentSubtleScrolling() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)

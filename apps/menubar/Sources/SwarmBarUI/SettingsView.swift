@@ -264,12 +264,17 @@ struct InstructionsTab: View {
                 .padding(.top, 4)
         case let .paragraph(text):
             Text(inline(text))
-        case let .listItem(marker, text):
+        case let .code(text):
+            Text(text).font(.system(.body, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+        case let .listItem(marker, text, indent):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(marker).foregroundStyle(.secondary)
                 Text(inline(text))
             }
-            .padding(.leading, 12)
+            .padding(.leading, 12 + CGFloat(indent) * 16)
         }
     }
 
@@ -312,7 +317,7 @@ struct InstructionsTab: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                .dialogFieldSurface()
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
