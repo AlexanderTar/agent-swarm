@@ -43,10 +43,9 @@ public struct BoardHandoffView: View {
             HStack {
                 if let caption = form.caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction).glassButtons()
+                Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
                 Button(form.primaryLabel) { Task { if await form.primary() { onDone() } } }
                     .keyboardShortcut(.defaultAction)
-                    .prominentDefaultAction()
                     .disabled(!form.canSubmit)
             }
             .padding(.horizontal, 22).padding(.vertical, 12)

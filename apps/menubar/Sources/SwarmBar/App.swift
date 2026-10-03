@@ -198,7 +198,7 @@ struct PopoverHost: View {
 
     var body: some View {
         PopoverView(model: model,
-                    openNewOrchestrator: { openCentered("new-orchestrator") },
+                    openNewOrchestrator: { model.requestNewOrchestrator(); openCentered("new-orchestrator") },
                     openBoardHandoff: { name in
                         model.boardHandoffPreselect = name
                         openCentered("board-handoff")
@@ -278,9 +278,17 @@ struct NewOrchestratorHost: View {
                     .background(TranslucentWindowAccessor())
             }
         }
-        .onAppear { form = model.makeNewOrchestratorForm() }
+        .onAppear { reopen() }
         .onDisappear { form = nil }
+        // A Window scene doesn't reliably re-fire onAppear on reopen; the model's nonce does.
+        .onChange(of: model.newOrchestratorOpenNonce) { reopen() }
         .onChange(of: model.connected) { _, up in form?.connected = up }
+    }
+
+    private func reopen() {
+        let f = model.makeNewOrchestratorForm()
+        form = f
+        Task { await f.load() }
     }
 }
 

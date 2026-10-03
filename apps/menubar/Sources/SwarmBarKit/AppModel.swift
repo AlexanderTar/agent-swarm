@@ -543,6 +543,11 @@ public final class AppModel {
                                 preselectAgent: boardHandoffPreselect)
     }
 
+    /// Bumped by requestNewOrchestrator(); the New orchestrator window host rebuilds a fresh form on each change.
+    public private(set) var newOrchestratorOpenNonce = 0
+
+    public func requestNewOrchestrator() { newOrchestratorOpenNonce += 1 }
+
     public func makeNewOrchestratorForm() -> NewOrchestratorForm {
         NewOrchestratorForm(client: client, settings: state.settings, agents: state.agents, connected: connected, format: format)
     }

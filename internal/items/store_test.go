@@ -741,8 +741,8 @@ func TestCreateSpikeWithChoreIntent(t *testing.T) {
 	}
 }
 
-// BUG-18 (2026-10-03): a top-level chore orchestrator may propose top-level
-// items like any other; they land Draft.
+// BUG-26 supersedes chore spec decision 3: a chore orchestrator may propose
+// top-level items like any other top-level orchestrator (always Draft).
 func TestChoreRootCanProposeTopLevel(t *testing.T) {
 	s := newStore(t)
 	ch := mk(t, s, items.Chore, "", "Bump deps")
@@ -753,11 +753,19 @@ func TestChoreRootCanProposeTopLevel(t *testing.T) {
 	} {
 		got, err := s.Create(ctx, in, orch)
 		if err != nil {
-			t.Fatalf("%s: err = %v", in.Type, err)
+			t.Fatalf("%s: %v", in.Type, err)
 		}
-		if got.Status != items.Draft {
-			t.Fatalf("%s: status = %s, want Draft", in.Type, got.Status)
+		if got.Status != items.Draft || got.OriginSpikeID != ch.ID {
+			t.Fatalf("%s: status=%s origin=%s, want Draft from %s", in.Type, got.Status, got.OriginSpikeID, ch.ID)
 		}
+	}
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Go", Status: items.Ready}, orch)
+	if code(err) != items.CodeBadRequest || err.Error() != "A proposed top-level item starts as Draft. The user starts it." {
+		t.Fatalf("ready proposal: err = %v", err)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil || n != 5 {
+		t.Fatalf("items = %d (%v), want the chore plus 4 proposals", n, err)
 	}
 }
 

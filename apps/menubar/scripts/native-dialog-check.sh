@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 source = Path(sys.argv[1]).read_text()
 source = source.replace('struct SwarmBarApp: App {', 'struct SwarmBarApp: App {\n    init() { NativeDialogCheck.start() }', 1)
-source = source.replace('openNewOrchestrator: { openCentered("new-orchestrator") },', 'openNewOrchestrator: NativeDialogCheck.register("new") { openCentered("new-orchestrator") },', 1)
+source = source.replace('openNewOrchestrator: { model.requestNewOrchestrator(); openCentered("new-orchestrator") },', 'openNewOrchestrator: NativeDialogCheck.register("new") { model.requestNewOrchestrator(); openCentered("new-orchestrator") },', 1)
 source = source.replace('openBoardHandoff: { name in', 'openBoardHandoff: NativeDialogCheck.registerBoard { name in', 1)
 source = source.replace('openSettings: {', 'openSettings: NativeDialogCheck.register("settings") {', 1)
 Path(sys.argv[2]).write_text(source)

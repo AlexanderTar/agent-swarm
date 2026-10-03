@@ -258,3 +258,27 @@ final class BoardHandoffRenderTests: XCTestCase {
         XCTAssertFalse(text.contains("Defaults from Settings"), text)
     }
 }
+
+/// Offscreen SwiftUI buttons expose no measurable NSButton or accessibility frame, so the contract is pinned at
+/// source level: footer action buttons stay plain native buttons (equal size); real-window screencaptures
+/// verify the rendered result.
+final class DialogFooterButtonTests: XCTestCase {
+    private func footer(_ file: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/SwarmBarUI/\(file)")
+        let src = try String(contentsOf: url, encoding: .utf8)
+        let start = try XCTUnwrap(src.range(of: "Button(Copy.cancel, action: onCancel)"))
+        let end = try XCTUnwrap(src.range(of: ".padding(.horizontal, 22)", range: start.upperBound..<src.endIndex))
+        return String(src[start.lowerBound..<end.lowerBound])
+    }
+
+    func testFooterActionButtonsCarryNoCustomStyle() throws {
+        for file in ["NewOrchestratorView.swift", "BoardHandoffView.swift"] {
+            let f = try footer(file)
+            for banned in ["glassButtons", "prominentDefaultAction", "buttonStyle"] {
+                XCTAssertFalse(f.contains(banned), "\(file) footer must use native buttons, found \(banned)")
+            }
+            XCTAssertTrue(f.contains(".keyboardShortcut(.cancelAction)") && f.contains(".keyboardShortcut(.defaultAction)"), file)
+        }
+    }
+}
