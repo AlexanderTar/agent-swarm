@@ -91,7 +91,6 @@ public enum Copy {
     public static let all = "All"
     public static let addFolder = "Add folder…"
     public static let rescan = "Rescan"
-    public static func selected(_ names: String) -> String { "Selected: \(names)" }
     public static let role = "Role"
     public static let agent = "Agent"
     public static let model = "Model"

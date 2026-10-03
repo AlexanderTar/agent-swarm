@@ -45,9 +45,6 @@ final class RepoPickerTests: XCTestCase {
         XCTAssertEqual(RepoPicker.toggle([], "repo_chat"), ["repo_chat"])
         XCTAssertEqual(RepoPicker.toggle(["repo_chat", "repo_app"], "repo_chat"), ["repo_app"])
         XCTAssertEqual(RepoPicker.selectAll(["repo_app"], [repos.all[2], repos.all[1], repos.all[4]]), ["repo_app", "repo_chat"])
-        XCTAssertEqual(RepoPicker.selectedLine(["repo_chat", "repo_landing", "repo_x"], known: known),
-                       "Selected: endurio-chat, endurio-landing, repo_x")
-        XCTAssertEqual(RepoPicker.selectedLine([], known: known), "")
     }
 
     func testScanLine() {

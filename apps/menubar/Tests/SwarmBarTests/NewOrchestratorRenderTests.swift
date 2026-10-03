@@ -424,6 +424,19 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertEqual(RepoChooser.visibleHeight(for: 4), 120)
     }
 
+    func testRepoPickerHasNoSelectedSummaryLine() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let m = makeAppModel(client)
+        await m.refresh()
+        let form = m.makeNewOrchestratorForm()
+        await form.load()
+        form.toggle(form.repos.recent[0])
+        form.toggle(form.repos.all[1])
+        XCTAssertEqual(form.selection.count, 2)
+        let text = try visibleText(host(form))
+        XCTAssertFalse(text.contains("Selected:"), text)
+    }
+
     // MARK: images
 
     /// Plain `Text`/`Button` draw directly in this codebase (no backing `NSView`), so visible

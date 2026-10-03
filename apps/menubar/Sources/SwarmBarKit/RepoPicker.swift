@@ -85,12 +85,6 @@ public enum RepoPicker {
         selection + repos.filter { !$0.missing && !selection.contains($0.id) }.map(\.id)
     }
 
-    /// "Selected: endurio-chat, endurio-landing", or "" when nothing is selected.
-    public static func selectedLine(_ selection: [String], known: [Repo]) -> String {
-        guard !selection.isEmpty else { return "" }
-        return Copy.selected(selection.map { id in known.first { $0.id == id }?.name ?? id }.joined(separator: ", "))
-    }
-
     /// "Scanning your home folder…", "Scanned 2h ago", or "Never scanned" before the first scan.
     public static func scanLine(_ r: ReposResponse, format: Format) -> String {
         guard !r.scanning else { return Copy.scanning }

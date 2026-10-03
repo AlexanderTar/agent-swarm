@@ -142,7 +142,6 @@ public struct NewOrchestratorView: View {
             }
             if let error = form.repoError { Text(error).font(.caption).foregroundStyle(.red) }
             if let notice = form.selectionNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
-            if !form.selectedLine.isEmpty { Text(form.selectedLine).font(.caption) }
         }
     }
 

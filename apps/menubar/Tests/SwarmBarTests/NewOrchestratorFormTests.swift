@@ -199,7 +199,7 @@ final class NewOrchestratorFormTests: XCTestCase {
         f.toggle(f.repos.recent[0])
         f.toggle(f.repos.all[1])
         f.toggle(f.repos.all[3])
-        XCTAssertEqual(f.selectedLine, "Selected: endurio-chat, endurio-app, endurio-landing")
+        XCTAssertEqual(f.selection.count, 3)
         await f.search()
         await f.rescan()
         XCTAssertEqual(client.calls.suffix(3), ["repos ", "rescan", "repos "])

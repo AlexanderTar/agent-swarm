@@ -123,7 +123,6 @@ public final class NewOrchestratorForm {
 
 
     public var rows: [Repo] { RepoPicker.rows(repos) }
-    public var selectedLine: String { RepoPicker.selectedLine(selection, known: rows) }
     public var scanLine: String { RepoPicker.scanLine(repos, format: format) }
 
     public var canStart: Bool {
