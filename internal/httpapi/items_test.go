@@ -16,14 +16,15 @@ import (
 )
 
 type itemJSON struct {
-	Key       string   `json:"key"`
-	Type      string   `json:"type"`
-	Status    string   `json:"status"`
-	Title     string   `json:"title"`
-	Revision  int      `json:"revision"`
-	ParentKey string   `json:"parent_key"`
-	BlockedBy []string `json:"blocked_by"`
-	Context   bool     `json:"context"`
+	Key        string   `json:"key"`
+	Type       string   `json:"type"`
+	Status     string   `json:"status"`
+	Title      string   `json:"title"`
+	Revision   int      `json:"revision"`
+	ParentKey  string   `json:"parent_key"`
+	BlockedBy  []string `json:"blocked_by"`
+	Context    bool     `json:"context"`
+	ResolvedBy string   `json:"resolved_by"`
 }
 
 func (e *env) create(body map[string]any) itemJSON {
@@ -512,5 +513,23 @@ func TestItemDetailMergesAndAgentMergeProgress(t *testing.T) {
 	want := `[{"repo":"web","kind":"local","base":"main","head":"swarm/epic","auto_merge":false,"state":"open","checks":""}]`
 	if d := get(); string(d.Merges) != want {
 		t.Fatalf("merges = %s", d.Merges)
+	}
+}
+
+func TestPatchItemResolvedBy(t *testing.T) {
+	e := newEnv(t)
+	bug := e.create(map[string]any{"type": "bug", "title": "Broken"})
+	chore := e.create(map[string]any{"type": "chore", "title": "Fix"})
+	status, b := e.api("PATCH", "/api/items/"+bug.Key, map[string]any{"status": "done", "resolved_by": chore.Key, "revision": bug.Revision})
+	wantErr(t, status, b, 422, "transition_denied", chore.Key+" must be Done before it can resolve "+bug.Key+"; it is Draft.")
+	if _, err := e.items.DB.Exec(`UPDATE items SET status = 'done' WHERE key = ?`, chore.Key); err != nil {
+		t.Fatal(err)
+	}
+	status, b = e.api("PATCH", "/api/items/"+bug.Key, map[string]any{"resolved_by": chore.Key, "revision": bug.Revision})
+	wantErr(t, status, b, 400, "bad_request", "resolved_by needs status done.")
+	status, b = e.api("PATCH", "/api/items/"+bug.Key, map[string]any{"status": "done", "resolved_by": chore.Key, "revision": bug.Revision})
+	got := decode[itemJSON](t, b)
+	if status != 200 || got.Status != "done" || got.ResolvedBy != chore.Key {
+		t.Fatalf("resolve = %d %s", status, b)
 	}
 }

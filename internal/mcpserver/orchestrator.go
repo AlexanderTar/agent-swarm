@@ -166,7 +166,7 @@ func itemsTool(s *Server) ToolDef {
 			"solo":{"type":"string"},"verify":{"type":"array"},"intent":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
 			"blocked_by":{"type":"string"},"request_id":{"type":"string"},
-			"override_reason":{"type":"string"},
+			"override_reason":{"type":"string"},"resolved_by":{"type":"string"},
 			"waive":{"type":"array","items":{"type":"object","properties":{"gate":{"type":"string"},"reason":{"type":"string"}}}}`,
 			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -198,7 +198,9 @@ func itemsTool(s *Server) ToolDef {
 				RequestID string          `json:"request_id"`
 				// OverrideReason forces status past the normal rules (1–300 chars).
 				OverrideReason string `json:"override_reason"`
-				Waive          []struct {
+				// ResolvedBy closes a Draft/Ready root as Done, resolved by this Done root (needs status done).
+				ResolvedBy string `json:"resolved_by"`
+				Waive      []struct {
 					Gate   string `json:"gate"`
 					Reason string `json:"reason"`
 				} `json:"waive"`
@@ -305,6 +307,13 @@ func itemsTool(s *Server) ToolDef {
 					p.Status = &st
 				}
 				p.OverrideReason = in.OverrideReason
+				if in.ResolvedBy != "" {
+					if a.ParentAgentID != "" {
+						return nil, &items.Error{Code: items.CodeBadRequest,
+							Message: "Only a top-level orchestrator can close an item as resolved. Relay it to your parent."}
+					}
+					p.ResolvedBy = &in.ResolvedBy
+				}
 				for _, w := range in.Waive {
 					p.Waive = append(p.Waive, items.WaiveInput{Gate: w.Gate, Reason: w.Reason})
 				}

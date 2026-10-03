@@ -2782,3 +2782,30 @@ func TestItemsToolOverrideReason(t *testing.T) {
 		t.Fatalf("item = %s", mustJSON(out))
 	}
 }
+
+// A top-level orchestrator may close another root it doesn't own as resolved by a Done root.
+func TestItemsToolUpdateResolvedBy(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	other := seedOtherRoot(t, s)
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+other+`","resolved_by":"`+seed.RootKey+`","revision":1}`); err == nil {
+		t.Fatal("resolved_by without status done must be refused")
+	}
+	if _, err := s.RT.Items.DB.Exec(`UPDATE items SET status = 'done' WHERE key = ?`, seed.RootKey); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+other+`","status":"done","resolved_by":"`+seed.RootKey+`","revision":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		Status     string `json:"status"`
+		ResolvedBy string `json:"resolved_by"`
+	}
+	json.Unmarshal(mustJSON(out), &it)
+	if it.Status != "done" || it.ResolvedBy != seed.RootKey {
+		t.Fatalf("item = %+v", it)
+	}
+}
