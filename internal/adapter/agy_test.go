@@ -106,6 +106,16 @@ func TestAgyHookOutputShapes(t *testing.T) {
 	if len(inj.Steps) != 1 || inj.Steps[0].Ephemeral != "T" || inj.Steps[0].User != "" {
 		t.Fatalf("context output = %s", ctxOut)
 	}
+	// AGY's hook contract: PostToolUse expects {}, PostInvocation accepts
+	// injectSteps like PreInvocation (BUG-13).
+	if post, _ := a.HookOutput("PostToolUse", HookDecision{Context: "T"}); string(post) != `{}` {
+		t.Errorf("PostToolUse output = %s, want {}", post)
+	}
+	postInv, _ := a.HookOutput("PostInvocation", HookDecision{Context: "T"})
+	inj.Steps = nil
+	if err := json.Unmarshal(postInv, &inj); err != nil || len(inj.Steps) != 1 || inj.Steps[0].Ephemeral != "T" {
+		t.Errorf("PostInvocation output = %s, want injectSteps with the context", postInv)
+	}
 	deny, _ := a.HookOutput("PreToolUse", HookDecision{Block: true, Reason: "R"})
 	if string(deny) != `{"decision":"deny","reason":"R"}` {
 		t.Errorf("deny output = %s", deny)

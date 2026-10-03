@@ -309,7 +309,8 @@ func readCursorLines(lines [][]byte) []Turn {
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
 // encodeCwd turns a workspace path into the directory-name encoding an
-// agent's own transcript store uses: every "/" becomes "-". trimLeading
+// agent's own transcript store uses: every "/" becomes "-" (claude's caller
+// then maps every other non-alphanumeric char to "-" too). trimLeading
 // drops the resulting leading dash (cursor's convention); claude keeps it.
 // The path is resolved through EvalSymlinks first ("realpath"); a cwd that
 // no longer exists (or never did, e.g. in a test) falls back to the path as
