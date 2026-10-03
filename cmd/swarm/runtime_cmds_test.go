@@ -526,6 +526,24 @@ func TestStartOrchestrator(t *testing.T) {
 	}
 }
 
+// BUG-32: GET /api/items/{key} wraps the item as {"item":{...}}, so start --repo
+// has to read repos_version from inside the wrapper.
+func TestStartRepoSendsWrappedReposVersion(t *testing.T) {
+	srv, got, home := stubDaemon(t, map[string]string{
+		"GET /api/items/EPIC-12":               `{"item":{"key":"EPIC-12","repos_version":5},"agents":[]}`,
+		"GET /api/repos":                       `{"recent":[],"groups":[],"all":[{"id":"repo_1","name":"chat","path":"/r/chat"}],"scanned_at":0,"scanning":false}`,
+		"POST /api/items/EPIC-12/orchestrator": `{"name":"auth-orchestrator","state":"active"}`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	if code := run([]string{"start", "--home", home, "--url", srv.URL, "EPIC-12", "--repo", "/r/chat"}, &out, &out); code != 0 {
+		t.Fatalf("code = %d: %s", code, out.String())
+	}
+	if body := lastBody(got, "/api/items/EPIC-12/orchestrator"); !strings.Contains(body, `"repos_version":5`) {
+		t.Fatalf("body = %s", body)
+	}
+}
+
 func TestBugsListsStoredReports(t *testing.T) {
 	srv, _, home := stubDaemon(t, map[string]string{
 		"GET /api/bugs": `[{"id":"bug_b","created_at":1790000000000,"reporter":"coder-1","root_item_key":"CHORE-1","title":"Newer bug","board_item_key":"BUG-4"},
