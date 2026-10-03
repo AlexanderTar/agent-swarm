@@ -118,7 +118,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 		"--settings", setPath,
 		"--setting-sources", "project,local")
 	if s.Instructions != "" {
-		instrPath, err := c.d.writeLaunchFile(s.SessionID, "claude-instructions.md", []byte(s.Instructions))
+		instrPath, err := c.d.writeLaunchFile(s.SessionID, "claude-instructions.md", []byte("\n\n"+strings.TrimLeft(s.Instructions, "\n")))
 		if err != nil {
 			return nil, err
 		}

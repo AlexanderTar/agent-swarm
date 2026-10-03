@@ -265,8 +265,8 @@ func TestClaudeMCPConfigIsIsolated(t *testing.T) {
 		t.Fatalf("expected --append-system-prompt-file in Claude argv")
 	}
 	content, err := os.ReadFile(promptFilePath)
-	if err != nil || string(content) != spec.Instructions {
-		t.Fatalf("prompt file content = %q, want %q", string(content), spec.Instructions)
+	if err != nil || string(content) != "\n\n"+spec.Instructions {
+		t.Fatalf("prompt file content = %q, want %q", string(content), "\n\n"+spec.Instructions)
 	}
 
 	b, err := os.ReadFile(mcpPath)
@@ -1335,5 +1335,30 @@ func TestClaudeLaunchAndResumeEnableTodoTools(t *testing.T) {
 	}
 	if r.Env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "1" {
 		t.Fatalf("resume env = %v, want CLAUDE_CODE_ENABLE_TODO_TOOLS=1", r.Env)
+	}
+}
+
+func TestClaudeInstructionsFileStartsWithBlankLine(t *testing.T) {
+	for _, in := range []string{"A", "\nA", "\n\nA"} {
+		d := testDeps(t)
+		spec := claudeSpec(t, d)
+		spec.Instructions = in
+		l, err := newClaude(d).Launch(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var path string
+		for i, v := range l.Argv {
+			if v == "--append-system-prompt-file" {
+				path = l.Argv[i+1]
+			}
+		}
+		if path == "" {
+			t.Fatalf("%q: missing --append-system-prompt-file", in)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "\n\nA" {
+			t.Fatalf("%q: file = %q (err %v), want %q", in, got, err, "\n\nA")
+		}
 	}
 }
