@@ -155,6 +155,22 @@ struct SubtleScrollerConfig: NSViewRepresentable {
     final class ConfigurationView: NSView {
         var adjacentScrollView = false
 
+        // AppKit flips scroll views back to the legacy style (opaque track) whenever the
+        // preferred style changes, e.g. "Show scroll bars: Always" or a mouse attaching.
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(preferredStyleChanged),
+                name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        @objc private func preferredStyleChanged() {
+            // AppKit applies its reset after observers run; configure on the next turn.
+            DispatchQueue.main.async { [weak self] in self?.configure() }
+        }
+
         override func layout() {
             super.layout()
             configure()

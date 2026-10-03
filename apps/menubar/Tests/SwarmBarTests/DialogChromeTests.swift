@@ -46,6 +46,14 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertEqual(scroll.scrollerStyle, .overlay)
         XCTAssertTrue(scroll.autohidesScrollers)
         XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
+        XCTAssertFalse(scroll.drawsBackground)
+
+        // "Show scroll bars: Always" / an attached mouse makes AppKit flip the scroll view
+        // back to the legacy style (opaque track) when the preferred style changes.
+        scroll.scrollerStyle = .legacy
+        NotificationCenter.default.post(name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(scroll.scrollerStyle, .overlay, "picker must stay overlay after the preferred style changes")
     }
 
     /// CHORE-24: Settings lost its toolbar tabs and title on the macOS 27 SDK. The
