@@ -741,8 +741,9 @@ func TestCreateSpikeWithChoreIntent(t *testing.T) {
 	}
 }
 
-// Chore spec decision 3 / E11: a chore works only on its own scope.
-func TestChoreRootCannotProposeTopLevel(t *testing.T) {
+// BUG-26 supersedes chore spec decision 3: a chore orchestrator may propose
+// top-level items like any other top-level orchestrator (always Draft).
+func TestChoreRootCanProposeTopLevel(t *testing.T) {
 	s := newStore(t)
 	ch := mk(t, s, items.Chore, "", "Bump deps")
 	orch := items.Orchestrator("agt_1", ch.ID)
@@ -750,15 +751,21 @@ func TestChoreRootCannotProposeTopLevel(t *testing.T) {
 		{Type: items.Epic, Title: "E"}, {Type: items.Bug, Title: "B"},
 		{Type: items.Chore, Title: "C"}, {Type: items.Spike, Title: "S", SpikeIntent: "feature"},
 	} {
-		_, err := s.Create(ctx, in, orch)
-		if code(err) != items.CodeBadRequest ||
-			err.Error() != "A chore works only on its own scope. It can't propose top-level items." {
-			t.Fatalf("%s: err = %v", in.Type, err)
+		got, err := s.Create(ctx, in, orch)
+		if err != nil {
+			t.Fatalf("%s: %v", in.Type, err)
+		}
+		if got.Status != items.Draft || got.OriginSpikeID != ch.ID {
+			t.Fatalf("%s: status=%s origin=%s, want Draft from %s", in.Type, got.Status, got.OriginSpikeID, ch.ID)
 		}
 	}
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Go", Status: items.Ready}, orch)
+	if code(err) != items.CodeBadRequest || err.Error() != "A proposed top-level item starts as Draft. The user starts it." {
+		t.Fatalf("ready proposal: err = %v", err)
+	}
 	var n int
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("items = %d (%v), want only the chore", n, err)
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil || n != 5 {
+		t.Fatalf("items = %d (%v), want the chore plus 4 proposals", n, err)
 	}
 }
 
