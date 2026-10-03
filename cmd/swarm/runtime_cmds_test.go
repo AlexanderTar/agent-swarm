@@ -549,9 +549,9 @@ func TestBugsListsStoredReports(t *testing.T) {
 
 func TestResolveClosesEachKey(t *testing.T) {
 	srv, got, home := stubDaemon(t, map[string]string{
-		"GET /api/items/BUG-13":   `{"key":"BUG-13","revision":4}`,
+		"GET /api/items/BUG-13":   `{"item":{"key":"BUG-13","revision":4}}`,
 		"PATCH /api/items/BUG-13": `{"key":"BUG-13","status":"done","resolved_by":"CHORE-27"}`,
-		"GET /api/items/BUG-14":   `{"key":"BUG-14","revision":7}`,
+		"GET /api/items/BUG-14":   `{"item":{"key":"BUG-14","revision":7}}`,
 		"PATCH /api/items/BUG-14": `{"key":"BUG-14","status":"done","resolved_by":"CHORE-27"}`,
 	})
 	defer srv.Close()
@@ -582,7 +582,7 @@ func TestResolveClosesEachKey(t *testing.T) {
 
 func TestResolveReportsFailuresPerKey(t *testing.T) {
 	srv, _, home := stubDaemon(t, map[string]string{
-		"GET /api/items/BUG-13":   `{"key":"BUG-13","revision":4}`,
+		"GET /api/items/BUG-13":   `{"item":{"key":"BUG-13","revision":4}}`,
 		"PATCH /api/items/BUG-13": `{"key":"BUG-13","status":"done"}`,
 	})
 	defer srv.Close()

@@ -216,13 +216,16 @@ func cmdResolve(args []string, stdout, stderr io.Writer) int {
 	}
 	code = 0
 	for _, key := range rest {
-		var item struct {
-			Revision int `json:"revision"`
+		// GET /api/items/{key} wraps the item: {"item": {...}, "agents": ...}.
+		var got struct {
+			Item struct {
+				Revision int `json:"revision"`
+			} `json:"item"`
 		}
-		err := c.do("GET", "/api/items/"+key, nil, &item)
+		err := c.do("GET", "/api/items/"+key, nil, &got)
 		if err == nil {
 			err = c.do("PATCH", "/api/items/"+key,
-				map[string]any{"status": "done", "resolved_by": *by, "revision": item.Revision}, nil)
+				map[string]any{"status": "done", "resolved_by": *by, "revision": got.Item.Revision}, nil)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", key, err)
