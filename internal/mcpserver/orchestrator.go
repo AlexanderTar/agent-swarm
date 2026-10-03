@@ -572,12 +572,29 @@ func worktreeTool(s *Server) ToolDef {
 				}
 				return worktreeOut(out), nil
 			case "release":
-				target, err := s.RT.Agent(ctx, in.Agent)
-				if err != nil {
-					return nil, err
-				}
-				if err := s.RT.Worktree.Release(ctx, in.Worktree, target.ID); err != nil {
-					return nil, err
+				if in.Agent == "" {
+					// No agent: the owner drops every holder that is
+					// finished with no live session.
+					cur, err := s.RT.Worktree.Get(ctx, in.Worktree)
+					if err != nil {
+						return nil, err
+					}
+					if cur.OwnerAgentID != a.ID {
+						return nil, fmt.Errorf("worktree: only the owner can release %s without naming an agent", cur.Path)
+					}
+					if err := s.RT.ReleaseStaleReservations(ctx, in.Worktree); err != nil {
+						return nil, err
+					}
+				} else {
+					target, err := s.RT.Agent(ctx, in.Agent)
+					if errors.Is(err, sql.ErrNoRows) {
+						return nil, fmt.Errorf("unknown agent %q", in.Agent)
+					} else if err != nil {
+						return nil, err
+					}
+					if err := s.RT.Worktree.Release(ctx, in.Worktree, target.ID); err != nil {
+						return nil, err
+					}
 				}
 				// Release, like Share, doesn't mutate the worktrees row itself, so
 				// a fresh Get after it reflects the true (unchanged) state.

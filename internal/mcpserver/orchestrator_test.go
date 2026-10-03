@@ -1383,6 +1383,65 @@ func TestWorktreeRemoveIgnoresFinishedHolders(t *testing.T) {
 	}
 }
 
+// BUG-12: release with no agent is the owner's "drop every stale holder";
+// a non-owner is refused, and an unknown agent name is named, never a raw
+// sql error.
+func TestWorktreeReleaseWithoutAgentDropsStaleHolders(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"`+seed.RepoID+`","branch":"task/norel"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	json.Unmarshal(mustJSON(out), &wt)
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"share","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`","mode":"ro"}`); err != nil {
+		t.Fatal(err)
+	}
+	s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, worker.ID)
+	s.RT.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = 1 WHERE id = ?`, worker.ID)
+	released := func() int {
+		var n int
+		s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
+			WHERE worktree_id = ? AND agent_id = ? AND released_at IS NOT NULL`, wt.WorktreeID, worker.ID).Scan(&n)
+		return n
+	}
+	release := `{"op":"release","worktree":"` + wt.WorktreeID + `"}`
+
+	stranger := seedOtherOrchestrator(t, s)
+	if _, err := s.call(ctx, stranger, "swarm_worktree", release); err == nil || !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("a non-owner's release with no agent must be refused naming ownership, got %v", err)
+	}
+	if released() != 0 {
+		t.Fatal("a refused release must not release anything")
+	}
+
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"release","worktree":"`+wt.WorktreeID+`","agent":"no-such-agent"}`); err == nil ||
+		!strings.Contains(err.Error(), "no-such-agent") || strings.Contains(err.Error(), "sql") {
+		t.Fatalf("unknown agent must be named, not a raw sql error, got %v", err)
+	}
+
+	out, err = s.call(ctx, seed.Caller, "swarm_worktree", release)
+	if err != nil {
+		t.Fatalf("owner's release with no agent: %v", err)
+	}
+	var got struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	json.Unmarshal(mustJSON(out), &got)
+	if got.WorktreeID != wt.WorktreeID {
+		t.Fatalf("release result = %+v", got)
+	}
+	if released() != 1 {
+		t.Fatal("owner's release with no agent must release the finished holder")
+	}
+}
+
 func TestWorktreeCreateAndShareRefuseUnknownIDs(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
