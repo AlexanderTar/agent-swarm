@@ -861,10 +861,10 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		if err != nil {
 			return err
 		}
-		if head != g.SHA {
+		if len(g.SHA) < 7 || !strings.HasPrefix(head, strings.ToLower(g.SHA)) {
 			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
-				"Commit your work before completing: %s HEAD is %s, checkpoint says %s",
-				wt.Repo, workflow.SHA7(head), workflow.SHA7(g.SHA))}
+				"Commit your work before completing: %s HEAD is %s, checkpoint says %s. Pass the full sha of your committed HEAD.",
+				wt.Repo, head, g.SHA)}
 		}
 		if sha == "" {
 			sha = head
@@ -1557,7 +1557,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
-		if in.Kind == CompletedCkp {
+		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator {
 			if kind := requiredArtifactKind(it); kind != "" && !waived(it, "required_artifact") {
 				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)
 				if err != nil {
@@ -1659,7 +1659,29 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err := s.tryTransition(ctx, tx, itemKey, items.Blocked); err != nil {
 				return err
 			}
+		case Integrated:
+			// Restore first: reconcileRoot ignores a Blocked root, so the
+			// finish request would never open.
+			if it.Status == items.Blocked {
+				if err := s.tryTransition(ctx, tx, itemKey, it.StatusBeforeBlock); err != nil {
+					return err
+				}
+			}
 		case CompletedCkp:
+			if it.Status == items.Blocked && a.Role != RoleOrchestrator {
+				// Only undo a block this agent's own blocked checkpoint caused.
+				var last string
+				err := tx.QueryRowContext(ctx, `SELECT kind FROM checkpoints WHERE agent_id = ? AND item_id = ? AND id <> ?
+					ORDER BY created_at DESC, rowid DESC LIMIT 1`, a.ID, it.ID, out.CheckpointID).Scan(&last)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				if last == string(BlockedCkp) {
+					if err := s.tryTransition(ctx, tx, itemKey, it.StatusBeforeBlock); err != nil {
+						return err
+					}
+				}
+			}
 			if it.Type == items.Task {
 				if err := s.tryTransition(ctx, tx, itemKey, items.InReview); err != nil {
 					return err
