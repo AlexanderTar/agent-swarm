@@ -54,6 +54,7 @@ public struct BoardHandoffView: View {
         .frame(minWidth: 760, idealWidth: 820)
         .translucentDialogBackground()
         .background(TranslucentWindowAccessor())
+        .background(WindowCenterAccessor())
     }
 
     private func detailLine(_ row: BoardItemRow) -> NSAttributedString {

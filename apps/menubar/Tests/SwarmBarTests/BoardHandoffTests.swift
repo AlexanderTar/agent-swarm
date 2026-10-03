@@ -21,6 +21,18 @@ final class BoardHandoffTests: XCTestCase {
         return f
     }
 
+    func testLoadingShowsNoWorkerErrors() async {
+        let f = BoardHandoffForm(client: client, settings: state.settings, agents: state.agents, connected: true, preselectAgent: nil)
+        XCTAssertTrue(f.loading)
+        for role in BoardHandoffForm.workerRoles {
+            let e = f.workerErrors(role)
+            XCTAssertNil(e.agent, "no agent error while the catalog is still loading (\(role))")
+            XCTAssertNil(e.model, "no model error while the catalog is still loading (\(role))")
+        }
+        await f.load()
+        XCTAssertFalse(f.loading)
+    }
+
     func testRowsEligibilityAndOrdering() {
         let rows = BoardHandoffRules.rows(client.boardItemList, agents: state.agents)
         XCTAssertEqual(rows.map(\.id), ["SPIKE-4", "EPIC-12", "BUG-7", "CHORE-3"],

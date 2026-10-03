@@ -240,6 +240,7 @@ struct BoardHandoffHost: View {
                 ProgressView().frame(width: 480, height: 200)
                     .translucentDialogBackground()
                     .background(TranslucentWindowAccessor())
+                    .background(WindowCenterAccessor())
             }
         }
         .onAppear { reopen() }

@@ -116,6 +116,28 @@ final class DialogChromeTests: XCTestCase {
                       "content must extend under the title bar so one material covers the whole window, not just below it")
     }
 
+    /// Orchestrate task opens as a small spinner, then grows to the form; the window
+    /// must stay centered through that resize, not keep the spinner's origin.
+    @MainActor
+    func testWindowCenterStaysCenteredAcrossResize() throws {
+        let screen = try XCTUnwrap(NSScreen.main).visibleFrame
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: Color.clear.background(WindowCenterAccessor()))
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: 3, y: 5))
+        window.orderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(window.frame.midX, screen.midX, accuracy: 1)
+        XCTAssertEqual(window.frame.midY, screen.midY, accuracy: 1)
+        window.setContentSize(NSSize(width: 820, height: 300))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(window.frame.midX, screen.midX, accuracy: 1)
+        XCTAssertEqual(window.frame.midY, screen.midY, accuracy: 1)
+        window.close()
+    }
+
     /// The footer split button is a primary button plus a borderless chevron menu
     /// sharing one row — never one segmented control. The segmented chevron cell
     /// drew its pressed pill ~3 pt below the label segment with the menu open

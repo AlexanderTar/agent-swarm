@@ -169,7 +169,9 @@ public final class BoardHandoffForm {
         return CatalogRules.effortOptions(w.agent, CatalogRules.resolve(CatalogRules.entry(picker.catalog, w.agent), w.model))
     }
 
+    /// Empty while loading: the catalog is not here yet, so every row would read "not installed".
     public func workerErrors(_ role: SettingsRole) -> FieldErrors {
+        guard !loading else { return FieldErrors() }
         var e = CatalogRules.validate(workerChoice(role), advisor: .none, catalog: picker.catalog,
                                       enabled: picker.settings.enabledAgents, role: role)
         if e.model == nil { e.model = workerModelErrors[role] }

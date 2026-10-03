@@ -74,6 +74,38 @@ public struct TranslucentWindowAccessor: NSViewRepresentable {
     }
 }
 
+/// Keeps a dialog's window centered on its screen: once it joins a window and on every
+/// resize (Orchestrate task opens as a small spinner, then grows to the form; the
+/// restored origin would leave it off-centre).
+public struct WindowCenterAccessor: NSViewRepresentable {
+    public init() {}
+
+    public final class AccessorView: NSView {
+        private var observer: NSObjectProtocol?
+
+        override public func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observer.map(NotificationCenter.default.removeObserver)
+            observer = nil
+            guard let window else { return }
+            observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window,
+                                                              queue: .main) { [weak window] _ in
+                MainActor.assumeIsolated { window.map(Self.center) }
+            }
+            DispatchQueue.main.async { [weak window] in window.map(Self.center) }
+        }
+
+        static func center(_ window: NSWindow) {
+            guard let screen = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+            let origin = NSPoint(x: screen.midX - window.frame.width / 2, y: screen.midY - window.frame.height / 2)
+            if window.frame.origin != origin { window.setFrameOrigin(origin) }
+        }
+    }
+
+    public func makeNSView(context: Context) -> AccessorView { AccessorView(frame: .zero) }
+    public func updateNSView(_ nsView: AccessorView, context: Context) {}
+}
+
 extension View {
     /// Identical inset field surfaces for single-line and image-aware multiline input.
     func dialogFieldSurface(focused: Bool = false) -> some View {
