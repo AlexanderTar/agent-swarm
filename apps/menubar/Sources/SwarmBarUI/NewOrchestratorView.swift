@@ -73,7 +73,6 @@ public struct NewOrchestratorView: View {
                minHeight: 700, idealHeight: 790)
         .translucentDialogBackground()
         .background(TranslucentWindowAccessor())
-        .task { await form.load() }
     }
 
     private func formContents(maxRows: Int) -> some View {

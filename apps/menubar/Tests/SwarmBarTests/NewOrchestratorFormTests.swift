@@ -455,3 +455,18 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertNotNil(f.startedWithUnsavedImages)
     }
 }
+
+@MainActor
+final class NewOrchestratorOpenTriggerTests: XCTestCase {
+    func testEachRequestBumpsNonceAndFormIsFresh() {
+        let model = makeAppModel(MockDaemonClient())
+        let before = model.newOrchestratorOpenNonce
+        let first = model.makeNewOrchestratorForm()
+        first.request = "leftover"
+        model.requestNewOrchestrator()
+        XCTAssertEqual(model.newOrchestratorOpenNonce, before + 1)
+        model.requestNewOrchestrator()
+        XCTAssertEqual(model.newOrchestratorOpenNonce, before + 2)
+        XCTAssertEqual(model.makeNewOrchestratorForm().request, "")
+    }
+}
