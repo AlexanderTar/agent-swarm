@@ -79,6 +79,7 @@ public struct PopoverView: View {
             footer
         }
         .frame(width: 360)
+        .background(PopoverWindowFit())
         .controlSize(.small)
         .glassButtons()
         .onAppear { model.popoverShown() }
@@ -122,6 +123,45 @@ public struct PopoverView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+/// TASK-504: macOS 27's MenuBarExtraWindow grows with the popover but no longer shrinks when the
+/// content gets shorter while it is shown (a section collapses, the state loads), leaving the
+/// content — square opaque background and all — centered in a taller rounded window. This
+/// background is exactly the content's size, so after each layout it fits the window to itself,
+/// top edge pinned under the status item. A no-op whenever the window already fits.
+struct PopoverWindowFit: NSViewRepresentable {
+    func makeNSView(context: Context) -> FitView { FitView(frame: .zero) }
+    func updateNSView(_ view: FitView, context: Context) {}
+
+    final class FitView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            fitSoon()
+        }
+
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            fitSoon()
+        }
+
+        /// Deferred: resizing the window from inside SwiftUI's layout pass re-enters it.
+        private func fitSoon() {
+            DispatchQueue.main.async { [weak self] in self?.fit() }
+        }
+
+        private func fit() {
+            guard let window, let host = window.contentView, bounds.height > 0 else { return }
+            let delta = host.frame.height - bounds.height
+            guard abs(delta) > 0.5 else { return }
+            var frame = window.frame
+            frame.origin.y += delta
+            frame.size.height -= delta
+            window.setFrame(frame, display: true)
+        }
     }
 }
 
