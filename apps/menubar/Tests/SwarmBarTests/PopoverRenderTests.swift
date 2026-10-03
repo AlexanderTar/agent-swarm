@@ -111,5 +111,30 @@ final class PopoverRenderTests: XCTestCase {
         let height = renderedSize(NeedsYouSection(model: m, cap: 400).frame(width: 360)).height
         XCTAssertGreaterThan(height, 0)
     }
-}
 
+    /// TASK-504: on macOS 27 the MenuBarExtraWindow keeps its height when the popover's content
+    /// gets shorter while it is shown, so the content (with its own opaque square background) sat
+    /// centered in a taller rounded window: a panel inside a frame, gaps above and below. The
+    /// popover fits its own window to its content, top edge pinned under the menu bar.
+    func testPopoverFitsItsWindowWhenContentIsShorter() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        client.stateResult = .success(try Fixture.decode("state-empty.json"))
+        let m = makeAppModel(client)
+        await m.refresh()
+        let host = NSHostingView(rootView: PopoverView(model: m, openNewOrchestrator: {}, openSettings: {}))
+        host.sizingOptions = [] // like the macOS 27 MenuBarExtraWindow: the window does not follow the content
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 360, height: 850),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        let top = window.frame.maxY
+        for _ in 0..<10 {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let content = NSHostingView(rootView: PopoverView(model: m, openNewOrchestrator: {}, openSettings: {})).fittingSize.height
+        XCTAssertLessThan(content, 700, "sparse content is shorter than the stale window")
+        XCTAssertEqual(window.frame.height, content, accuracy: 1, "window fits the content: no gaps above or below")
+        XCTAssertEqual(window.frame.maxY, top, accuracy: 0.5, "top edge stays under the status item")
+    }
+}
