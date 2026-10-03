@@ -33,6 +33,7 @@ Commands:
   pause NAME|--all [--group]       pause an agent, its group, or everything
   resume NAME
   cancel NAME
+  resolve --by KEY2 KEY...         close Draft/Ready bugs, chores or epics as Done, resolved by the Done root KEY2
   retry NAME [--note TEXT]         new attempt for a failed, crashed or interrupted agent
   ack NAME                         move a failed, crashed or interrupted agent to history
   lineage NAME [--repair]          show an agent's canonical identity and generation history
@@ -103,6 +104,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdResume(args[1:], stdout, stderr)
 	case "cancel":
 		return cmdCancel(args[1:], stdout, stderr)
+	case "resolve":
+		return cmdResolve(args[1:], stdout, stderr)
 	case "retry":
 		return cmdRetry(args[1:], stdout, stderr)
 	case "handoff":

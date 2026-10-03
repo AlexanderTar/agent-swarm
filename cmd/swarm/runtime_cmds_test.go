@@ -546,3 +546,52 @@ func TestBugsListsStoredReports(t *testing.T) {
 		t.Errorf("not newest first:\n%s", s)
 	}
 }
+
+func TestResolveClosesEachKey(t *testing.T) {
+	srv, got, home := stubDaemon(t, map[string]string{
+		"GET /api/items/BUG-13":   `{"key":"BUG-13","revision":4}`,
+		"PATCH /api/items/BUG-13": `{"key":"BUG-13","status":"done","resolved_by":"CHORE-27"}`,
+		"GET /api/items/BUG-14":   `{"key":"BUG-14","revision":7}`,
+		"PATCH /api/items/BUG-14": `{"key":"BUG-14","status":"done","resolved_by":"CHORE-27"}`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	code := run([]string{"resolve", "--home", home, "--url", srv.URL, "--by", "CHORE-27", "BUG-13", "BUG-14"}, &out, &out)
+	if code != 0 {
+		t.Fatalf("code = %d: %s", code, out.String())
+	}
+	var patches []string
+	for _, c := range *got {
+		if c.method == "PATCH" {
+			patches = append(patches, c.path+" "+c.body)
+		}
+	}
+	want := []string{
+		`/api/items/BUG-13 {"resolved_by":"CHORE-27","revision":4,"status":"done"}`,
+		`/api/items/BUG-14 {"resolved_by":"CHORE-27","revision":7,"status":"done"}`,
+	}
+	if !slices.Equal(patches, want) {
+		t.Fatalf("patches = %q", patches)
+	}
+	for _, k := range []string{"BUG-13", "BUG-14"} {
+		if !strings.Contains(out.String(), k+" resolved by CHORE-27") {
+			t.Fatalf("output missing %s: %q", k, out.String())
+		}
+	}
+}
+
+func TestResolveReportsFailuresPerKey(t *testing.T) {
+	srv, _, home := stubDaemon(t, map[string]string{
+		"GET /api/items/BUG-13":   `{"key":"BUG-13","revision":4}`,
+		"PATCH /api/items/BUG-13": `{"key":"BUG-13","status":"done"}`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	code := run([]string{"resolve", "--home", home, "--url", srv.URL, "--by", "CHORE-27", "BUG-99", "BUG-13"}, &out, &out)
+	if code != 1 || !strings.Contains(out.String(), "BUG-99") || !strings.Contains(out.String(), "BUG-13 resolved by CHORE-27") {
+		t.Fatalf("code = %d, output %q", code, out.String())
+	}
+	if code := run([]string{"resolve", "--home", home, "--url", srv.URL, "BUG-13"}, &out, &out); code != 2 {
+		t.Fatalf("missing --by: code = %d", code)
+	}
+}

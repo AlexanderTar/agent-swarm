@@ -200,6 +200,40 @@ func cmdStart(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cmdResolve closes each KEY as Done "resolved by" another, Done root. A failure on one
+// key is reported and the rest still run; the exit code is 1 if any failed.
+func cmdResolve(args []string, stdout, stderr io.Writer) int {
+	var by *string
+	c, rest, code, done := connect("resolve", args, stderr, func(fs *flag.FlagSet) {
+		by = fs.String("by", "", "key of the Done root that resolved them")
+	})
+	if done {
+		return code
+	}
+	if *by == "" || len(rest) == 0 {
+		fmt.Fprint(stderr, "Usage: swarm resolve --by KEY2 KEY...\n")
+		return 2
+	}
+	code = 0
+	for _, key := range rest {
+		var item struct {
+			Revision int `json:"revision"`
+		}
+		err := c.do("GET", "/api/items/"+key, nil, &item)
+		if err == nil {
+			err = c.do("PATCH", "/api/items/"+key,
+				map[string]any{"status": "done", "resolved_by": *by, "revision": item.Revision}, nil)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", key, err)
+			code = 1
+			continue
+		}
+		fmt.Fprintf(stdout, "%s resolved by %s.\n", key, *by)
+	}
+	return code
+}
+
 // sessionInfo is the part of §3.2 AgentNode.session the tree printer reads.
 type sessionInfo struct {
 	State   string `json:"state"`
