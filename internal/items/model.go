@@ -126,15 +126,17 @@ type Item struct {
 	// TitlePending is set when Title is a daemon-computed placeholder (an
 	// orchestrator started with no Name): the orchestrator's first accepted
 	// checkpoint may still name the item (spec 2026-09-28).
-	TitlePending bool       `json:"title_pending,omitempty"`
-	Waivers      []Waiver   `json:"waivers,omitempty"`
-	Override     *Override  `json:"override,omitempty"`
-	LegacyKey    string     `json:"legacy_key,omitempty"`
-	SortOrder    int        `json:"sort_order"`
-	Revision     int        `json:"revision"`
-	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	TitlePending bool      `json:"title_pending,omitempty"`
+	Waivers      []Waiver  `json:"waivers,omitempty"`
+	Override     *Override `json:"override,omitempty"`
+	// ResolvedBy is the key of the Done root that closed this one (resolved-by close).
+	ResolvedBy string     `json:"resolved_by,omitempty"`
+	LegacyKey  string     `json:"legacy_key,omitempty"`
+	SortOrder  int        `json:"sort_order"`
+	Revision   int        `json:"revision"`
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 	// computed, not stored
 	BlockedBy    []string  `json:"blocked_by"`
 	Progress     *Progress `json:"progress,omitempty"`

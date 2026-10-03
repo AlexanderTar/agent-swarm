@@ -15,6 +15,7 @@ const (
 	ItemChanged     = "item.changed"
 	ItemWaived      = "item.waived"
 	ItemOverridden  = "item.overridden"
+	ItemResolved    = "item.resolved"
 	RequestOpened   = "request.opened"
 	RequestResolved = "request.resolved"
 	SettingsChanged = "settings.changed"

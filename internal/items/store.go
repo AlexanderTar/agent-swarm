@@ -81,6 +81,8 @@ type Patch struct {
 	Solo       *string        // orchestrator/daemon only
 	Verify     *[]string      // orchestrator/daemon only
 	Status     *Status
+	// ResolvedBy (a Done root's key) closes a Draft/Ready root as Done; needs Status Done.
+	ResolvedBy *string
 	Waive      []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
 	// OverrideReason forces Status past the normal rules (orchestrator only); a
 	// Status the normal check allows still moves plainly, with no override recorded.
@@ -121,8 +123,9 @@ const itemCols = `i.id, i.key, i.type, COALESCE(i.parent_id, ''), COALESCE(p.key
  i.repo_hints_json, i.suggested_repos_json, COALESCE(i.spike_intent, ''), COALESCE(i.origin_spike_id, ''),
  COALESCE(i.legacy_key, ''), i.sort_order, i.revision, i.archived_at, i.created_at, i.updated_at,
  i.workflow_json, COALESCE(i.steps_json, '[]'), COALESCE(i.units_json, '[]'), COALESCE(i.solo, ''), COALESCE(i.verify_json, '[]'),
- i.title_pending, i.waivers_json, i.override_json
- FROM items i LEFT JOIN items p ON p.id = i.parent_id JOIN items r ON r.id = i.root_id`
+ i.title_pending, i.waivers_json, i.override_json, COALESCE(rb.key, '')
+ FROM items i LEFT JOIN items p ON p.id = i.parent_id JOIN items r ON r.id = i.root_id
+ LEFT JOIN items rb ON rb.id = i.resolved_by_id`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -140,7 +143,7 @@ func scanItem(sc scanner) (Item, error) {
 		&it.RoleHint, &it.TddExempt, &confirmed, &it.ReposVersion,
 		&hints, &suggested, &it.SpikeIntent, &it.OriginSpikeID,
 		&it.LegacyKey, &it.SortOrder, &it.Revision, &archived, &created, &updated,
-		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw, &titlePending, &waiversRaw, &overrideRaw)
+		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw, &titlePending, &waiversRaw, &overrideRaw, &it.ResolvedBy)
 	if err != nil {
 		return it, err
 	}
@@ -607,11 +610,17 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 	if err != nil {
 		return Item{}, err
 	}
-	if err := s.orchestratorScope(ctx, tx, by, it); err != nil {
-		return Item{}, err
+	// A resolved-by close is the one change an orchestrator may make outside its own tree.
+	if p.ResolvedBy == nil {
+		if err := s.orchestratorScope(ctx, tx, by, it); err != nil {
+			return Item{}, err
+		}
 	}
 	if p.Revision != it.Revision {
 		return Item{}, errf(CodeConflict, StaleRevision)
+	}
+	if p.ResolvedBy != nil {
+		return s.resolveTx(ctx, tx, it, p, by)
 	}
 	if len(p.Waive) > 0 {
 		if err := s.waiveTx(ctx, tx, &it, p.Waive, by); err != nil {

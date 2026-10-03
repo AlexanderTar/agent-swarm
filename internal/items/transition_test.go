@@ -1279,3 +1279,127 @@ func TestLaterTransitionClearsATaskOverride(t *testing.T) {
 		t.Fatalf("after cancel = %s %+v", after.Status, after.Override)
 	}
 }
+
+// resolveFixture: a Draft bug, a Done chore, and an in-tree task.
+func resolveFixture(t *testing.T) (s *items.Store, bug, chore items.Item) {
+	t.Helper()
+	s = newStore(t)
+	bug = mk(t, s, items.Bug, "", "Broken")
+	chore = mk(t, s, items.Chore, "", "Fix it")
+	setStatus(t, s, chore, items.Done)
+	return s, mustGet(t, s, bug.Key), mustGet(t, s, chore.Key)
+}
+
+func resolve(s *items.Store, it items.Item, by string, a items.Actor) error {
+	cur, err := s.Get(ctx, it.Key)
+	if err != nil {
+		return err
+	}
+	_, err = s.Update(ctx, it.Key, items.Patch{Status: ptr(items.Done), ResolvedBy: &by, Revision: cur.Revision}, a)
+	return err
+}
+
+func TestResolvedByAllowed(t *testing.T) {
+	for _, from := range []items.Status{items.Draft, items.Ready} {
+		s, bug, chore := resolveFixture(t)
+		child := mk(t, s, items.Task, bug.Key, "Child")
+		if from == items.Ready {
+			setStatus(t, s, bug, items.Ready)
+		}
+		if err := resolve(s, bug, chore.Key, user); err != nil {
+			t.Fatalf("from %s: %v", from, err)
+		}
+		got := mustGet(t, s, bug.Key)
+		if got.Status != items.Done || got.ResolvedBy != chore.Key {
+			t.Fatalf("from %s: status %s resolved_by %q", from, got.Status, got.ResolvedBy)
+		}
+		wantStatus(t, s, child.Key, items.Cancelled)
+		evs, err := s.Events.After(ctx, 0, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen bool
+		for _, ev := range evs {
+			if ev.Type == events.ItemResolved {
+				seen = true
+				p := string(ev.Payload)
+				if !strings.Contains(p, chore.Key) || !strings.Contains(p, `"actor"`) {
+					t.Fatalf("payload = %s", p)
+				}
+			}
+		}
+		if !seen {
+			t.Fatal("no item.resolved event")
+		}
+	}
+}
+
+func TestResolvedByStalesAcceptRequests(t *testing.T) {
+	s, bug, chore := resolveFixture(t)
+	req := seedRequest(t, s.DB, bug, "accept_fix", "open")
+	if err := resolve(s, bug, chore.Key, user); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := s.DB.QueryRow(`SELECT state FROM requests WHERE id = ?`, req).Scan(&state); err != nil || state != "stale" {
+		t.Fatalf("request state = %q, %v", state, err)
+	}
+}
+
+func TestResolvedByOrchestratorOfAnotherRoot(t *testing.T) {
+	s, bug, chore := resolveFixture(t)
+	if err := resolve(s, bug, chore.Key, items.Orchestrator("agt_o", chore.ID)); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, bug.Key, items.Done)
+	// the exemption is for this transition only
+	other := mk(t, s, items.Bug, "", "Other")
+	_, err := s.Update(ctx, other.Key, items.Patch{Title: ptr("x"), Revision: other.Revision}, items.Orchestrator("agt_o", chore.ID))
+	if err == nil {
+		t.Fatal("orchestrator edited another root")
+	}
+}
+
+func TestResolvedByRefused(t *testing.T) {
+	s, bug, chore := resolveFixture(t)
+	notDone := mk(t, s, items.Chore, "", "Open chore")
+	spike := mk(t, s, items.Spike, "", "Spike")
+	setStatus(t, s, spike, items.Done)
+	story := mk(t, s, items.Story, mk(t, s, items.Epic, "", "E").Key, "S")
+	setStatus(t, s, story, items.Done)
+	task := mk(t, s, items.Task, bug.Key, "T")
+	inProg := mk(t, s, items.Bug, "", "Busy")
+	setStatus(t, s, inProg, items.InProgress)
+	worker := items.Actor{Kind: items.ActorAgent, AgentID: "agt_w", Role: "coder", RootID: bug.ID}
+	cases := []struct {
+		name string
+		it   items.Item
+		by   string
+		a    items.Actor
+	}{
+		{"missing", bug, "CHORE-999", user},
+		{"self", bug, bug.Key, user},
+		{"target not done", bug, notDone.Key, user},
+		{"target spike", bug, spike.Key, user},
+		{"target non-root", bug, story.Key, user},
+		{"subject non-root", task, chore.Key, user},
+		{"subject spike", mk(t, s, items.Spike, "", "S2"), chore.Key, user},
+		{"wrong from status", inProg, chore.Key, user},
+		{"worker", bug, chore.Key, worker},
+		{"daemon", bug, chore.Key, items.Daemon()},
+	}
+	for _, c := range cases {
+		if err := resolve(s, c.it, c.by, c.a); err == nil {
+			t.Errorf("%s: want refusal", c.name)
+		}
+	}
+	wantStatus(t, s, bug.Key, items.Draft)
+	// resolved_by needs status done
+	cur := mustGet(t, s, bug.Key)
+	if _, err := s.Update(ctx, bug.Key, items.Patch{ResolvedBy: &chore.Key, Revision: cur.Revision}, user); err == nil {
+		t.Error("resolved_by without status done accepted")
+	}
+	if _, err := s.Update(ctx, bug.Key, items.Patch{Status: ptr(items.Ready), ResolvedBy: &chore.Key, Revision: cur.Revision}, user); err == nil {
+		t.Error("resolved_by with status ready accepted")
+	}
+}

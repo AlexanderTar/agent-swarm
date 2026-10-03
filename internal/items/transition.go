@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -1012,4 +1013,65 @@ func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {
 		return s.setStatus(ctx, tx, &it, InProgress)
 	}
 	return nil
+}
+
+// resolveTx closes a Draft/Ready root as Done because another, Done root resolved it. It is a
+// deliberate, audited exception to "a root reaches Done only through the finish flow"
+// (docs/specs/2026-10-03-resolved-by-close.md); the side effects are cancel's.
+func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by Actor) (Item, error) {
+	rest := p
+	rest.ResolvedBy, rest.Status, rest.Revision = nil, nil, 0
+	if !reflect.DeepEqual(rest, Patch{}) {
+		return Item{}, errf(CodeBadRequest, "resolved_by can't be combined with other changes.")
+	}
+	if p.Status == nil || *p.Status != Done {
+		return Item{}, errf(CodeBadRequest, "resolved_by needs status done.")
+	}
+	if !(by.Kind == ActorUser || by.isOrchestrator()) {
+		return Item{}, deny("Only the user or an orchestrator can resolve %s.", it.Key)
+	}
+	if it.ID != it.RootID || !isAcceptRoot(it.Type) {
+		return Item{}, deny("Only a top-level epic, bug or chore can be resolved by another item; %s isn't one.", it.Key)
+	}
+	if it.Status != Draft && it.Status != Ready {
+		return Item{}, deny("Only a Draft or Ready item can be resolved by another item; %s is %s.", it.Key, StatusLabel(it.Status))
+	}
+	by0 := strings.TrimSpace(*p.ResolvedBy)
+	target, err := s.getTx(ctx, tx, by0)
+	if err != nil {
+		return Item{}, deny("Can't resolve %s: no item %s.", it.Key, by0)
+	}
+	switch {
+	case target.ID == it.ID:
+		return Item{}, deny("%s can't be resolved by itself.", it.Key)
+	case target.ID != target.RootID || !isAcceptRoot(target.Type):
+		return Item{}, deny("%s must be resolved by a top-level epic, bug or chore; %s isn't one.", it.Key, target.Key)
+	case target.Status != Done:
+		return Item{}, deny("%s must be Done before it can resolve %s; it is %s.", target.Key, it.Key, StatusLabel(target.Status))
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE items SET resolved_by_id = ? WHERE id = ?`, target.ID, it.ID); err != nil {
+		return Item{}, err
+	}
+	it.ResolvedBy = target.Key
+	if err := s.setStatus(ctx, tx, &it, Done); err != nil {
+		return Item{}, err
+	}
+	if err := s.cancelDescendants(ctx, tx, it.ID); err != nil {
+		return Item{}, err
+	}
+	if err := s.staleAccepts(ctx, tx, it); err != nil {
+		return Item{}, err
+	}
+	actor := by.Kind
+	if by.AgentID != "" {
+		actor = by.AgentID
+	}
+	if _, err := s.Events.Append(ctx, tx, events.ItemResolved, map[string]string{"key": it.Key,
+		"root_key": it.RootKey, "resolved_by": target.Key, "actor": actor}); err != nil {
+		return Item{}, err
+	}
+	if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {
+		return Item{}, err
+	}
+	return s.getByID(ctx, tx, it.ID)
 }
