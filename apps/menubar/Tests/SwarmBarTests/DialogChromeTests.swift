@@ -31,25 +31,33 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertEqual(DialogChrome.prominentStyle, .borderedProminent)
     }
 
+    /// Changing the selection makes SwiftUI update the adjacent List, which resets its scroll
+    /// view to the legacy style (opaque track) with no preferred-style notification.
     @MainActor
-    func testRepoChooserUsesSubtleScroller() {
+    func testRepoChooserStaysOverlayAfterSelectionChange() throws {
         let rows = (0..<10).map { Repo(id: "r\($0)", name: "repo-\($0)", path: "/tmp/repo-\($0)") }
         let host = NSHostingView(rootView: RepoChooser(rows: rows, selection: .constant([])))
-        host.frame = NSRect(x: 0, y: 0, width: 500, height: 200)
-        host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 500, height: 260),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.close() }
         func scrolls(in view: NSView) -> [NSScrollView] {
             let own = (view as? NSScrollView).map { [$0] } ?? []
             return own + view.subviews.flatMap(scrolls)
         }
-        guard let scroll = scrolls(in: host).first else { return XCTFail("Repo list scroll view missing") }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let scroll = try XCTUnwrap(scrolls(in: host).first, "Repo list scroll view missing")
         XCTAssertEqual(scroll.scrollerStyle, .overlay)
+
+        host.rootView = RepoChooser(rows: rows, selection: .constant(["r1"]))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(scroll.scrollerStyle, .overlay, "picker must stay overlay after a selection change")
         XCTAssertTrue(scroll.autohidesScrollers)
         XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
         XCTAssertFalse(scroll.drawsBackground)
 
-        // "Show scroll bars: Always" / an attached mouse makes AppKit flip the scroll view
-        // back to the legacy style (opaque track) when the preferred style changes.
         scroll.scrollerStyle = .legacy
         NotificationCenter.default.post(name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))

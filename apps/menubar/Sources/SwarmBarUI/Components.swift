@@ -176,8 +176,19 @@ struct SubtleScrollerConfig: NSViewRepresentable {
             configure()
         }
 
+        private var styleObservation: NSKeyValueObservation?
+        private weak var observed: NSScrollView?
+
         func configure() {
             guard let scrollView = SubtleScrollerConfig.scrollView(for: self, adjacent: adjacentScrollView) else { return }
+            if observed !== scrollView {
+                observed = scrollView
+                // SwiftUI resets an adjacent List's scroll view to legacy on updates (a
+                // selection change) without any notification; undo it as it happens.
+                styleObservation = scrollView.observe(\.scrollerStyle, options: [.new]) { scroll, _ in
+                    if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
+                }
+            }
             scrollView.drawsBackground = false
             scrollView.contentView.drawsBackground = false
             scrollView.scrollerStyle = .overlay
