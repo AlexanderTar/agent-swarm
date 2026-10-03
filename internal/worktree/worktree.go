@@ -26,6 +26,9 @@ type Worktree struct {
 	OwnerAgentID, RootItemID, State, RetainedReason         string
 	CreatedAt                                               time.Time
 	RemovedAt                                               *time.Time
+	// RemoveError is the git output of a failed remove, for the caller's report.
+	// Not persisted: retained_reason stays the documented enum.
+	RemoveError string
 }
 
 // Service runs the worktree operations against one database.
@@ -661,7 +664,9 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	}
 	if out, rerr := s.git(ctx, repoPath, "worktree", "remove", wt.Path); rerr != nil {
 		s.logf("worktree: remove %s failed: %v: %s", wt.Path, rerr, out)
-		return s.retain(ctx, wt, "remove_failed")
+		wt, err := s.retain(ctx, wt, "remove_failed")
+		wt.RemoveError = strings.TrimSpace(rerr.Error() + ": " + string(out))
+		return wt, err
 	}
 	wt.State, wt.RetainedReason = "removed", ""
 	now := s.Now()

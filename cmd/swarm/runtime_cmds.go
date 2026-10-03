@@ -182,13 +182,15 @@ func cmdStart(args []string, stdout, stderr io.Writer) int {
 	if len(repoIDs) > 0 {
 		// L25: a non-empty repos confirms the item's set, so the version it was
 		// last shown has to travel with it (I13).
-		var item struct {
-			ReposVersion int `json:"repos_version"`
+		var got struct {
+			Item struct {
+				ReposVersion int `json:"repos_version"`
+			} `json:"item"`
 		}
-		if err := c.do("GET", "/api/items/"+key, nil, &item); err != nil {
+		if err := c.do("GET", "/api/items/"+key, nil, &got); err != nil {
 			return fail(stderr, err)
 		}
-		body["repos_version"] = item.ReposVersion
+		body["repos_version"] = got.Item.ReposVersion
 	}
 	var node struct {
 		Name string `json:"name"`

@@ -425,6 +425,11 @@ func (c *Claude) HookOutput(event string, d HookDecision) ([]byte, error) {
 	if d.Context == "" {
 		return nil, nil
 	}
+	if event == "PreCompact" {
+		// Claude Code rejects hookSpecificOutput for PreCompact (BUG-29); only
+		// top-level fields such as systemMessage are valid there.
+		return json.Marshal(map[string]string{"systemMessage": d.Context})
+	}
 	return json.Marshal(map[string]any{
 		"hookSpecificOutput": map[string]string{
 			"additionalContext": d.Context,

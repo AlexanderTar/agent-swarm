@@ -111,8 +111,17 @@ func TestPreCompactAsksForACheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contextOf(t, out) != "Write a `progress` checkpoint with your current state before context is compacted." {
-		t.Fatalf("context = %q", contextOf(t, out))
+	// BUG-29: Claude Code rejects hookSpecificOutput for PreCompact; the reminder
+	// travels in the top-level systemMessage.
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, bad := m["hookSpecificOutput"]; bad {
+		t.Fatalf("PreCompact must not emit hookSpecificOutput: %s", out)
+	}
+	if m["systemMessage"] != "Write a `progress` checkpoint with your current state before context is compacted." {
+		t.Fatalf("systemMessage = %v", m["systemMessage"])
 	}
 	if strings.Contains(string(out), "block") {
 		t.Fatalf("PreCompact never blocks: %s", out)
