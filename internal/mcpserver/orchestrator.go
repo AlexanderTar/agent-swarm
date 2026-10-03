@@ -593,6 +593,14 @@ func worktreeTool(s *Server) ToolDef {
 				} else if hit {
 					return worktreeOut(wt), nil
 				}
+				// A finished holder with no live session pins nothing; let
+				// the owner's remove see past it. Worktree.Remove still
+				// refuses every live holder.
+				if cur, err := s.RT.Worktree.Get(ctx, in.Worktree); err == nil && cur.OwnerAgentID == a.ID {
+					if err := s.RT.ReleaseStaleReservations(ctx, in.Worktree); err != nil {
+						return nil, err
+					}
+				}
 				wt, err := s.RT.Worktree.Remove(ctx, in.Worktree, a.ID)
 				if err != nil {
 					return nil, err

@@ -1530,10 +1530,10 @@ const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
 		  AND NOT (` + staleHolder + `))
 	ORDER BY w.created_at`
 
-// releaseStaleReservations releases wtID's unreleased reservations held by
+// ReleaseStaleReservations releases wtID's unreleased reservations held by
 // finished agents with no live session, so the worktree's own removal guard
 // sees no other holder.
-func (s *Store) releaseStaleReservations(ctx context.Context, wtID string) error {
+func (s *Store) ReleaseStaleReservations(ctx context.Context, wtID string) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE worktree_reservations AS r SET released_at = ?
 		WHERE r.worktree_id = ? AND r.released_at IS NULL AND `+staleHolder, db.Millis(s.Now()), wtID)
 	return err
@@ -1972,7 +1972,7 @@ func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([
 			}
 			continue
 		}
-		if err := s.releaseStaleReservations(ctx, wt.ID); err != nil {
+		if err := s.ReleaseStaleReservations(ctx, wt.ID); err != nil {
 			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
 			results = append(results, CleanupResult{Path: wt.Path, Action: "kept", Reason: "error: " + err.Error()})
 			failed++

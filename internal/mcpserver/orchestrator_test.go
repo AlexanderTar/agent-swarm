@@ -1332,6 +1332,57 @@ func TestWorktreeRemoveReturnsTheFullShape(t *testing.T) {
 	}
 }
 
+// BUG-12: a holder that is finished with no live session pins nothing, so
+// remove releases it instead of refusing; a retried holder (live session
+// again) still blocks.
+func TestWorktreeRemoveIgnoresFinishedHolders(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"`+seed.RepoID+`","branch":"task/stale"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	json.Unmarshal(mustJSON(out), &wt)
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"share","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`","mode":"ro"}`); err != nil {
+		t.Fatal(err)
+	}
+	finish := func() {
+		t.Helper()
+		if _, err := s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, worker.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = 1 WHERE id = ?`, worker.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remove := `{"op":"remove","worktree":"` + wt.WorktreeID + `"}`
+
+	finish()
+	if _, err := s.call(ctx, seed.Caller, "swarm_control",
+		`{"target":"`+worker.Name+`","action":"retry","note":"again"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", remove); err == nil || !strings.Contains(err.Error(), "still hold") {
+		t.Fatalf("a retried holder with a live session must still block remove, got %v", err)
+	}
+
+	finish()
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", remove); err != nil {
+		t.Fatalf("remove with only a finished, session-less holder: %v", err)
+	}
+	var released int
+	s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
+		WHERE worktree_id = ? AND agent_id = ? AND released_at IS NOT NULL`, wt.WorktreeID, worker.ID).Scan(&released)
+	if released != 1 {
+		t.Fatalf("finished holder's reservation released = %d, want 1", released)
+	}
+}
+
 func TestWorktreeCreateAndShareRefuseUnknownIDs(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()

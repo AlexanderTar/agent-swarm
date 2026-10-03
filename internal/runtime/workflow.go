@@ -1207,6 +1207,9 @@ func (s *Store) releaseAndRemove(ctx context.Context, wf wfRow, found []struct{ 
 			continue
 		}
 		seen[r.wt] = true
+		if err := s.ReleaseStaleReservations(ctx, r.wt); err != nil {
+			return err
+		}
 		if _, err := s.Worktree.Remove(ctx, r.wt, wf.OwnerAgentID); err != nil {
 			// A dirty/unmerged review worktree is retained by design
 			// (worktree.Remove's own §12.2 policy); log, don't fail the
