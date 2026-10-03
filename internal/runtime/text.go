@@ -470,7 +470,7 @@ func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string 
 // (workflow.Render). The identity fields (Key, Title, Name, Role,
 // ParentName, RootKey, Worktrees) are filled by the caller/Spawn, not here --
 // same split BriefInput already had before this package existed.
-func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, ctxLines []string) BriefInput {
+func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round, extraRounds int, ctxLines []string) BriefInput {
 	return BriefInput{
 		Objective:  it.Brief,
 		Acceptance: it.Acceptance,
@@ -478,6 +478,6 @@ func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, c
 		Context:    ctxLines,
 		Steps:      it.Steps,
 		Units:      it.Units,
-		Workflow:   workflow.Render(spec, stepID, round),
+		Workflow:   workflow.Render(spec, stepID, round, extraRounds),
 	}
 }

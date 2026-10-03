@@ -940,7 +940,7 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		}
 		ctxLines = append(ctxLines, findingLines...)
 	}
-	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, ctxLines)
+	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
 
 	var shareRW []WorkflowWorktree
 	if step.Run != "" {

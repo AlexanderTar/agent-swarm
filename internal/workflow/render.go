@@ -8,8 +8,10 @@ import (
 // Render produces the "## Workflow" section of a step agent's brief (spec
 // B6): what step and round the agent is running, its gates, who reviews it
 // next (for a run step), or what it is reviewing and the verdict contract
-// (for a review step). It returns "" if stepID isn't in s.Steps.
-func Render(s Spec, stepID string, round int) string {
+// (for a review step). extraRounds are the rounds a resume retry granted past
+// max_rounds; the printed ceiling includes them, matching Next. It returns ""
+// if stepID isn't in s.Steps.
+func Render(s Spec, stepID string, round, extraRounds int) string {
 	s.Steps = s.EffectiveSteps()
 
 	step := findStep(s, stepID)
@@ -21,7 +23,7 @@ func Render(s Spec, stepID string, round int) string {
 
 	if step.Run != "" {
 		if rev := findReviewOf(s, stepID); rev != nil {
-			maxRounds := loopMaxRounds(rev.Loop)
+			maxRounds := loopMaxRounds(rev.Loop) + extraRounds
 			lines = append(lines, fmt.Sprintf("You are step %q (%s), round %d of at most %d.", step.ID, step.Run, round, maxRounds))
 			if len(step.Gates) > 0 {
 				lines = append(lines, fmt.Sprintf("Gates for your completed checkpoint: %s.", joinGates(step.Gates)))
@@ -51,7 +53,7 @@ func Render(s Spec, stepID string, round int) string {
 		if step.Loop == nil {
 			lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d.", round))
 		} else {
-			lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d of at most %d.", round, loopMaxRounds(step.Loop)))
+			lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d of at most %d.", round, loopMaxRounds(step.Loop)+extraRounds))
 		}
 	} else {
 		ofRole := ""
@@ -62,7 +64,7 @@ func Render(s Spec, stepID string, round int) string {
 		if step.Loop == nil {
 			lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d.", step.Of, ofRole, round))
 		} else {
-			lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)))
+			lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)+extraRounds))
 		}
 		if ofStep != nil && hasGate(ofStep.Gates, GateTDD) {
 			lines = append(lines, "The builder's red/green evidence is in its checkpoints; swarm_read the task's checkpoints to see it.")
