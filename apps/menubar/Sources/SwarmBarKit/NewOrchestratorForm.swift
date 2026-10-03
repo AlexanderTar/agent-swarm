@@ -126,7 +126,7 @@ public final class NewOrchestratorForm {
     public var scanLine: String { RepoPicker.scanLine(repos, format: format) }
 
     public var canStart: Bool {
-        connected && !submitting && nameError == nil && picker.errors.isValid && (!trimmedName.isEmpty || !trimmedRequest.isEmpty)
+        connected && !submitting && nameError == nil && picker.isValid && (!trimmedName.isEmpty || !trimmedRequest.isEmpty)
     }
 
     public var startLabel: String {

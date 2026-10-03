@@ -593,4 +593,35 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertFalse(calledBack)
         XCTAssertEqual(textView.string, "hello there")
     }
+
+    // MARK: loading-time validation (TASK-486)
+
+    func testNoValidationErrorsWhileCatalogLoads() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        client.holdCatalog = true
+        let form = model.makeNewOrchestratorForm()
+        let h = host(form)
+        assertNoPickerErrors(try ocrText(h), "window shown, load not started")
+        let load = Task { await form.load() }
+        await waitForCall(client, "catalog")
+        assertNoPickerErrors(try ocrText(h), "catalog in flight")
+        XCTAssertFalse(form.canStart, "no start against an unloaded catalog")
+        client.releaseCatalog()
+        await load.value
+        assertNoPickerErrors(try ocrText(h), "loaded with valid Settings")
+    }
+
+    func testGenuineValidationErrorShowsAfterLoad() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        var state = try client.stateResult.get()
+        state.settings.enabledAgents = [.codex, .agy]
+        client.stateResult = .success(state)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        XCTAssertTrue(try ocrText(host(form)).contains(Copy.chooseAgent))
+    }
 }

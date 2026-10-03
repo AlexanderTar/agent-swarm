@@ -10,6 +10,8 @@ public final class AgentPickerModel {
     public private(set) var advisor: AdvisorChoice
     public private(set) var advisorEffort: String
     public private(set) var catalog: [AgentCatalogEntry] = []
+    /// False until `apply(catalog:)`: there is nothing to validate the picks against yet.
+    public private(set) var catalogLoaded = false
     public private(set) var agentChangeErrors = FieldErrors()
     public private(set) var effortNote: String?
     public let settings: Settings
@@ -23,6 +25,7 @@ public final class AgentPickerModel {
     /// The catalog arrived: normalise the Settings prefill against it.
     public func apply(catalog: [AgentCatalogEntry]) {
         self.catalog = catalog
+        catalogLoaded = true
         advisor = CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog)
         normalizeAdvisorEffort()
         // The catalog wasn't loaded yet when Settings prefilled `choice`: re-check the stored effort
@@ -31,11 +34,16 @@ public final class AgentPickerModel {
             CatalogRules.resolve(CatalogRules.entry(catalog, choice.agent), choice.model), choice.effort)
     }
 
+    /// Empty until the catalog arrives, so the grid never flashes "not installed" while loading.
     public var errors: FieldErrors {
+        guard catalogLoaded else { return FieldErrors() }
         var e = CatalogRules.validate(choice, advisor: advisor, catalog: catalog, enabled: settings.enabledAgents, role: .orchestrator)
         if e.model == nil { e.model = agentChangeErrors.model }
         return e
     }
+
+    /// Submit gate: the picks are checked against a loaded catalog and pass.
+    public var isValid: Bool { catalogLoaded && errors.isValid }
 
     public var agentOptions: [PickerOption] { CatalogRules.agentOptions(enabled: settings.enabledAgents) }
     public var modelOptions: [PickerOption] { CatalogRules.modelOptions(CatalogRules.entry(catalog, choice.agent)) }

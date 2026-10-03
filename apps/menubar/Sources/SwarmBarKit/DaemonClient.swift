@@ -169,8 +169,22 @@ public final class MockDaemonClient: DaemonClient {
         return settings
     }
 
+    /// When true, `catalog` parks after recording its call until `releaseCatalog()` — lets a test
+    /// render a window while its catalog is still loading.
+    public var holdCatalog = false
+    private var catalogGates: [CheckedContinuation<Void, Never>] = []
+
+    public func releaseCatalog() {
+        holdCatalog = false
+        catalogGates.forEach { $0.resume() }
+        catalogGates = []
+    }
+
     public func catalog() async throws -> [AgentCatalogEntry] {
         try record("catalog")
+        if holdCatalog {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in catalogGates.append(cont) }
+        }
         return catalogEntries
     }
 

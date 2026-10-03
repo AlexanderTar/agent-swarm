@@ -202,4 +202,48 @@ final class BoardHandoffRenderTests: XCTestCase {
         let orchModel = try frame(Copy.model), workerModel = try frame("\(Copy.defaultsRowLabel(.coder)) \(Copy.model)")
         XCTAssertEqual(orchModel.minX.rounded(), workerModel.minX.rounded(), "Model columns are offset between the two grids")
     }
+
+    // MARK: loading-time validation (TASK-486)
+
+    private func tallHost(_ form: BoardHandoffForm) -> NSHostingView<BoardHandoffView> {
+        let host = NSHostingView(rootView: BoardHandoffView(form: form, onDone: {}, onCancel: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 640)
+        host.layoutSubtreeIfNeeded()
+        return host
+    }
+
+    func testNoValidationErrorsAtAnyLoadingState() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        client.holdCatalog = true
+        let form = model.makeBoardHandoffForm()
+        let host = tallHost(form)
+        let before = try ocrText(host)
+        XCTAssertTrue(before.contains(Copy.workerOverrides), "OCR sanity: \(before)")
+        assertNoPickerErrors(before, "window shown, load not started")
+
+        let load = Task { await form.load() }
+        await waitForCall(client, "catalog")
+        assertNoPickerErrors(try ocrText(host), "catalog in flight")
+
+        client.releaseCatalog()
+        await load.value
+        XCTAssertFalse(form.loading)
+        assertNoPickerErrors(try ocrText(host), "loaded with valid Settings")
+    }
+
+    func testGenuineValidationErrorsStillShowAfterLoad() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        var state = try client.stateResult.get()
+        state.settings.enabledAgents = [.codex, .agy] // orchestrator + most worker defaults are Claude
+        client.stateResult = .success(state)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        let text = try ocrText(tallHost(form))
+        XCTAssertTrue(text.contains(Copy.chooseAgent), text)
+        XCTAssertFalse(form.canSubmit)
+    }
 }

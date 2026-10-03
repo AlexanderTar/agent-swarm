@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import Vision
+import XCTest
 @testable import SwarmBarKit
 
 /// Shared by the native render smoke tests. AppKit hosting includes text fields,
@@ -50,4 +52,32 @@ func captureNativeWindow(_ host: NSView, name: String) throws -> NSBitmapImageRe
     }
     guard let bitmap = NSBitmapImageRep(data: data) else { throw CocoaError(.fileReadCorruptFile) }
     return bitmap
+}
+
+/// Fragments of every red picker validation message (`CatalogRules.validate`).
+let pickerErrorFragments = ["installed on this Mac", "signed in", "superpowers plugin", "no longer offered",
+                            "Choose a model", "Choose an agent"]
+
+/// OCR of a hosted view: plain SwiftUI `Text` has no backing `NSView` to inspect.
+@MainActor
+func ocrText(_ host: NSView) throws -> String {
+    host.layoutSubtreeIfNeeded()
+    let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: rep)
+    let request = VNRecognizeTextRequest()
+    try VNImageRequestHandler(cgImage: try XCTUnwrap(rep.cgImage), options: [:]).perform([request])
+    return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+}
+
+/// Asserts no picker validation error is visible in `text`.
+func assertNoPickerErrors(_ text: String, _ state: String, file: StaticString = #filePath, line: UInt = #line) {
+    for fragment in pickerErrorFragments where text.localizedCaseInsensitiveContains(fragment) {
+        XCTFail("\(state): red validation error \"\(fragment)\" visible in: \(text)", file: file, line: line)
+    }
+}
+
+/// Waits (by yielding) until the mock has recorded `call`.
+@MainActor
+func waitForCall(_ client: MockDaemonClient, _ call: String) async {
+    for _ in 0..<1000 where !client.calls.contains(call) { await Task.yield() }
 }

@@ -139,7 +139,7 @@ public final class BoardHandoffForm {
 
     public var canSubmit: Bool {
         if loadError != nil { return connected && !loading }
-        return connected && !submitting && !loading && selected != nil && picker.errors.isValid
+        return connected && !submitting && !loading && selected != nil && picker.isValid
             && workersValid && (!isHandoff || handoffPossible)
     }
 
@@ -169,9 +169,9 @@ public final class BoardHandoffForm {
         return CatalogRules.effortOptions(w.agent, CatalogRules.resolve(CatalogRules.entry(picker.catalog, w.agent), w.model))
     }
 
-    /// Empty while loading: the catalog is not here yet, so every row would read "not installed".
+    /// Empty until the catalog arrives, like `AgentPickerModel.errors`.
     public func workerErrors(_ role: SettingsRole) -> FieldErrors {
-        guard !loading else { return FieldErrors() }
+        guard picker.catalogLoaded else { return FieldErrors() }
         var e = CatalogRules.validate(workerChoice(role), advisor: .none, catalog: picker.catalog,
                                       enabled: picker.settings.enabledAgents, role: role)
         if e.model == nil { e.model = workerModelErrors[role] }
