@@ -971,6 +971,33 @@ func TestProcessedAcksMessagesInTheSameTransaction(t *testing.T) {
 	}
 }
 
+// BUG-16: processed naming a message the agent only saw in a cut inbox
+// notice (never delivered by swarm_sync) must not swallow it; the full body
+// still comes back on the next sync.
+func TestProcessedLeavesUndeliveredMessagePending(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	s.Sync(ctx, wSes.ID, nil, 20) // drain the assignment
+	enq(t, s, w.ID, w.RootItemID, "finding", `{"body":"full body"}`, 1)
+	var id string
+	s.DB.QueryRowContext(ctx, `SELECT id FROM messages WHERE to_agent_id = ? AND state = 'pending'`, w.ID).Scan(&id)
+	if id == "" {
+		t.Fatal("no pending message enqueued")
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress,
+		Summary: "x", Processed: []string{id}}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := s.Sync(ctx, wSes.ID, nil, 20)
+	for _, m := range res.Messages {
+		if m.MsgID == id {
+			return
+		}
+	}
+	t.Fatal("a never-delivered message acked via processed must still be delivered by the next sync")
+}
+
 func TestSummaryLengthIsEnforced(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

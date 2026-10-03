@@ -1628,9 +1628,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			return err
 		}
 
+		// BUG-16: only ack what swarm_sync has delivered; a pending message
+		// seen only in a cut inbox notice stays pending so its body arrives.
 		for _, id := range in.Processed {
 			if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?
-				WHERE id = ? AND to_agent_id = ? AND state <> 'acked'`, db.Millis(s.Now()), id, a.ID); err != nil {
+				WHERE id = ? AND to_agent_id = ? AND state = 'delivered'`, db.Millis(s.Now()), id, a.ID); err != nil {
 				return err
 			}
 		}
