@@ -744,3 +744,34 @@ func TestGitlessIntegratedRefusedForEpicAndBug(t *testing.T) {
 		}
 	}
 }
+
+// chore33Fixture is customFinishFixture with integrated refs (checkpoint and finish request)
+// naming repos by absolute catalog path, one with a trailing slash: the shape CHORE-33 hit.
+func chore33Fixture(t *testing.T) (s *Store, ses, key string) {
+	t.Helper()
+	s, orch, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "custom")
+	mustExec(t, s.DB, `INSERT INTO repos (id, name, path, remote_url, remote_owner, default_branch, source, created_at, updated_at)
+		VALUES ('repo_docs', 'docs', '/tmp/docs', NULL, 'o', 'main', 'manual', 1, 1)`)
+	git := `[{"repo":"/tmp/proj","branch":"main","sha":"3f9c2ab0000"},{"repo":"/tmp/docs/","branch":"main","sha":"aaa1110000"}]`
+	mustExec(t, s.DB, `UPDATE checkpoints SET git_json = ? WHERE agent_id = ? AND kind = 'integrated'`, git, orch.ID)
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.git', json(?)) WHERE item_id = ?`, git, mustItemID(t, s, key))
+	return s, ses, key
+}
+
+func TestFinishingResolvesIntegratedReposByPath(t *testing.T) {
+	for name, kept := range map[string][]KeptRepo{
+		"keyed by path": {{Repo: "/tmp/proj", Note: "kept"}, {Repo: "/tmp/docs/", Note: "kept"}},
+		"keyed by id":   {{Repo: "repo_proj", Note: "kept"}, {Repo: "repo_docs", Note: "kept"}},
+		"keyed by name": {{Repo: "proj", Note: "kept"}, {Repo: "docs", Note: "kept"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, ses, key := chore33Fixture(t)
+			if _, err := finishCustom(s, ses, CheckpointInput{Kept: kept}); err != nil {
+				t.Fatal(err)
+			}
+			if st := itemStatus(t, s, key); st != items.Done {
+				t.Fatalf("status = %s, want done", st)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -593,18 +594,22 @@ func (s *Store) approvedCurrent(ctx context.Context, q querier, it Item, st root
 	return ok, fa.Merge, err
 }
 
-// ResolveRepoIDTx resolves a ref's repo spelling (a catalog id or name) to its catalog id, preferring
-// the root's confirmed repos, then an id match, then the most recently used; "" when unknown.
+// ResolveRepoIDTx resolves a ref's repo spelling (a catalog id, name or absolute path) to its catalog
+// id, preferring the root's confirmed repos, then an id match, then the most recently used; "" when unknown.
 func ResolveRepoIDTx(ctx context.Context, q interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }, rootItemID, repo string) (string, error) {
+	path := repo
+	if filepath.IsAbs(path) {
+		path = filepath.Clean(path)
+	}
 	var id string
-	err := q.QueryRowContext(ctx, `SELECT id FROM repos WHERE (id = ? OR name = ?) AND id IN (SELECT value FROM json_each(
+	err := q.QueryRowContext(ctx, `SELECT id FROM repos WHERE (id = ? OR name = ? OR path = ?) AND id IN (SELECT value FROM json_each(
 		(SELECT confirmed_repos_json FROM items WHERE id = ?))) ORDER BY id = ? DESC LIMIT 1`,
-		repo, repo, rootItemID, repo).Scan(&id)
+		repo, repo, path, rootItemID, repo).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = q.QueryRowContext(ctx, `SELECT id FROM repos WHERE id = ? OR name = ? ORDER BY id = ? DESC, last_used_at DESC LIMIT 1`,
-			repo, repo, repo).Scan(&id)
+		err = q.QueryRowContext(ctx, `SELECT id FROM repos WHERE id = ? OR name = ? OR path = ? ORDER BY id = ? DESC, last_used_at DESC LIMIT 1`,
+			repo, repo, path, repo).Scan(&id)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
