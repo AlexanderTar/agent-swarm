@@ -760,9 +760,10 @@ func chore33Fixture(t *testing.T) (s *Store, ses, key string) {
 
 func TestFinishingResolvesIntegratedReposByPath(t *testing.T) {
 	for name, kept := range map[string][]KeptRepo{
-		"keyed by path": {{Repo: "/tmp/proj", Note: "kept"}, {Repo: "/tmp/docs/", Note: "kept"}},
-		"keyed by id":   {{Repo: "repo_proj", Note: "kept"}, {Repo: "repo_docs", Note: "kept"}},
-		"keyed by name": {{Repo: "proj", Note: "kept"}, {Repo: "docs", Note: "kept"}},
+		"keyed by path":                {{Repo: "/tmp/proj", Note: "kept"}, {Repo: "/tmp/docs/", Note: "kept"}},
+		"keyed by id":                  {{Repo: "repo_proj", Note: "kept"}, {Repo: "repo_docs", Note: "kept"}},
+		"keyed by name":                {{Repo: "proj", Note: "kept"}, {Repo: "docs", Note: "kept"}},
+		"keyed by other path spelling": {{Repo: "/tmp/proj/", Note: "kept"}, {Repo: "/tmp/docs", Note: "kept"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, ses, key := chore33Fixture(t)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -99,7 +100,7 @@ func (s *Store) runner() execx.Runner {
 	return s.Exec
 }
 
-// finishReposTx resolves each distinct ref repo (a catalog id or name, id first), in first-seen
+// finishReposTx resolves each distinct ref repo (a catalog id, name or absolute path, id first), in first-seen
 // order; a resolved ref's Repo becomes the catalog name, Key keeps the ref's spelling. An unknown
 // repo has RepoID "".
 func (s *Store) finishReposTx(ctx context.Context, q txQuerier, rootItemID string, refs []GitRef) ([]finishRepo, error) {
@@ -132,11 +133,12 @@ func (s *Store) finishReposTx(ctx context.Context, q txQuerier, rootItemID strin
 	return out, nil
 }
 
-// canonicalRepo maps a finishing input repo key (an integrated repo's id, name or ref spelling) to
-// its resolved name; an unknown key is returned as given.
+// canonicalRepo maps a finishing input repo key (an integrated repo's id, name, path or ref spelling)
+// to its resolved name; an unknown key is returned as given.
 func canonicalRepo(repos []finishRepo, key string) string {
 	for _, r := range repos {
-		if key == r.Ref.Repo || key == r.Key || (r.RepoID != "" && key == r.RepoID) {
+		if key == r.Ref.Repo || key == r.Key || (r.RepoID != "" && (key == r.RepoID ||
+			filepath.IsAbs(key) && filepath.Clean(key) == r.Path)) {
 			return r.Ref.Repo
 		}
 	}
