@@ -255,6 +255,9 @@ func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 		return nil, "", &RateLimitError{Err: err, RetryAfter: retry}
 	}
 	meters, headline := museMeters(usage)
+	// Re-read after the probe: the probe host may have bumped the index itself,
+	// and storing the pre-probe value would read that bump as new user activity.
+	activity = m.sessionActivity(ctx)
 	m.mu.Lock()
 	m.cached, m.headline, m.at, m.activity, m.failures = meters, headline, m.now(), activity, 0
 	m.mu.Unlock()

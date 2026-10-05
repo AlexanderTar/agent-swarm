@@ -685,3 +685,28 @@ func TestMuseFetchLive(t *testing.T) {
 		t.Logf("%s %s %.0f%% resets %s", mt.ID, mt.Window, mt.UsedPct, mt.ResetsAt.UTC())
 	}
 }
+
+func TestMuseProbeInducedIndexBumpDoesNotRetrigger(t *testing.T) {
+	idx, touch := museIndex(t)
+	c := newClk()
+	touch(c.Now().UnixMicro())
+	spawns := 0
+	host := fakeMuseHost(t, museUsagePayload, false, nil, &spawns, nil)
+	m := &Muse{Dir: t.TempDir(), Timeout: 5 * time.Second, Now: c.Now, SessionIndex: idx,
+		Start: func(ctx context.Context, _ map[string]string, name string, args ...string) (*execx.Proc, error) {
+			touch(c.Now().UnixMicro() + 1) // the probe host itself bumps the index
+			return host(ctx, name, args...)
+		}}
+	fetch := func() {
+		t.Helper()
+		if _, _, err := m.Fetch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetch()
+	c.Advance(20 * time.Minute) // past ProbeGap; only the probe touched the index
+	fetch()
+	if spawns != 1 {
+		t.Fatalf("probe-induced index bump re-triggered a probe, spawns = %d", spawns)
+	}
+}
