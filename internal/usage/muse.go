@@ -223,7 +223,7 @@ type museRPCErrorField struct {
 // the last observation without starting a host. Past ProbeGap it still does
 // while Muse's session index shows no activity since that observation, at any
 // age. With no cache it probes only on activity within the last ProbeGap and
-// otherwise returns no meters, no error. A failed probe leaves the cache alone
+// otherwise returns ErrNoData. A failed probe leaves the cache alone
 // and returns a RateLimitError so the poller backs off.
 func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 	activity := m.sessionActivity(ctx)
@@ -242,7 +242,7 @@ func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 		}
 	} else if activity > 0 && activity < now.Add(-m.probeGap()).UnixMicro() {
 		m.mu.Unlock()
-		return nil, "", nil
+		return nil, "", ErrNoData
 	}
 	m.mu.Unlock()
 

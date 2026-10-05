@@ -62,6 +62,11 @@ type Error struct{ Code, Message string }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
+// ErrNoData is what a Fetch returns when it has nothing to report and is not
+// failing (Muse with no cache and an idle session index). The poller writes
+// nothing, so a prior snapshot stays exactly as it was.
+var ErrNoData = errors.New("usage: no data to report")
+
 // RateLimitError is a source-imposed backoff (a 429 with a Retry-After) as
 // opposed to a plain fetch failure — the poller must wait it out rather than
 // retrying on the normal poll/manual-refresh cadence, or every retry before
@@ -402,6 +407,9 @@ func (p *Poller) fetchAndStore(ctx context.Context, src Source) error {
 			fmt.Errorf("%s: rate limited, retry in %s", src.Agent, until.Sub(now).Round(time.Second)))
 	}
 	meters, headline, err := src.Fetch(ctx)
+	if errors.Is(err, ErrNoData) {
+		return nil
+	}
 	if err != nil {
 		var rl *RateLimitError
 		if errors.As(err, &rl) {

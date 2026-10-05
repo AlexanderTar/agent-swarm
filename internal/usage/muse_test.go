@@ -466,8 +466,8 @@ func TestMuseNoCacheProbesOnlyOnRecentActivity(t *testing.T) {
 	spawns := 0
 	m := gatedMuse(t, museUsagePayload, idx, &spawns, c)
 	meters, _, err := m.Fetch(context.Background())
-	if err != nil || len(meters) != 0 || spawns != 0 {
-		t.Fatalf("idle + no cache: meters %v, err %v, spawns %d; want none, no error, no probe", meters, err, spawns)
+	if !errors.Is(err, ErrNoData) || len(meters) != 0 || spawns != 0 {
+		t.Fatalf("idle + no cache: meters %v, err %v, spawns %d; want none, ErrNoData, no probe", meters, err, spawns)
 	}
 	touch(c.Now().Add(-5 * time.Minute).UnixMicro()) // Muse used just now
 	meters, _, err = m.Fetch(context.Background())

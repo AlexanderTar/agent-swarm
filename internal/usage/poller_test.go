@@ -189,3 +189,43 @@ func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {
 		t.Fatalf("SWARM_USAGE=live gave %d sources, want 5", len(live))
 	}
 }
+
+// A Fetch that has nothing to report (ErrNoData) must not write: an empty
+// "success" snapshot would look fresh and replace a real reading.
+func TestPollerNoDataLeavesPriorSnapshotUntouched(t *testing.T) {
+	d := dbtest.Open(t)
+	at := newClk()
+	noData := false
+	src := Source{Agent: runtime.Muse, Fetch: func(context.Context) ([]Meter, string, error) {
+		if noData {
+			return nil, "", ErrNoData
+		}
+		return []Meter{{ID: "muse_5h", Label: "5h", Window: "5h", UsedPct: 10}}, "muse_5h", nil
+	}}
+	p := &Poller{DB: d, Events: events.New(d, at.Now),
+		Settings: settingsWithEnabled(t, d, runtime.Muse), Now: at.Now,
+		Jitter:  func(d time.Duration) time.Duration { return d },
+		Sources: []Source{src}, Log: func(string, ...any) {}}
+	ctx := context.Background()
+	if err := p.pollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snap := func() Snapshot {
+		t.Helper()
+		snaps, err := p.Snapshots(ctx)
+		if err != nil || len(snaps) == 0 {
+			t.Fatalf("snapshots %v, err %v", snaps, err)
+		}
+		return snaps[0]
+	}
+	before := snap()
+	noData = true
+	at.Advance(6 * time.Minute)
+	if err := p.pollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after := snap()
+	if len(after.Meters) != 1 || !after.FetchedAt.Equal(before.FetchedAt) || !after.AttemptedAt.Equal(before.AttemptedAt) || after.Error != "" {
+		t.Fatalf("no-data fetch changed the snapshot: before %+v after %+v", before, after)
+	}
+}
