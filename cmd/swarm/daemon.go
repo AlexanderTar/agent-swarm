@@ -299,7 +299,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// the only call site, and cfg.Dev never enters this decision (F1).
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
 		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
-			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start)}
+			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d)}
 	// docs/specs/2026-09-19-usage-fallback-agent.md: rt.Usage lets the
 	// spawn/retry path substitute a configured fallback agent when the
 	// configured one is confirmed out of usage. usagegate depends on both

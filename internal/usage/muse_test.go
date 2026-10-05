@@ -511,6 +511,48 @@ func TestMuseGatedFetchIsNotFlaggedStale(t *testing.T) {
 	}
 }
 
+func TestMuseSeededFromSnapshotDoesNotProbeWithinTheGap(t *testing.T) {
+	d := dbtest.Open(t)
+	c := newClk()
+	p := &Poller{DB: d, Events: events.New(d, c.Now), Settings: settingsWith(t, d, 300), Now: c.Now}
+	seed := []Meter{{ID: "5h", Label: "5h", Window: "5h", UsedPct: 33}}
+	ctx := context.Background()
+	if err := p.storeSuccess(ctx, runtime.Muse, c.Now(), seed, "5h"); err != nil {
+		t.Fatal(err)
+	}
+	spawns := 0
+	m := &Muse{Start: ignoreEnv(fakeMuseHost(t, museUsagePayload, false, nil, &spawns, nil)),
+		Dir: t.TempDir(), Timeout: 5 * time.Second, Now: c.Now}
+	if err := m.SeedFromSnapshot(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	c.Advance(5 * time.Minute) // a daemon restart inside the gap
+	got, headline, err := m.Fetch(ctx)
+	if err != nil || spawns != 0 || len(got) != 1 || got[0].UsedPct != 33 || headline != "5h" {
+		t.Fatalf("got %+v/%q, spawns %d, err %v; want the persisted snapshot with no probe", got, headline, spawns, err)
+	}
+	c.Advance(16 * time.Minute)
+	if _, _, err := m.Fetch(ctx); err != nil || spawns != 1 {
+		t.Errorf("past the gap the seeded cache must probe: spawns %d, err %v", spawns, err)
+	}
+}
+
+func TestMuseSeedIgnoresMissingAndFailedSnapshots(t *testing.T) {
+	d := dbtest.Open(t)
+	c := newClk()
+	p := &Poller{DB: d, Events: events.New(d, c.Now), Settings: settingsWith(t, d, 300), Now: c.Now}
+	m := &Muse{Now: c.Now}
+	if err := m.SeedFromSnapshot(context.Background(), d); err != nil || len(m.cached) != 0 {
+		t.Fatalf("no row: err %v, cached %v", err, m.cached)
+	}
+	if err := p.storeFailure(context.Background(), runtime.Muse, c.Now(), errors.New("boom")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SeedFromSnapshot(context.Background(), d); err != nil || len(m.cached) != 0 {
+		t.Errorf("failed row (fetched_at 0): err %v, cached %v; must not seed", err, m.cached)
+	}
+}
+
 func TestMuseFailedProbesBackOffExponentiallyAndSuccessResets(t *testing.T) {
 	failing := fakeMuseHost(t, "", true, nil, nil, nil)
 	healthy := fakeMuseHost(t, museUsagePayload, false, nil, nil, nil)

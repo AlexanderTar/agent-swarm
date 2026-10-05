@@ -174,7 +174,7 @@ func TestPollerHonorsASourcesRetryAfterBackoff(t *testing.T) {
 func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {
 	for _, v := range []string{"", "1", "true", "yes", "dev"} {
 		got := SourcesFromEnv(func(string) string { return v },
-			t.TempDir(), "u", http.DefaultClient, nil, nil)
+			t.TempDir(), "u", http.DefaultClient, nil, nil, nil)
 		if len(got) != 0 {
 			t.Fatalf("SWARM_USAGE=%q gave %d sources; only \"live\" enables them", v, len(got))
 		}
@@ -184,7 +184,7 @@ func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {
 			return "live"
 		}
 		return ""
-	}, t.TempDir(), "u", http.DefaultClient, nil, nil)
+	}, t.TempDir(), "u", http.DefaultClient, nil, nil, nil)
 	if len(live) != 5 {
 		t.Fatalf("SWARM_USAGE=live gave %d sources, want 5", len(live))
 	}

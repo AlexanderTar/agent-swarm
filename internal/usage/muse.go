@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
@@ -244,6 +246,30 @@ func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 	m.cached, m.headline, m.at, m.activity, m.failures = meters, headline, m.now(), activity, 0
 	m.mu.Unlock()
 	return meters, headline, nil
+}
+
+// SeedFromSnapshot loads the last good usage_snapshots row into the cache, so
+// a daemon restart inside ProbeGap serves it instead of spending a probe turn.
+// A missing row, or one from a failed poll (fetched_at 0), seeds nothing.
+func (m *Muse) SeedFromSnapshot(ctx context.Context, d *db.DB) error {
+	var metersJSON, headline string
+	var fetchedAt int64
+	err := d.QueryRowContext(ctx, `SELECT meters_json, COALESCE(headline_id, ''), fetched_at
+		FROM usage_snapshots WHERE agent_kind = 'muse'`).Scan(&metersJSON, &headline, &fetchedAt)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && fetchedAt == 0) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var meters []Meter
+	if err := json.Unmarshal([]byte(metersJSON), &meters); err != nil || len(meters) == 0 {
+		return err
+	}
+	m.mu.Lock()
+	m.cached, m.headline, m.at = meters, headline, db.FromMillis(fetchedAt)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Muse) activityCeiling() time.Duration {
