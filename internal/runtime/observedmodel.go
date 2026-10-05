@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 )
 
@@ -92,4 +93,32 @@ func (s *Store) observedPair(ctx context.Context, a Agent, model, effort string)
 		newModel = a.Model // keep the row's own spelling of the same model
 	}
 	return newModel, newEffort, true
+}
+
+// observeMuseModels records a model/effort change a human made inside a live
+// Muse session. Muse hooks never reach Swarm, so the change is read from its
+// own session.jsonl each reconcile tick (the adapter caches by file size and
+// mtime, and RecordObservedModel is idempotent). Failures are logged, never
+// returned: a bad Muse log must not stall reconcile.
+func (s *Store) observeMuseModels(ctx context.Context, live []liveRow) {
+	mo, ok := s.Adapters[Muse].(adapter.ModelObserver)
+	if !ok {
+		return
+	}
+	for _, r := range live {
+		if r.Kind != Muse || r.State != Running {
+			continue
+		}
+		var provider string
+		if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(provider_session_id, '') FROM sessions WHERE id = ?`, r.SessionID).Scan(&provider); err != nil || provider == "" {
+			continue
+		}
+		model, effort, ok := mo.ObserveModel("", provider)
+		if !ok {
+			continue
+		}
+		if _, err := s.RecordObservedModel(ctx, r.SessionID, model, effort, "session log"); err != nil {
+			s.logf("reconcile: record observed model for %s: %v", r.SessionID, err)
+		}
+	}
 }

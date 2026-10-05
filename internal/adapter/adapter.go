@@ -146,6 +146,14 @@ type Adapter interface {
 	DiscoverSession(ctx context.Context, pid int, workspaceRoot string) (providerSessionID string, ok bool)
 }
 
+// ModelObserver is an optional Adapter capability: kinds whose in-session
+// /model or /effort change only shows up in a file (transcripts, muse
+// session.jsonl) report the current pair from the file tail. ok is false when
+// nothing usable was found; callers then leave the recorded model alone.
+type ModelObserver interface {
+	ObserveModel(transcriptPath, providerSessionID string) (model, effort string, ok bool)
+}
+
 // base carries what every adapter needs and supplies the shared Idle rule.
 type base struct {
 	d    Deps
