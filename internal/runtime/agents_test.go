@@ -3270,3 +3270,28 @@ func TestSpawnParentRoleOverrideCarriesItsReason(t *testing.T) {
 		t.Fatalf("row = %s reason %q, want %q", row.Kind, row.KindReason, want)
 	}
 }
+
+// TestStartSessionPassesRoleToSpec: Launch and Resume both carry the agent's
+// role in adapter.Spec so adapters can role-gate launch behaviour.
+func TestStartSessionPassesRoleToSpec(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1", Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.Role != string(RoleCoder) {
+		t.Fatalf("Launch Spec.Role = %q, want %q", fa.LastSpec.Role, RoleCoder)
+	}
+	fa.LastSpec.Role = ""
+	sid := mustSessionID(t, s, a.ID)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, sid)
+	if _, err := s.Resume(ctx, a.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.Role != string(RoleCoder) {
+		t.Fatalf("Resume Spec.Role = %q, want %q", fa.LastSpec.Role, RoleCoder)
+	}
+}

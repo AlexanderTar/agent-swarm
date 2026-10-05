@@ -24,6 +24,7 @@ import (
 type Spec struct {
 	AgentName, AgentID, SessionID, Token, DaemonURL string
 	Model, Effort, Cwd                              string
+	Role                                            string // agent role (e.g. "orchestrator"); lets adapters gate launch behaviour
 	ProviderSessionID                               string
 	Kickoff                                         string
 	SettingsDir                                     string // per-launch JSON files: <home>/run/launch/<session id>
