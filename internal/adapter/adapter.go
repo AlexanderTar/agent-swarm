@@ -86,6 +86,11 @@ type HookInput struct {
 	RawToolInput      []byte
 	ToolResponse      []byte
 	Prompt            string // UserPromptSubmit text; empty for adapters that don't send it
+	// Model is the live model id the agent's hook reported (raw: may be a
+	// launch slug, alias or dated id); Effort is set only where the hook
+	// carries it separately. Both empty when the hook says nothing.
+	Model  string
+	Effort string
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.

@@ -173,6 +173,7 @@ func (c *Cursor) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolInput      json.RawMessage `json:"tool_input"`
 		ToolResponse   json.RawMessage `json:"tool_response"`
 		Prompt         string          `json:"prompt"`
+		Model          string          `json:"model"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -200,6 +201,7 @@ func (c *Cursor) ParseHook(event string, stdin []byte) (HookInput, error) {
 		RawToolInput:      raw.ToolInput,
 		ToolResponse:      raw.ToolResponse,
 		Prompt:            raw.Prompt,
+		Model:             raw.Model,
 		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "MCP:swarm_"),
 	}, nil
 }

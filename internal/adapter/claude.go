@@ -455,6 +455,7 @@ func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolInput      json.RawMessage `json:"tool_input"`
 		ToolResponse   json.RawMessage `json:"tool_response"`
 		Prompt         string          `json:"prompt"`
+		Model          string          `json:"model"` // SessionStart only
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -480,6 +481,7 @@ func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
 		RawToolInput:      raw.ToolInput,
 		ToolResponse:      raw.ToolResponse,
 		Prompt:            raw.Prompt,
+		Model:             raw.Model,
 		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
 	}, nil
 }

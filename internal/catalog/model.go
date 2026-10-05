@@ -1,7 +1,10 @@
 // Package catalog resolves each agent's models and effort levels at run time (§6.7, L26, L27).
 package catalog
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // EffortLevels are Claude's effort levels, low → max.
 var EffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
@@ -52,4 +55,34 @@ func (m CatalogModel) LaunchModel(effort string) string {
 		return m.ID
 	}
 	return m.ID + "-" + effort
+}
+
+// FromLaunchID inverts LaunchModel: it maps an id an agent reports (a slug
+// agent's exact launch id, an alias, a dated id, a "[1m]" variant, or cursor's
+// "default" for Auto) to its catalog model and, for a slug hit, the effort
+// level it encodes. effort is "" when the id carries none.
+func FromLaunchID(models []CatalogModel, id string) (CatalogModel, string, bool) {
+	for _, m := range models {
+		for level, lid := range m.LaunchIDs {
+			if lid == id {
+				return m, level, true
+			}
+		}
+	}
+	if m, ok := Find(models, id); ok {
+		return m, "", true
+	}
+	if base, ok := strings.CutSuffix(id, "[1m]"); ok {
+		if m, ok := Find(models, base); ok {
+			return m, "", true
+		}
+	}
+	if id == "default" { // cursor reports Auto as "default"
+		for _, m := range models {
+			if m.IsDefault {
+				return m, "", true
+			}
+		}
+	}
+	return CatalogModel{}, "", false
 }

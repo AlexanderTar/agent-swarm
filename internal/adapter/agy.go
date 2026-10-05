@@ -358,6 +358,7 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolName:          toolName,
 		Command:           cmd,
 		TranscriptPath:    raw.TranscriptPath,
+		Model:             raw.ModelName,
 		RawToolInput:      toolArgs,
 		ToolResponse:      raw.ToolResponse,
 		IsSwarmTool:       isSwarm,
