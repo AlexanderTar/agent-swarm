@@ -604,6 +604,12 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	if err != nil {
 		return nil, err
 	}
+	// a human's in-session /model or /effort shows up in the hook's model field
+	if in.Model != "" && h.RT != nil {
+		if _, err := h.RT.RecordObservedModel(ctx, s.ID, in.Model, in.Effort, "hook"); err != nil {
+			h.logf("hook: record observed model for %s: %v", s.ID, err)
+		}
+	}
 	// native advisor accounting reads the transcript on PostToolUse and Stop (§11.6)
 	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.Advisor != nil {
 		if err := h.Advisor.ScanTranscript(ctx, s.ID, in.TranscriptPath); err != nil {
