@@ -616,6 +616,16 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 			h.logf("advisor: transcript scan for %s: %v", s.ID, err)
 		}
 	}
+	// a model or effort change in the transcript tail (claude, codex)
+	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.RT != nil {
+		if mo, ok := a.(adapter.ModelObserver); ok {
+			if model, effort, ok := mo.ObserveModel(in.TranscriptPath, in.ProviderSessionID); ok {
+				if _, err := h.RT.RecordObservedModel(ctx, s.ID, model, effort, "transcript"); err != nil {
+					h.logf("hook: record transcript model for %s: %v", s.ID, err)
+				}
+			}
+		}
+	}
 	d, err := h.decide(ctx, kind, a, s, ev, in)
 	if err != nil {
 		return nil, err

@@ -607,3 +607,40 @@ func (c *Claude) AssistantTextSinceLastTurn(transcriptPath string) (string, bool
 	}
 	return strings.Join(texts, "\n"), true
 }
+
+// claudeModelLine is the part of an assistant transcript line ObserveModel
+// reads: message.model and the top-level effort.
+type claudeModelLine struct {
+	Type        string `json:"type"`
+	IsSidechain bool   `json:"isSidechain"`
+	Effort      string `json:"effort"`
+	Message     struct {
+		Model string `json:"model"`
+	} `json:"message"`
+}
+
+// usable reports whether the line is a main-thread assistant turn with a real
+// model (hook errors are written as message.model "<synthetic>").
+func (l claudeModelLine) usable() bool {
+	return l.Type == "assistant" && !l.IsSidechain && l.Message.Model != "" && l.Message.Model != "<synthetic>"
+}
+
+// ObserveModel returns the model/effort of the last main-thread assistant
+// line in the transcript tail, so an in-session /model or /effort shows up on
+// the next hook. Unparseable lines are skipped.
+func (c *Claude) ObserveModel(transcriptPath, _ string) (string, string, bool) {
+	lines, err := readTranscriptTailLines(transcriptPath, func(line []byte) bool {
+		var l claudeModelLine
+		return json.Unmarshal(line, &l) == nil && l.usable()
+	})
+	if err != nil {
+		return "", "", false
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		var l claudeModelLine
+		if json.Unmarshal(lines[i], &l) == nil && l.usable() {
+			return l.Message.Model, l.Effort, true
+		}
+	}
+	return "", "", false
+}
