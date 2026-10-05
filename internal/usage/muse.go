@@ -128,16 +128,23 @@ func MuseSessionUsage(ctx context.Context, run execx.Runner, dir, sessionID stri
 //   - museProbeEnv switches the reminder agents off: 1 request per probe.
 //   - ProbeGap caps probes at one per 15 minutes and replays the last
 //     observation in between, as MSP's own usage/read would.
-//   - Activity gate: past ProbeGap the cache is still served while Muse's
-//     session index shows no activity since the last probe, until
-//     ActivityCeiling (2h) covers use from other machines. Served windows
-//     whose reset time has passed read 0%. An unreadable index fails open to
-//     the ProbeGap rule.
+//   - Activity gate (2026-10-05): the probe runs only while Muse is being
+//     used. Past ProbeGap the cache is served, however old, until Muse's
+//     session index shows activity after that observation; activity then
+//     probes, at most once per ProbeGap. Swarm's own Muse agents write the
+//     same index, so they count. With no cache at all, a probe needs index
+//     activity within the last ProbeGap; otherwise Fetch returns no meters
+//     and no error (an error would spam the board and arm the failure
+//     backoff for what is just an idle Muse). Use on another machine is
+//     invisible to the index and is not chased. Served windows whose reset
+//     time has passed read 0%. An unreadable index fails open to the plain
+//     ProbeGap rule.
 //   - A failed probe returns a RateLimitError with a 15m/30m/60m/2h-capped
 //     backoff, so a 429ing host is not re-probed every poll.
 //
-// Every successful Fetch, probed or gated, makes the poller stamp fetched_at
-// = now, so a gated answer never reads as stale.
+// ObservedAt reports when the served reading was really observed, so the
+// poller can persist that as fetched_at (the menubar then shows its true age)
+// and not flag a gated reading stale.
 type Muse struct {
 	Start    execx.StarterEnv
 	Dir      string        // workspaceRoot for the throwaway probe session
@@ -149,8 +156,7 @@ type Muse struct {
 	// sessions.updated_at_us has not moved since the last probe, Muse has made
 	// no request and the quota cannot have changed, so Fetch serves the cache
 	// instead of probing. Empty disables the gate.
-	SessionIndex    string
-	ActivityCeiling time.Duration // default 2h: the longest an idle cache is trusted
+	SessionIndex string
 
 	mu       sync.Mutex
 	cached   []Meter
@@ -215,21 +221,28 @@ type museRPCErrorField struct {
 
 // Fetch returns the 5h and weekly quota meters. Inside ProbeGap it replays
 // the last observation without starting a host. Past ProbeGap it still does
-// when Muse's session index shows no activity since that observation, up to
-// ActivityCeiling (use on another machine is invisible to the index). A failed
-// probe leaves the cache alone and returns a RateLimitError so the poller
-// backs off.
+// while Muse's session index shows no activity since that observation, at any
+// age. With no cache it probes only on activity within the last ProbeGap and
+// otherwise returns no meters, no error. A failed probe leaves the cache alone
+// and returns a RateLimitError so the poller backs off.
 func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 	activity := m.sessionActivity(ctx)
 	m.mu.Lock()
+	now := m.now()
 	if len(m.cached) > 0 {
-		age := m.now().Sub(m.at)
-		idle := activity > 0 && activity == m.activity && age < m.activityCeiling()
-		if age < m.probeGap() || idle {
+		seen := m.activity
+		if seen == 0 { // seeded from a snapshot: only the observation time is known
+			seen = m.at.UnixMicro()
+		}
+		idle := activity > 0 && activity <= seen
+		if now.Sub(m.at) < m.probeGap() || idle {
 			meters, headline := m.rolled(), m.headline
 			m.mu.Unlock()
 			return meters, headline, nil
 		}
+	} else if activity > 0 && activity < now.Add(-m.probeGap()).UnixMicro() {
+		m.mu.Unlock()
+		return nil, "", nil
 	}
 	m.mu.Unlock()
 
@@ -272,11 +285,14 @@ func (m *Muse) SeedFromSnapshot(ctx context.Context, d *db.DB) error {
 	return nil
 }
 
-func (m *Muse) activityCeiling() time.Duration {
-	if m.ActivityCeiling > 0 {
-		return m.ActivityCeiling
+// ObservedAt is when the cached reading was observed; zero with no cache.
+func (m *Muse) ObservedAt() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.cached) == 0 {
+		return time.Time{}
 	}
-	return 2 * time.Hour
+	return m.at
 }
 
 // sessionActivity is max(updated_at_us) from Muse's session index, or 0 when

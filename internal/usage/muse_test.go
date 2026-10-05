@@ -405,11 +405,11 @@ func gatedMuse(t *testing.T, payload, index string, spawns *int, c *clk) *Muse {
 		Dir: t.TempDir(), Timeout: 5 * time.Second, Now: c.Now, SessionIndex: index}
 }
 
-func TestMuseIdleSessionIndexServesCacheUntilTheCeiling(t *testing.T) {
+func TestMuseIdleSessionIndexNeverReprobesHoweverOld(t *testing.T) {
 	idx, touch := museIndex(t)
-	touch(100)
-	spawns := 0
 	c := newClk()
+	touch(c.Now().UnixMicro())
+	spawns := 0
 	m := gatedMuse(t, museUsagePayload, idx, &spawns, c)
 	fetch := func() {
 		t.Helper()
@@ -420,31 +420,96 @@ func TestMuseIdleSessionIndexServesCacheUntilTheCeiling(t *testing.T) {
 	fetch()
 	c.Advance(time.Hour) // past ProbeGap, Muse untouched
 	fetch()
+	c.Advance(72 * time.Hour) // far past the old 2h ceiling, still untouched
+	fetch()
 	if spawns != 1 {
-		t.Fatalf("idle Muse was probed again (%d spawns); the gate must serve the cache", spawns)
+		t.Fatalf("idle Muse was probed again (%d spawns); no idle re-probe at any age", spawns)
 	}
-	touch(200) // Muse ran
-	c.Advance(20 * time.Minute)
+}
+
+func TestMuseActivityProbesAtMostOncePerGap(t *testing.T) {
+	idx, touch := museIndex(t)
+	c := newClk()
+	touch(c.Now().UnixMicro())
+	spawns := 0
+	m := gatedMuse(t, museUsagePayload, idx, &spawns, c)
+	fetch := func() {
+		t.Helper()
+		if _, _, err := m.Fetch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetch()
+	c.Advance(5 * time.Minute)
+	touch(c.Now().UnixMicro()) // Muse ran, but still inside the gap
+	fetch()
+	if spawns != 1 {
+		t.Fatalf("activity inside ProbeGap must not probe, spawns = %d", spawns)
+	}
+	c.Advance(11 * time.Minute)
+	fetch()
 	fetch()
 	if spawns != 2 {
-		t.Fatalf("activity since the last observation must trigger a probe, spawns = %d", spawns)
+		t.Fatalf("activity past the gap must probe exactly once, spawns = %d", spawns)
 	}
-	c.Advance(2*time.Hour + time.Minute) // idle, but beyond the ceiling
+	c.Advance(3 * time.Hour) // the probe saw index state 200; nothing new
 	fetch()
-	if spawns != 3 {
-		t.Errorf("the 2h ceiling must re-probe to cover use elsewhere, spawns = %d", spawns)
+	if spawns != 2 {
+		t.Errorf("no new activity since the last probe, spawns = %d", spawns)
+	}
+}
+
+func TestMuseNoCacheProbesOnlyOnRecentActivity(t *testing.T) {
+	idx, touch := museIndex(t)
+	c := newClk()
+	touch(c.Now().Add(-time.Hour).UnixMicro()) // last Muse use an hour ago
+	spawns := 0
+	m := gatedMuse(t, museUsagePayload, idx, &spawns, c)
+	meters, _, err := m.Fetch(context.Background())
+	if err != nil || len(meters) != 0 || spawns != 0 {
+		t.Fatalf("idle + no cache: meters %v, err %v, spawns %d; want none, no error, no probe", meters, err, spawns)
+	}
+	touch(c.Now().Add(-5 * time.Minute).UnixMicro()) // Muse used just now
+	meters, _, err = m.Fetch(context.Background())
+	if err != nil || len(meters) == 0 || spawns != 1 {
+		t.Fatalf("recent activity + no cache must probe: meters %v, err %v, spawns %d", meters, err, spawns)
+	}
+}
+
+func TestMuseSeededCacheProbesOnlyOnActivityAfterTheObservation(t *testing.T) {
+	d := dbtest.Open(t)
+	c := newClk()
+	p := &Poller{DB: d, Events: events.New(d, c.Now), Settings: settingsWith(t, d, 300), Now: c.Now}
+	seed := []Meter{{ID: "5h", Label: "5h", Window: "5h", UsedPct: 33}}
+	ctx := context.Background()
+	if err := p.storeSuccess(ctx, runtime.Muse, c.Now(), seed, "5h"); err != nil {
+		t.Fatal(err)
+	}
+	idx, touch := museIndex(t)
+	touch(c.Now().Add(-time.Hour).UnixMicro()) // older than the seeded observation
+	spawns := 0
+	m := gatedMuse(t, museUsagePayload, idx, &spawns, c)
+	if err := m.SeedFromSnapshot(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	c.Advance(10 * time.Hour)
+	if got, _, err := m.Fetch(ctx); err != nil || spawns != 0 || got[0].UsedPct != 33 {
+		t.Fatalf("idle since the seeded observation: got %+v, spawns %d, err %v", got, spawns, err)
+	}
+	touch(c.Now().UnixMicro()) // Muse ran after the observation
+	if _, _, err := m.Fetch(ctx); err != nil || spawns != 1 {
+		t.Errorf("activity after the seeded observation must probe: spawns %d, err %v", spawns, err)
 	}
 }
 
 func TestMuseGatedCacheRollsPassedResetWindowsToZero(t *testing.T) {
 	idx, touch := museIndex(t)
-	touch(100)
+	c := newClk() // 2026-09-17 12:00 UTC: both windows still ahead
+	touch(c.Now().UnixMicro())
 	payload := `{"window":{"usedPercent":40,"windowDurationMins":300,"resetsAtMs":1790208865000},` +
 		`"weekly":{"usedPercent":9,"resetsAtMs":1790553600000},"tier":"t","observedAtMs":1}`
 	spawns := 0
-	c := newClk() // 2026-09-17 12:00 UTC: both windows still ahead
 	m := gatedMuse(t, payload, idx, &spawns, c)
-	m.ActivityCeiling = 1000 * time.Hour
 	first, _, err := m.Fetch(context.Background())
 	if err != nil || first[0].UsedPct != 40 {
 		t.Fatalf("first = %+v, %v", first, err)
@@ -487,9 +552,9 @@ func TestMuseUnreadableSessionIndexFallsBackToTheGapRule(t *testing.T) {
 // one, so serving the cache for hours must not flag the snapshot stale.
 func TestMuseGatedFetchIsNotFlaggedStale(t *testing.T) {
 	idx, touch := museIndex(t)
-	touch(100)
-	spawns := 0
 	c := newClk()
+	touch(c.Now().UnixMicro())
+	spawns := 0
 	d := dbtest.Open(t)
 	p := &Poller{DB: d, Events: events.New(d, c.Now), Settings: settingsWith(t, d, 300), Now: c.Now,
 		Log: func(string, ...any) {}, Sources: []Source{{Agent: runtime.Muse,
