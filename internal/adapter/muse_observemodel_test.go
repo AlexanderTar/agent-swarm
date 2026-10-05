@@ -81,3 +81,72 @@ func TestMuseObserveModelSeesAppendedChange(t *testing.T) {
 		t.Fatalf("after append model = %q, want muse-spark-2 (a cached read must notice the new size)", model)
 	}
 }
+
+func appendMuseLog(t *testing.T, p, s string) {
+	t.Helper()
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMuseObserveModelReadsOnlyAppendedBytes(t *testing.T) {
+	m, p := museLogFixture(t, "sess-1", museModelDone, museNoise)
+	if model, _, _ := m.ObserveModel("", "sess-1"); model != "muse-spark-1.3-contributor" {
+		t.Fatalf("model = %q", model)
+	}
+	first := m.obsBytes
+	if first == 0 {
+		t.Fatal("first observe read nothing")
+	}
+	appendMuseLog(t, p, museNoise+"\n")
+	if model, _, _ := m.ObserveModel("", "sess-1"); model != "muse-spark-1.3-contributor" {
+		t.Fatalf("model after noise append = %q (last observed model must be kept)", model)
+	}
+	if got, want := m.obsBytes-first, int64(len(museNoise)+1); got != want {
+		t.Errorf("second observe read %d bytes, want only the %d appended", got, want)
+	}
+	before := m.obsBytes
+	appendMuseLog(t, p, museRunModel+"\n"+museEffortDone+"\n")
+	model, effort, _ := m.ObserveModel("", "sess-1")
+	if model != "muse-spark-2" || effort != "low" {
+		t.Errorf("appended reconfigure: got %q/%q", model, effort)
+	}
+	if got, want := m.obsBytes-before, int64(len(museRunModel)+len(museEffortDone)+2); got != want {
+		t.Errorf("read %d bytes, want %d", got, want)
+	}
+}
+
+func TestMuseObserveModelPartialLineWaitsForNewline(t *testing.T) {
+	m, p := museLogFixture(t, "sess-1", museModelDone)
+	m.ObserveModel("", "sess-1")
+	appendMuseLog(t, p, museRunModel[:40])
+	if model, _, _ := m.ObserveModel("", "sess-1"); model != "muse-spark-1.3-contributor" {
+		t.Fatalf("partial line changed model to %q", model)
+	}
+	appendMuseLog(t, p, museRunModel[40:]+"\n")
+	if model, _, _ := m.ObserveModel("", "sess-1"); model != "muse-spark-2" {
+		t.Fatalf("completed line: model = %q", model)
+	}
+}
+
+func TestMuseObserveModelTruncationResets(t *testing.T) {
+	m, p := museLogFixture(t, "sess-1", museModelDone, museNoise, museNoise)
+	m.ObserveModel("", "sess-1")
+	if err := os.WriteFile(p, []byte(museRunModel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if model, _, ok := m.ObserveModel("", "sess-1"); !ok || model != "muse-spark-2" {
+		t.Fatalf("after truncation got %q/%v, want muse-spark-2", model, ok)
+	}
+	if err := os.WriteFile(p, []byte(museNoise+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := m.ObserveModel("", "sess-1"); ok {
+		t.Fatal("truncated file with no model line must not keep the old model")
+	}
+}

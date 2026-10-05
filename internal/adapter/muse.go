@@ -21,8 +21,9 @@ import (
 
 type Muse struct {
 	base
-	obsMu sync.Mutex
-	obs   map[string]museObsMemo // ObserveModel: last result per session.jsonl, keyed by path
+	obsMu    sync.Mutex
+	obs      map[string]museObsMemo // ObserveModel: scan state per session.jsonl, keyed by path
+	obsBytes int64                  // ObserveModel: total bytes read (test instrument)
 }
 
 func newMuse(d Deps) *Muse { return &Muse{base: base{d: d, kind: kinds.Muse}} }
@@ -800,13 +801,13 @@ func (m *Muse) LastReply(providerSessionID string, since time.Time) (text string
 	return strings.Join(texts, "\n"), len(texts) > 0, true
 }
 
-// museObsMemo is ObserveModel's cached answer for one session.jsonl, valid
-// while the file's size and mtime are unchanged.
+// museObsMemo is ObserveModel's state for one session.jsonl: the newest model
+// and effort seen so far, and how far into the file (offset, always at a line
+// boundary) it has scanned. info identifies the file so a replaced one resets.
 type museObsMemo struct {
-	size          int64
-	mtime         time.Time
+	info          os.FileInfo
+	offset        int64
 	model, effort string
-	ok            bool
 }
 
 // museModelLine is the part of a model/effort change line ObserveModel reads.
@@ -853,9 +854,10 @@ func museModelChange(line []byte) (model, effort string) {
 }
 
 // ObserveModel reports the newest model (and effort, when a change line for it
-// is in the tail) from this provider session's session.jsonl. Muse has no
-// hooks into Swarm, so the daemon's reconcile tick calls it; transcriptPath
-// is unused. The result is cached per file until its size or mtime changes.
+// follows the newest model line) from this provider session's session.jsonl.
+// Muse has no hooks into Swarm, so the daemon's reconcile tick calls it;
+// transcriptPath is unused. Each call scans only the bytes appended since the
+// previous one; a shrunk or replaced file is rescanned from the start.
 func (m *Muse) ObserveModel(_, providerSessionID string) (string, string, bool) {
 	if providerSessionID == "" {
 		return "", "", false
@@ -871,37 +873,39 @@ func (m *Muse) ObserveModel(_, providerSessionID string) (string, string, bool) 
 		return "", "", false
 	}
 	m.obsMu.Lock()
-	memo, hit := m.obs[path]
-	m.obsMu.Unlock()
-	if hit && memo.size == info.Size() && memo.mtime.Equal(info.ModTime()) {
-		return memo.model, memo.effort, memo.ok
+	defer m.obsMu.Unlock()
+	memo := m.obs[path]
+	if memo.info == nil || !os.SameFile(memo.info, info) || info.Size() < memo.offset {
+		memo = museObsMemo{}
 	}
-	lines, err := readTranscriptTailLines(path, func(line []byte) bool {
-		model, _ := museModelChange(line)
-		return model != ""
-	})
-	if err != nil {
-		return "", "", false
-	}
-	var model, effort string
-	for i := len(lines) - 1; i >= 0 && model == ""; i-- {
-		mdl, eff := museModelChange(lines[i])
-		if mdl != "" {
-			model = mdl
+	if info.Size() > memo.offset {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", "", false
 		}
-		if eff != "" && effort == "" {
-			effort = eff
+		defer f.Close()
+		buf, err := io.ReadAll(io.NewSectionReader(f, memo.offset, info.Size()-memo.offset))
+		if err != nil {
+			return "", "", false
+		}
+		m.obsBytes += int64(len(buf))
+		if end := bytes.LastIndexByte(buf, '\n'); end >= 0 {
+			for _, line := range bytes.Split(buf[:end], []byte("\n")) {
+				mdl, eff := museModelChange(line)
+				if mdl != "" {
+					memo.model, memo.effort = mdl, ""
+				}
+				if eff != "" && memo.model != "" {
+					memo.effort = eff
+				}
+			}
+			memo.offset += int64(end) + 1
 		}
 	}
-	memo = museObsMemo{size: info.Size(), mtime: info.ModTime(), model: model, effort: effort, ok: model != ""}
-	if !memo.ok {
-		memo.effort = ""
-	}
-	m.obsMu.Lock()
+	memo.info = info
 	if m.obs == nil {
 		m.obs = map[string]museObsMemo{}
 	}
 	m.obs[path] = memo
-	m.obsMu.Unlock()
-	return memo.model, memo.effort, memo.ok
+	return memo.model, memo.effort, memo.model != ""
 }
