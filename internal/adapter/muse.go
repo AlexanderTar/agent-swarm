@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -18,9 +19,13 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
-type Muse struct{ base }
+type Muse struct {
+	base
+	obsMu sync.Mutex
+	obs   map[string]museObsMemo // ObserveModel: last result per session.jsonl, keyed by path
+}
 
-func newMuse(d Deps) *Muse { return &Muse{base{d: d, kind: kinds.Muse}} }
+func newMuse(d Deps) *Muse { return &Muse{base: base{d: d, kind: kinds.Muse}} }
 
 func init() { register(kinds.Muse, func(d Deps) Adapter { return newMuse(d) }) }
 
@@ -793,4 +798,110 @@ func (m *Muse) LastReply(providerSessionID string, since time.Time) (text string
 		}
 	}
 	return strings.Join(texts, "\n"), len(texts) > 0, true
+}
+
+// museObsMemo is ObserveModel's cached answer for one session.jsonl, valid
+// while the file's size and mtime are unchanged.
+type museObsMemo struct {
+	size          int64
+	mtime         time.Time
+	model, effort string
+	ok            bool
+}
+
+// museModelLine is the part of a model/effort change line ObserveModel reads.
+type museModelLine struct {
+	PayloadType string `json:"payload_type"`
+	Payload     struct {
+		Record struct {
+			ModelID   string `json:"model_id"`
+			Source    string `json:"source"`
+			Effective struct {
+				ModelID         string `json:"model_id"`
+				ReasoningEffort string `json:"reasoning_effort"`
+			} `json:"effective"`
+		} `json:"record"`
+	} `json:"payload"`
+}
+
+// museModelChange classifies one session.jsonl line: a model change
+// (runtime.model_reconfigure.completed, or run.model.configured with source
+// model_reconfigure) or an effort change.
+func museModelChange(line []byte) (model, effort string) {
+	if !bytes.Contains(line, []byte("reconfigure")) {
+		return "", ""
+	}
+	var l museModelLine
+	if json.Unmarshal(line, &l) != nil {
+		return "", ""
+	}
+	r := l.Payload.Record
+	switch {
+	case l.PayloadType == "runtime.model_reconfigure.completed":
+		return r.Effective.ModelID, ""
+	case l.PayloadType == "run.model.configured" && r.Source == "model_reconfigure":
+		return r.ModelID, ""
+	// ponytail: the reasoning-effort change line has never been seen (muse
+	// 1.4.2 has the string reasoning_effort_reconfigure_completed but no local
+	// sample); payload_type "runtime.reasoning_effort_reconfigure.completed"
+	// with record.effective.reasoning_effort is a guess. A miss just leaves the
+	// recorded effort alone. Confirm against a real session.jsonl and adjust.
+	case strings.Contains(l.PayloadType, "reasoning_effort_reconfigure") && strings.HasSuffix(l.PayloadType, ".completed"):
+		return "", r.Effective.ReasoningEffort
+	}
+	return "", ""
+}
+
+// ObserveModel reports the newest model (and effort, when a change line for it
+// is in the tail) from this provider session's session.jsonl. Muse has no
+// hooks into Swarm, so the daemon's reconcile tick calls it; transcriptPath
+// is unused. The result is cached per file until its size or mtime changes.
+func (m *Muse) ObserveModel(_, providerSessionID string) (string, string, bool) {
+	if providerSessionID == "" {
+		return "", "", false
+	}
+	matches, _ := filepath.Glob(filepath.Join(m.d.UserHome, ".local", "share", "muse", "sessions",
+		"[0-9][0-9][0-9][0-9]", "[0-9][0-9]", "[0-9][0-9]", providerSessionID, "session.jsonl"))
+	if len(matches) != 1 {
+		return "", "", false
+	}
+	path := matches[0]
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", "", false
+	}
+	m.obsMu.Lock()
+	memo, hit := m.obs[path]
+	m.obsMu.Unlock()
+	if hit && memo.size == info.Size() && memo.mtime.Equal(info.ModTime()) {
+		return memo.model, memo.effort, memo.ok
+	}
+	lines, err := readTranscriptTailLines(path, func(line []byte) bool {
+		model, _ := museModelChange(line)
+		return model != ""
+	})
+	if err != nil {
+		return "", "", false
+	}
+	var model, effort string
+	for i := len(lines) - 1; i >= 0 && model == ""; i-- {
+		mdl, eff := museModelChange(lines[i])
+		if mdl != "" {
+			model = mdl
+		}
+		if eff != "" && effort == "" {
+			effort = eff
+		}
+	}
+	memo = museObsMemo{size: info.Size(), mtime: info.ModTime(), model: model, effort: effort, ok: model != ""}
+	if !memo.ok {
+		memo.effort = ""
+	}
+	m.obsMu.Lock()
+	if m.obs == nil {
+		m.obs = map[string]museObsMemo{}
+	}
+	m.obs[path] = memo
+	m.obsMu.Unlock()
+	return memo.model, memo.effort, memo.ok
 }
