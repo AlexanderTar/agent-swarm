@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -117,12 +118,24 @@ func MuseSessionUsage(ctx context.Context, run execx.Runner, dir, sessionID stri
 // answers `{}`; the numbers only arrive with a provider response frame, so a
 // fresh observation costs one zero-effort muse turn (prompt "ok",
 // reasoningEffort "none", shell and writes disabled -- live-verified
-// 2026-09-24 that "none" still produces a real usage frame, cheaper than the
-// "minimal" this probe used the first time around). ProbeGap caps that at
-// one turn per 15 minutes and serves the last observation in between —
-// which is exactly what MSP's own usage/read does, so the cached answer is
-// the same truth, only older. The poller's fetched_at then means "last
-// confirmed", and the data is at most ProbeGap + one poll old.
+// 2026-09-24 that "none" still produces a real usage frame). Muse 1.4.x has
+// no turn-free usage source (usage/read returns {} without a turn), and its
+// background reminder agents made each probe ~3.8 model requests / ~39k
+// prefix tokens, so the cost model is:
+//
+//   - museProbeEnv switches the reminder agents off: 1 request per probe.
+//   - ProbeGap caps probes at one per 15 minutes and replays the last
+//     observation in between, as MSP's own usage/read would.
+//   - Activity gate: past ProbeGap the cache is still served while Muse's
+//     session index shows no activity since the last probe, until
+//     ActivityCeiling (2h) covers use from other machines. Served windows
+//     whose reset time has passed read 0%. An unreadable index fails open to
+//     the ProbeGap rule.
+//   - A failed probe returns a RateLimitError with a 15m/30m/60m/2h-capped
+//     backoff, so a 429ing host is not re-probed every poll.
+//
+// Every successful Fetch, probed or gated, makes the poller stamp fetched_at
+// = now, so a gated answer never reads as stale.
 type Muse struct {
 	Start    execx.StarterEnv
 	Dir      string        // workspaceRoot for the throwaway probe session
@@ -130,11 +143,19 @@ type Muse struct {
 	ProbeGap time.Duration // default 15m
 	Now      func() time.Time
 
+	// SessionIndex is Muse's session-index.db. While its newest
+	// sessions.updated_at_us has not moved since the last probe, Muse has made
+	// no request and the quota cannot have changed, so Fetch serves the cache
+	// instead of probing. Empty disables the gate.
+	SessionIndex    string
+	ActivityCeiling time.Duration // default 2h: the longest an idle cache is trusted
+
 	mu       sync.Mutex
 	cached   []Meter
 	headline string
 	at       time.Time
-	failures int // consecutive failed probes, reset on success
+	activity int64 // max(updated_at_us) when cached was observed; 0 = unknown
+	failures int   // consecutive failed probes, reset on success
 }
 
 func (m *Muse) now() time.Time {
@@ -191,15 +212,22 @@ type museRPCErrorField struct {
 }
 
 // Fetch returns the 5h and weekly quota meters. Inside ProbeGap it replays
-// the last observation without starting a host; a failed probe leaves the
-// cache alone so the next poll retries instead of serving a stale answer for
-// the whole gap.
+// the last observation without starting a host. Past ProbeGap it still does
+// when Muse's session index shows no activity since that observation, up to
+// ActivityCeiling (use on another machine is invisible to the index). A failed
+// probe leaves the cache alone and returns a RateLimitError so the poller
+// backs off.
 func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
+	activity := m.sessionActivity(ctx)
 	m.mu.Lock()
-	if len(m.cached) > 0 && m.now().Sub(m.at) < m.probeGap() {
-		meters, headline := m.cached, m.headline
-		m.mu.Unlock()
-		return meters, headline, nil
+	if len(m.cached) > 0 {
+		age := m.now().Sub(m.at)
+		idle := activity > 0 && activity == m.activity && age < m.activityCeiling()
+		if age < m.probeGap() || idle {
+			meters, headline := m.rolled(), m.headline
+			m.mu.Unlock()
+			return meters, headline, nil
+		}
 	}
 	m.mu.Unlock()
 
@@ -213,9 +241,49 @@ func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 	}
 	meters, headline := museMeters(usage)
 	m.mu.Lock()
-	m.cached, m.headline, m.at, m.failures = meters, headline, m.now(), 0
+	m.cached, m.headline, m.at, m.activity, m.failures = meters, headline, m.now(), activity, 0
 	m.mu.Unlock()
 	return meters, headline, nil
+}
+
+func (m *Muse) activityCeiling() time.Duration {
+	if m.ActivityCeiling > 0 {
+		return m.ActivityCeiling
+	}
+	return 2 * time.Hour
+}
+
+// sessionActivity is max(updated_at_us) from Muse's session index, or 0 when
+// the gate is off or the index can't be read, which fails open to the plain
+// ProbeGap rule.
+func (m *Muse) sessionActivity(ctx context.Context) int64 {
+	if m.SessionIndex == "" {
+		return 0
+	}
+	d, err := sql.Open("sqlite", "file:"+m.SessionIndex+"?mode=ro")
+	if err != nil {
+		return 0
+	}
+	defer d.Close()
+	var us sql.NullInt64
+	if err := d.QueryRowContext(ctx, `SELECT max(updated_at_us) FROM sessions`).Scan(&us); err != nil {
+		return 0
+	}
+	return us.Int64
+}
+
+// rolled copies the cached meters with every window whose reset time has
+// passed shown at 0%: the provider has reset it and nothing has used it since.
+// The raw observation and its reset stamps stay as cached. Caller holds m.mu.
+func (m *Muse) rolled() []Meter {
+	out := append([]Meter(nil), m.cached...)
+	now := m.now()
+	for i := range out {
+		if r := out[i].ResetsAt; r != nil && !now.Before(*r) {
+			out[i].UsedPct = 0
+		}
+	}
+	return out
 }
 
 // museBackoff is the poller's wait after the nth consecutive failed probe:

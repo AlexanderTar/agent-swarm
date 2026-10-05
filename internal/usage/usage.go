@@ -106,7 +106,8 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 		ReadToken: agyOAuthToken(userHome), Now: time.Now}
 	cursorSrc := &Cursor{BaseURL: "https://api2.cursor.sh", HTTP: hc,
 		ReadToken: cursorKeychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
-	museSrc := &Muse{Start: execx.StartEnv, Dir: userHome, Now: time.Now}
+	museSrc := &Muse{Start: execx.StartEnv, Dir: userHome, Now: time.Now,
+		SessionIndex: filepath.Join(userHome, ".local/share/muse/session-index.db")}
 	return []Source{
 		{Agent: runtime.Claude, Fetch: func(ctx context.Context) ([]Meter, string, error) {
 			snap, err := claudeSrc.Fetch(ctx)
