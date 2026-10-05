@@ -124,7 +124,7 @@ func MuseSessionUsage(ctx context.Context, run execx.Runner, dir, sessionID stri
 // the same truth, only older. The poller's fetched_at then means "last
 // confirmed", and the data is at most ProbeGap + one poll old.
 type Muse struct {
-	Start    execx.Starter
+	Start    execx.StarterEnv
 	Dir      string        // workspaceRoot for the throwaway probe session
 	Timeout  time.Duration // default 60s
 	ProbeGap time.Duration // default 15m
@@ -236,7 +236,7 @@ func (m *Muse) probe(ctx context.Context) (museSubscriptionUsage, error) {
 	if m.Start == nil {
 		return zero, fmt.Errorf("muse: no MSP host starter configured")
 	}
-	proc, err := m.Start(ctx, "muse", "serve",
+	proc, err := m.Start(ctx, museProbeEnv, "muse", "serve",
 		"--no-session-log", "--disable-shell", "--disable-write")
 	if err != nil {
 		return zero, err
@@ -343,6 +343,19 @@ func (m *Muse) pollUsage(proc *execx.Proc, msgs <-chan museRPCEnvelope, readErrs
 		}
 		time.Sleep(museUsagePollGap)
 	}
+}
+
+// museProbeEnv switches off Muse 1.4.x's background reminder agents on the
+// probe host. Live-verified 2026-10-05: a probe drops from ~3.8 model requests
+// (~39k prefix tokens) to 1 request (23.4k). These are experimental flags, so
+// a future Muse may ignore them; the probe still works, just costs more.
+var museProbeEnv = map[string]string{
+	"MUSE_EXPERIMENTAL_TODO_REMINDER":   "0",
+	"MUSE_EXPERIMENTAL_MEMORY_REMINDER": "0",
+	"MUSE_EXPERIMENTAL_SKILL_REMINDER":  "0",
+	"MUSE_EXPERIMENTAL_GOAL_REMINDER":   "0",
+	"MUSE_EXPERIMENTAL_VERIFY_REMINDER": "0",
+	"MUSE_EXPERIMENTAL_SCOPE_REMINDER":  "0",
 }
 
 // museUsagePollGap paces the usage/read retries while the probe turn runs.

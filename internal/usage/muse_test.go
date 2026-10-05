@@ -175,7 +175,7 @@ func fakeMuseHost(t *testing.T, usageAfterTurn string, handshakeOnly bool,
 }
 
 func TestMuseFetchMapsSubscriptionUsage(t *testing.T) {
-	m := &Muse{Start: fakeMuseHost(t, museUsagePayload, false, nil, nil, nil),
+	m := &Muse{Start: ignoreEnv(fakeMuseHost(t, museUsagePayload, false, nil, nil, nil)),
 		Dir: t.TempDir(), Timeout: 5 * time.Second}
 	meters, headline, err := m.Fetch(context.Background())
 	if err != nil {
@@ -237,7 +237,7 @@ func TestMuseHandshakeUsesAWireLegalClientName(t *testing.T) {
 		proc.Stdin = &recordingWriteCloser{WriteCloser: proc.Stdin, mu: &mu, lines: &raw}
 		return proc, nil
 	}
-	m := &Muse{Start: start, Dir: t.TempDir(), Timeout: 5 * time.Second}
+	m := &Muse{Start: ignoreEnv(start), Dir: t.TempDir(), Timeout: 5 * time.Second}
 	if _, _, err := m.Fetch(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestMuseHandshakeUsesAWireLegalClientName(t *testing.T) {
 }
 
 func TestMuseFetchErrsWhenNoUsageIsObserved(t *testing.T) {
-	m := &Muse{Start: fakeMuseHost(t, "", false, nil, nil, nil),
+	m := &Muse{Start: ignoreEnv(fakeMuseHost(t, "", false, nil, nil, nil)),
 		Dir: t.TempDir(), Timeout: 3 * time.Second}
 	meters, _, err := m.Fetch(context.Background())
 	if err == nil {
@@ -297,7 +297,7 @@ func TestMuseFetchErrsWhenNoUsageIsObserved(t *testing.T) {
 
 func TestMuseFetchTimesOutAndKillsTheHost(t *testing.T) {
 	killed := false
-	m := &Muse{Start: fakeMuseHost(t, "", true, nil, nil, &killed),
+	m := &Muse{Start: ignoreEnv(fakeMuseHost(t, "", true, nil, nil, &killed)),
 		Dir: t.TempDir(), Timeout: 50 * time.Millisecond}
 	if _, _, err := m.Fetch(context.Background()); err == nil {
 		t.Fatal("a host that goes silent must time out")
@@ -310,7 +310,7 @@ func TestMuseFetchTimesOutAndKillsTheHost(t *testing.T) {
 func TestMuseFetchServesTheCacheInsideTheProbeGap(t *testing.T) {
 	spawns := 0
 	c := newClk()
-	m := &Muse{Start: fakeMuseHost(t, museUsagePayload, false, nil, &spawns, nil),
+	m := &Muse{Start: ignoreEnv(fakeMuseHost(t, museUsagePayload, false, nil, &spawns, nil)),
 		Dir: t.TempDir(), Timeout: 5 * time.Second, Now: c.Now}
 	first, _, err := m.Fetch(context.Background())
 	if err != nil {
@@ -335,7 +335,7 @@ func TestMuseFetchServesTheCacheInsideTheProbeGap(t *testing.T) {
 func TestMuseFetchProbesAgainAfterTheGap(t *testing.T) {
 	spawns := 0
 	c := newClk()
-	m := &Muse{Start: fakeMuseHost(t, museUsagePayload, false, nil, &spawns, nil),
+	m := &Muse{Start: ignoreEnv(fakeMuseHost(t, museUsagePayload, false, nil, &spawns, nil)),
 		Dir: t.TempDir(), Timeout: 5 * time.Second, Now: c.Now}
 	if _, _, err := m.Fetch(context.Background()); err != nil {
 		t.Fatal(err)
@@ -349,13 +349,39 @@ func TestMuseFetchProbesAgainAfterTheGap(t *testing.T) {
 	}
 }
 
+// ignoreEnv adapts a plain fake Starter for tests that don't care about env.
+func ignoreEnv(s execx.Starter) execx.StarterEnv {
+	return func(ctx context.Context, _ map[string]string, name string, args ...string) (*execx.Proc, error) {
+		return s(ctx, name, args...)
+	}
+}
+
+// 1.4.x background reminder agents multiply a probe's model requests ~3.8x;
+// the probe host must start with every one of them switched off.
+func TestMuseProbeHostDisablesReminderAgents(t *testing.T) {
+	inner := fakeMuseHost(t, museUsagePayload, false, nil, nil, nil)
+	var got map[string]string
+	m := &Muse{Start: func(ctx context.Context, env map[string]string, name string, args ...string) (*execx.Proc, error) {
+		got = env
+		return inner(ctx, name, args...)
+	}, Dir: t.TempDir(), Timeout: 5 * time.Second}
+	if _, _, err := m.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"TODO", "MEMORY", "SKILL", "GOAL", "VERIFY", "SCOPE"} {
+		if v := got["MUSE_EXPERIMENTAL_"+k+"_REMINDER"]; v != "0" {
+			t.Errorf("MUSE_EXPERIMENTAL_%s_REMINDER = %q, want \"0\"", k, v)
+		}
+	}
+}
+
 func TestMuseFailedProbesBackOffExponentiallyAndSuccessResets(t *testing.T) {
 	failing := fakeMuseHost(t, "", true, nil, nil, nil)
 	healthy := fakeMuseHost(t, museUsagePayload, false, nil, nil, nil)
 	cur := failing
-	m := &Muse{Start: func(ctx context.Context, name string, args ...string) (*execx.Proc, error) {
+	m := &Muse{Start: ignoreEnv(func(ctx context.Context, name string, args ...string) (*execx.Proc, error) {
 		return cur(ctx, name, args...)
-	}, Dir: t.TempDir(), Timeout: 20 * time.Millisecond, Now: newClk().Now}
+	}), Dir: t.TempDir(), Timeout: 20 * time.Millisecond, Now: newClk().Now}
 	retry := func() time.Duration {
 		t.Helper()
 		_, _, err := m.Fetch(context.Background())
@@ -391,7 +417,7 @@ func TestMuseFetchLive(t *testing.T) {
 	if os.Getenv("MUSE_LIVE_PROBE") != "1" {
 		t.Skip("live probe spends one real muse turn; set MUSE_LIVE_PROBE=1 to run")
 	}
-	m := &Muse{Start: execx.Start, Dir: t.TempDir(), Timeout: 120 * time.Second}
+	m := &Muse{Start: execx.StartEnv, Dir: t.TempDir(), Timeout: 120 * time.Second}
 	meters, headline, err := m.Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
