@@ -49,6 +49,11 @@ type Snapshot struct {
 type Source struct {
 	Agent runtime.AgentKind
 	Fetch func(ctx context.Context) ([]Meter, string, error)
+	// ObservedAt, when set, is called after a successful Fetch and returns
+	// when the served reading was really observed (zero: just now). It is
+	// stored as fetched_at, so a gated replay shows its true age, and its
+	// snapshot is then stale only on a failed attempt, never by age.
+	ObservedAt func() time.Time
 }
 
 // Error carries an API error code (§7), e.g. "limit_reached" for a manual
@@ -126,7 +131,7 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 			snap, err := cursorSrc.Fetch(ctx)
 			return snap.Meters, snap.HeadlineID, err
 		}},
-		{Agent: runtime.Muse, Fetch: museSrc.Fetch},
+		{Agent: runtime.Muse, Fetch: museSrc.Fetch, ObservedAt: museSrc.ObservedAt},
 	}
 }
 
@@ -405,10 +410,20 @@ func (p *Poller) fetchAndStore(ctx context.Context, src Source) error {
 		return p.storeFailure(ctx, src.Agent, now, err)
 	}
 	p.setBackoff(src.Agent, time.Time{})
-	return p.storeSuccess(ctx, src.Agent, now, meters, headline)
+	fetched := now
+	if src.ObservedAt != nil {
+		if t := src.ObservedAt(); !t.IsZero() {
+			fetched = t
+		}
+	}
+	return p.storeSuccessAt(ctx, src.Agent, now, fetched, meters, headline)
 }
 
 func (p *Poller) storeSuccess(ctx context.Context, kind runtime.AgentKind, now time.Time, meters []Meter, headline string) error {
+	return p.storeSuccessAt(ctx, kind, now, now, meters, headline)
+}
+
+func (p *Poller) storeSuccessAt(ctx context.Context, kind runtime.AgentKind, now, fetched time.Time, meters []Meter, headline string) error {
 	body, err := json.Marshal(meters)
 	if err != nil {
 		return err
@@ -419,7 +434,7 @@ func (p *Poller) storeSuccess(ctx context.Context, kind runtime.AgentKind, now t
 		ON CONFLICT(agent_kind) DO UPDATE SET meters_json = excluded.meters_json,
 			headline_id = excluded.headline_id, source = excluded.source, error = NULL,
 			fetched_at = excluded.fetched_at, attempted_at = excluded.attempted_at`,
-		string(kind), string(body), nullIf(headline), string(kind), db.Millis(now), db.Millis(now))
+		string(kind), string(body), nullIf(headline), string(kind), db.Millis(fetched), db.Millis(now))
 	if err != nil {
 		return err
 	}
@@ -491,7 +506,11 @@ func (p *Poller) Snapshots(ctx context.Context) ([]Snapshot, error) {
 		}
 		s.FetchedAt = db.FromMillis(fetchedAt)
 		s.AttemptedAt = db.FromMillis(attemptedAt)
-		s.Stale = s.AttemptedAt.After(s.FetchedAt) || now.Sub(s.FetchedAt) > staleAfter
+		if src := p.sourceFor(s.Agent); src != nil && src.ObservedAt != nil && fetchedAt > 0 {
+			s.Stale = s.Error != "" // fetched_at is an observation time: its age is data, not staleness
+		} else {
+			s.Stale = s.AttemptedAt.After(s.FetchedAt) || now.Sub(s.FetchedAt) > staleAfter
+		}
 		out = append(out, s)
 	}
 	return out, rows.Err()

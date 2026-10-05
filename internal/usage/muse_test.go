@@ -548,22 +548,25 @@ func TestMuseUnreadableSessionIndexFallsBackToTheGapRule(t *testing.T) {
 	}
 }
 
-// The poller stamps fetched_at on every successful Fetch, including a gated
-// one, so serving the cache for hours must not flag the snapshot stale.
-func TestMuseGatedFetchIsNotFlaggedStale(t *testing.T) {
+// A gated Muse fetch replays an old reading: fetched_at must carry when it was
+// really observed (the menubar shows "Updated 10h ago"), and that age alone
+// must not flag the snapshot stale.
+func TestMuseReplayedReadingKeepsItsObservationTimeAndIsNotStale(t *testing.T) {
 	idx, touch := museIndex(t)
 	c := newClk()
 	touch(c.Now().UnixMicro())
 	spawns := 0
 	d := dbtest.Open(t)
+	m := gatedMuse(t, museUsagePayload, idx, &spawns, c)
 	p := &Poller{DB: d, Events: events.New(d, c.Now), Settings: settingsWith(t, d, 300), Now: c.Now,
 		Log: func(string, ...any) {}, Sources: []Source{{Agent: runtime.Muse,
-			Fetch: gatedMuse(t, museUsagePayload, idx, &spawns, c).Fetch}}}
+			Fetch: m.Fetch, ObservedAt: m.ObservedAt}}}
 	ctx := context.Background()
 	if err := p.RefreshOne(ctx, runtime.Muse); err != nil {
 		t.Fatal(err)
 	}
-	c.Advance(90 * time.Minute)
+	observed := c.Now()
+	c.Advance(10 * time.Hour)
 	if err := p.RefreshOne(ctx, runtime.Muse); err != nil {
 		t.Fatal(err)
 	}
@@ -571,8 +574,15 @@ func TestMuseGatedFetchIsNotFlaggedStale(t *testing.T) {
 	if err != nil || len(snaps) != 1 {
 		t.Fatalf("snaps = %+v, %v", snaps, err)
 	}
-	if spawns != 1 || snaps[0].Stale {
-		t.Errorf("spawns = %d, stale = %v; want 1 probe and a fresh snapshot", spawns, snaps[0].Stale)
+	s := snaps[0]
+	if spawns != 1 || s.Stale || s.Error != "" {
+		t.Errorf("spawns = %d, stale = %v, error = %q; want 1 probe and a fresh snapshot", spawns, s.Stale, s.Error)
+	}
+	if !s.FetchedAt.Equal(observed) {
+		t.Errorf("FetchedAt = %v, want the observation time %v", s.FetchedAt, observed)
+	}
+	if !s.AttemptedAt.Equal(c.Now()) {
+		t.Errorf("AttemptedAt = %v, want the replay time %v", s.AttemptedAt, c.Now())
 	}
 }
 
