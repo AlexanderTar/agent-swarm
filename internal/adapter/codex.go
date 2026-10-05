@@ -491,6 +491,44 @@ func codexIsBoundaryLine(line []byte) bool {
 	return p.Type == "function_call_output" || p.Type == "custom_tool_call_output"
 }
 
+// codexIsTurnContext is ObserveModel's hasBoundary predicate: a turn_context
+// line carrying a model.
+func codexIsTurnContext(line []byte) bool {
+	_, _, ok := codexTurnContext(line)
+	return ok
+}
+
+// codexTurnContext parses a rollout line, returning (model, effort) when it
+// is a turn_context with a model.
+func codexTurnContext(line []byte) (string, string, bool) {
+	var e struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Model  string `json:"model"`
+			Effort string `json:"effort"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(line, &e) != nil || e.Type != "turn_context" || e.Payload.Model == "" {
+		return "", "", false
+	}
+	return e.Payload.Model, e.Payload.Effort, true
+}
+
+// ObserveModel returns the model/effort of the last turn_context in the
+// rollout tail: the hook carries the model but never the effort.
+func (c *Codex) ObserveModel(transcriptPath, _ string) (string, string, bool) {
+	lines, err := readTranscriptTailLines(transcriptPath, codexIsTurnContext)
+	if err != nil {
+		return "", "", false
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if m, e, ok := codexTurnContext(lines[i]); ok {
+			return m, e, true
+		}
+	}
+	return "", "", false
+}
+
 // AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
 // reader for Codex (2026-09-28-approval-summary-enforced): the assistant
 // text printed since the last real user message OR tool result in the
