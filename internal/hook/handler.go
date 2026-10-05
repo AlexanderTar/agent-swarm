@@ -469,6 +469,40 @@ type Handler struct {
 	noticeAt     map[string]time.Time
 	deferred     map[string]string            // agy: PostToolUse context held for the next PreInvocation (in memory: lost on daemon restart)
 	readFile     func(string) ([]byte, error) // nil means os.ReadFile
+	obs          map[string]transcriptObs     // transcript path -> last ObserveModel answer
+}
+
+// transcriptObs is one ObserveModel answer, valid while the transcript's size
+// and mtime are unchanged.
+type transcriptObs struct {
+	size          int64
+	mtime         time.Time
+	model, effort string
+	ok            bool
+}
+
+// observeTranscriptModel is mo.ObserveModel, but a transcript whose size and
+// mtime match the last call returns that answer without re-reading the tail.
+func (h *Handler) observeTranscriptModel(mo adapter.ModelObserver, path, providerSessionID string) (string, string, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return mo.ObserveModel(path, providerSessionID)
+	}
+	h.mu.Lock()
+	memo, hit := h.obs[path]
+	h.mu.Unlock()
+	if hit && memo.size == info.Size() && memo.mtime.Equal(info.ModTime()) {
+		return memo.model, memo.effort, memo.ok
+	}
+	memo = transcriptObs{size: info.Size(), mtime: info.ModTime()}
+	memo.model, memo.effort, memo.ok = mo.ObserveModel(path, providerSessionID)
+	h.mu.Lock()
+	if h.obs == nil {
+		h.obs = map[string]transcriptObs{}
+	}
+	h.obs[path] = memo
+	h.mu.Unlock()
+	return memo.model, memo.effort, memo.ok
 }
 
 func (h *Handler) now() time.Time {
@@ -619,7 +653,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	// a model or effort change in the transcript tail (claude, codex)
 	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.RT != nil {
 		if mo, ok := a.(adapter.ModelObserver); ok {
-			if model, effort, ok := mo.ObserveModel(in.TranscriptPath, in.ProviderSessionID); ok {
+			if model, effort, ok := h.observeTranscriptModel(mo, in.TranscriptPath, in.ProviderSessionID); ok {
 				if _, err := h.RT.RecordObservedModel(ctx, s.ID, model, effort, "transcript"); err != nil {
 					h.logf("hook: record transcript model for %s: %v", s.ID, err)
 				}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -141,5 +142,54 @@ func TestHookRecordsCodexEffortFromRollout(t *testing.T) {
 	}
 	if n := agentChangedCount(t, h); n != before {
 		t.Fatalf("unchanged rollout published: %d -> %d", before, n)
+	}
+}
+
+// countingObserver counts the transcript reads the handler asks the adapter for.
+type countingObserver struct {
+	adapter.Adapter
+	calls *int
+}
+
+func (c countingObserver) ObserveModel(tp, id string) (string, string, bool) {
+	*c.calls++
+	return c.Adapter.(adapter.ModelObserver).ObserveModel(tp, id)
+}
+
+func TestHookDoesNotReReadAnUnchangedTranscript(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+	calls := 0
+	h.Adapters[runtime.Claude] = countingObserver{Adapter: h.Adapters[runtime.Claude], calls: &calls}
+	tp := filepath.Join(t.TempDir(), "t.jsonl")
+	write := func(lines ...string) {
+		if err := os.WriteFile(tp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdin := `{"session_id":"p1","transcript_path":"` + tp + `"}`
+	post := func() {
+		t.Helper()
+		if _, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, []byte(stdin)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"type":"assistant","effort":"high","message":{"model":"claude-opus-5-5"}}`)
+	post()
+	post()
+	post()
+	if calls != 1 {
+		t.Fatalf("unchanged transcript was read %d times, want 1", calls)
+	}
+	if m, e := agentModelEffort(t, h); m != "claude-opus-5-5" || e != "high" {
+		t.Fatalf("row = %q/%q", m, e)
+	}
+	write(`{"type":"assistant","effort":"low","message":{"model":"claude-opus-5-5"}}`)
+	post()
+	if calls != 2 {
+		t.Fatalf("changed transcript must be re-read, calls = %d", calls)
+	}
+	if _, e := agentModelEffort(t, h); e != "low" {
+		t.Fatalf("effort = %q, want low", e)
 	}
 }
