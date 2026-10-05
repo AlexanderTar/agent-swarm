@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -345,6 +346,39 @@ func TestMuseFetchProbesAgainAfterTheGap(t *testing.T) {
 	}
 	if spawns != 2 {
 		t.Errorf("spawned %d hosts, want 2 — the gap elapsed, so a fresh probe is due", spawns)
+	}
+}
+
+func TestMuseFailedProbesBackOffExponentiallyAndSuccessResets(t *testing.T) {
+	failing := fakeMuseHost(t, "", true, nil, nil, nil)
+	healthy := fakeMuseHost(t, museUsagePayload, false, nil, nil, nil)
+	cur := failing
+	m := &Muse{Start: func(ctx context.Context, name string, args ...string) (*execx.Proc, error) {
+		return cur(ctx, name, args...)
+	}, Dir: t.TempDir(), Timeout: 20 * time.Millisecond, Now: newClk().Now}
+	retry := func() time.Duration {
+		t.Helper()
+		_, _, err := m.Fetch(context.Background())
+		var rl *RateLimitError
+		if !errors.As(err, &rl) {
+			t.Fatalf("err = %v, want *RateLimitError so the poller backs off", err)
+		}
+		return rl.RetryAfter
+	}
+	for i, want := range []time.Duration{15 * time.Minute, 30 * time.Minute, 60 * time.Minute,
+		2 * time.Hour, 2 * time.Hour} {
+		if got := retry(); got != want {
+			t.Errorf("failure %d: RetryAfter = %s, want %s", i+1, got, want)
+		}
+	}
+	cur = healthy
+	if _, _, err := m.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cur = failing
+	m.at = time.Time{} // force a probe again
+	if got := retry(); got != 15*time.Minute {
+		t.Errorf("after a success RetryAfter = %s, want the 15m start", got)
 	}
 }
 

@@ -134,6 +134,7 @@ type Muse struct {
 	cached   []Meter
 	headline string
 	at       time.Time
+	failures int // consecutive failed probes, reset on success
 }
 
 func (m *Muse) now() time.Time {
@@ -204,13 +205,28 @@ func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
 
 	usage, err := m.probe(ctx)
 	if err != nil {
-		return nil, "", err
+		m.mu.Lock()
+		m.failures++
+		retry := museBackoff(m.failures)
+		m.mu.Unlock()
+		return nil, "", &RateLimitError{Err: err, RetryAfter: retry}
 	}
 	meters, headline := museMeters(usage)
 	m.mu.Lock()
-	m.cached, m.headline, m.at = meters, headline, m.now()
+	m.cached, m.headline, m.at, m.failures = meters, headline, m.now(), 0
 	m.mu.Unlock()
 	return meters, headline, nil
+}
+
+// museBackoff is the poller's wait after the nth consecutive failed probe:
+// 15m, 30m, 60m, then capped at 2h. Failures are never cached, so without
+// this a rate-limited host gets re-probed on every poll.
+func museBackoff(failures int) time.Duration {
+	d := 15 * time.Minute
+	for i := 1; i < failures && d < 2*time.Hour; i++ {
+		d *= 2
+	}
+	return min(d, 2*time.Hour)
 }
 
 // probe spawns one MSP host, spends one zero-effort turn and returns the
