@@ -1362,3 +1362,63 @@ func TestClaudeInstructionsFileStartsWithBlankLine(t *testing.T) {
 		}
 	}
 }
+
+// remoteControlSetting returns the per-launch settings file's
+// remoteControlAtStartup value (nil when absent).
+func remoteControlSetting(t *testing.T, l Launch) *bool {
+	t.Helper()
+	var path string
+	for i, v := range l.Argv {
+		if v == "--settings" {
+			path = l.Argv[i+1]
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		RemoteControlAtStartup *bool `json:"remoteControlAtStartup"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("settings JSON does not parse: %v\n%s", err, b)
+	}
+	return cfg.RemoteControlAtStartup
+}
+
+// Orchestrators start with Remote Control on, via the --settings (flag) layer:
+// Claude Code reads remoteControlAtStartup from policy/flag/user scope only,
+// never project/local, so the per-launch file is the one place that works
+// under --setting-sources project,local. Workers leave it unset.
+func TestClaudeOrchestratorEnablesRemoteControlOnLaunchAndResume(t *testing.T) {
+	d := testDeps(t)
+	c := newClaude(d)
+	for _, tc := range []struct {
+		role string
+		want bool
+	}{{"orchestrator", true}, {"coder", false}, {"", false}} {
+		s := claudeSpec(t, d)
+		s.Role = tc.role
+		l, err := c.Launch(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc := remoteControlSetting(t, l)
+		if tc.want != (rc != nil && *rc) {
+			t.Errorf("Launch role %q: remoteControlAtStartup = %v, want enabled=%v", tc.role, rc, tc.want)
+		}
+		if !tc.want && rc != nil {
+			t.Errorf("Launch role %q: remoteControlAtStartup must be absent, got %v", tc.role, *rc)
+		}
+		s.SessionID = "ses_02"
+		s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
+		l, err = c.Resume(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc = remoteControlSetting(t, l)
+		if tc.want != (rc != nil && *rc) {
+			t.Errorf("Resume role %q: remoteControlAtStartup = %v, want enabled=%v", tc.role, rc, tc.want)
+		}
+	}
+}

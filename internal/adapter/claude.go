@@ -46,6 +46,13 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 	if s.AdvisorModel != "" {
 		cfg["advisorModel"] = s.AdvisorModel
 	}
+	// Orchestrators start with Remote Control on. Claude Code reads this key
+	// from policy/flag/user scope only (project/local are ignored), so the
+	// --settings file is the one layer that works under --setting-sources
+	// project,local.
+	if s.Role == "orchestrator" {
+		cfg["remoteControlAtStartup"] = true
+	}
 	return json.Marshal(cfg)
 }
 
