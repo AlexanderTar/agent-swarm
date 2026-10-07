@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -295,14 +296,13 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	} else {
 		reclaimCodexHomes(s.Home, resumableAgentIDs, snapshotAt, s.logf)
 	}
-	// D8 (batch-2 review): run at most once per daemon run. See the
-	// codexLaunchHomesReclaim field doc for why this isn't just a
-	// per-tick call left to self-limit.
-	s.codexLaunchHomesReclaim.Do(func() {
-		if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil {
-			s.logf("reconcile: reclaim old codex launch homes: %v", err)
+	// D8 (batch-2 review): at most once per launchDirGCEvery, not every tick.
+	if last := s.launchDirsReclaimedAt.Load(); last == 0 || snapshotAt.Sub(time.Unix(0, last)) >= launchDirGCEvery {
+		s.launchDirsReclaimedAt.Store(snapshotAt.UnixNano())
+		if err := s.reclaimLaunchDirs(ctx); err != nil {
+			s.logf("reconcile: reclaim launch dirs: %v", err)
 		}
-	})
+	}
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -312,9 +312,8 @@ func (s *Store) Reconcile(ctx context.Context) error {
 // Reconcile's call site for why this is NOT just the live set). codex runs
 // with --no-daemon (internal/adapter/codex.go flags()), so there is no
 // daemon process to stop here -- only the directory. There is no general
-// launch-dir GC in this codebase (run/launch/<session>/ is never cleaned up
-// today, for any adapter, except the one-time codex-home migration in
-// reclaimOldCodexLaunchHomes below); this sweep is scoped to codex's own
+// launch-dir hook here: run/launch/<session>/ is reclaimed separately, by
+// age, in reclaimLaunchDirs below; this sweep is scoped to codex's own
 // short-home dirs, which are cheap to name deterministically from a
 // resumable agent id and don't require plumbing a new teardown hook through
 // every Tmux.Kill call site.
@@ -360,18 +359,31 @@ func reclaimCodexHomes(home string, keepAgentIDs []string, snapshotAt time.Time,
 	}
 }
 
-// reclaimOldCodexLaunchHomes is a one-time cleanup (review round 1, MINOR 4)
-// of the pre-fix (2026-09-26) per-launch codex-home directories
-// (<home>/run/launch/<session id>/codex-home), for sessions in a terminal
-// state only -- a live/paused session could in principle still be running
-// against its old, long CODEX_HOME, and deleting a running agent's home out
-// from under it is not a risk worth taking just to reclaim disk. Removes
-// only the codex-home subdir, never the whole per-launch dir (other files,
-// e.g. codex's own instructions file or claude's per-launch settings, still
-// live alongside it), and only ever under s.Home. Self-limiting: once a
-// session's codex-home is gone there is nothing left to remove on a later
-// tick, so this needs no separate "already ran once" bookkeeping.
-func (s *Store) reclaimOldCodexLaunchHomes(ctx context.Context) error {
+const (
+	// launchDirGCEvery throttles reclaimLaunchDirs.
+	launchDirGCEvery = time.Hour
+	// launchDirTerminalAge is how long a terminal session's launch dir is
+	// kept after it ended (BUG-35, chore-43 decision 5).
+	launchDirTerminalAge = 24 * time.Hour
+	// launchDirOrphanAge is how old a launch dir with no sessions row must
+	// be before it is removed. Generous: a dir is mkdir'd around the
+	// session insert, so a young orphan may be a launch whose row has not
+	// landed yet, and an old one is left over from a deleted DB or a
+	// failed launch.
+	launchDirOrphanAge = 7 * 24 * time.Hour
+)
+
+// reclaimLaunchDirs removes whole per-launch dirs
+// (<home>/run/launch/<session id>: settings, instructions, the pre-2026-09-26
+// codex-home) that nothing will read again (BUG-35, chore-43 decision 5):
+// a session in a terminal state (completed/failed/crashed/cancelled) that
+// ended more than launchDirTerminalAge ago (ended_at, falling back to
+// last_seen_at then started_at), and a dir with no sessions row whose mtime
+// is older than launchDirOrphanAge. A live, paused or interrupted session's
+// dir is never touched: it may still be running against it, or resume into
+// it. Session ages use business time (s.now()), orphan mtimes real time.
+// Errors removing one entry are logged so one stuck dir never stops the rest.
+func (s *Store) reclaimLaunchDirs(ctx context.Context) error {
 	if s.Home == "" {
 		return nil
 	}
@@ -383,25 +395,48 @@ func (s *Store) reclaimOldCodexLaunchHomes(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	terminalIDs, err := s.queryIDs(ctx, `SELECT id FROM sessions
-		WHERE state IN ('completed', 'failed', 'crashed', 'cancelled')`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, state, COALESCE(ended_at, last_seen_at, started_at) FROM sessions`)
 	if err != nil {
 		return err
 	}
-	terminal := make(map[string]bool, len(terminalIDs))
-	for _, id := range terminalIDs {
-		terminal[id] = true
+	type sesAge struct {
+		terminal bool
+		endedAt  int64
 	}
+	known := map[string]sesAge{}
+	for rows.Next() {
+		var id, state string
+		var at int64
+		if err := rows.Scan(&id, &state, &at); err != nil {
+			rows.Close()
+			return err
+		}
+		known[id] = sesAge{terminal: slices.Contains([]string{"completed", "failed", "crashed", "cancelled"}, state), endedAt: at}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	terminalCutoff := db.Millis(s.now().Add(-launchDirTerminalAge))
+	orphanCutoff := time.Now().Add(-launchDirOrphanAge)
 	for _, e := range entries {
-		if !terminal[e.Name()] {
+		if !e.IsDir() {
 			continue
 		}
-		old := filepath.Join(launchRoot, e.Name(), "codex-home")
-		if _, err := os.Stat(old); err != nil {
-			continue // never existed for this session (not codex, or already gone)
+		ses, ok := known[e.Name()]
+		switch {
+		case ok && (!ses.terminal || ses.endedAt > terminalCutoff):
+			continue
+		case !ok:
+			info, ierr := e.Info()
+			if ierr != nil || info.ModTime().After(orphanCutoff) {
+				continue
+			}
 		}
-		if err := os.RemoveAll(old); err != nil {
-			s.logf("reconcile: remove old codex-home %s: %v", old, err)
+		if err := os.RemoveAll(filepath.Join(launchRoot, e.Name())); err != nil {
+			s.logf("reconcile: remove launch dir %s: %v", e.Name(), err)
 		}
 	}
 	return nil
