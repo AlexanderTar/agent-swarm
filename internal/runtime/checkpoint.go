@@ -1170,6 +1170,11 @@ type siblingTeardown struct {
 // is filtered to same role (no step concept without a workflow run).
 func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string,
 	callerRole Role, callerRun workflowRun, callerHasRun, isWorkflowItem bool, now time.Time) ([]siblingTeardown, error) {
+	// BUG-40: a spike's researchers share its item and role, but each answers
+	// its own sub-question -- one finishing says nothing about the others.
+	if callerRole == RoleResearcher {
+		return nil, nil
+	}
 	args := []any{itemID, callerAgentID}
 	placeholders := make([]string, len(LiveStates))
 	for i, st := range LiveStates {
@@ -1177,7 +1182,7 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		args = append(args, string(st))
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT s.id, s.tmux_name, COALESCE(s.provider_session_id, ''),
-			a2.id, a2.name, a2.kind, a2.root_item_id, a2.role
+			a2.id, a2.name, a2.kind, a2.root_item_id, a2.role, COALESCE(a2.parent_agent_id, '')
 		FROM agents a2 JOIN sessions s ON s.id = (
 			SELECT id FROM sessions WHERE agent_id = a2.id ORDER BY generation DESC, attempt DESC LIMIT 1)
 		WHERE a2.item_id = ? AND a2.id != ? AND s.state IN (`+strings.Join(placeholders, ",")+`)`, args...)
@@ -1185,14 +1190,14 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		return nil, err
 	}
 	type sibling struct {
-		sessionID, tmux, provider, agentID, name, rootItemID, role string
-		kind                                                       AgentKind
+		sessionID, tmux, provider, agentID, name, rootItemID, role, parentID string
+		kind                                                                 AgentKind
 	}
 	var found []sibling
 	for rows.Next() {
 		var r sibling
 		var kind string
-		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID, &r.role); err != nil {
+		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID, &r.role, &r.parentID); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1239,10 +1244,46 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		if err := s.publishAgentChanged(ctx, tx, r.name, r.rootItemID); err != nil {
 			return nil, err
 		}
+		if r.parentID != "" {
+			if err := s.relayEndedWithoutCheckpoint(ctx, tx, r.sessionID, r.parentID, r.name, r.rootItemID, itemID); err != nil {
+				return nil, err
+			}
+		}
 		s.logf("checkpoint: closing %s, its item completed under %s", r.name, callerAgentID)
 		out = append(out, siblingTeardown{TmuxName: r.tmux, ProviderSessionID: r.provider, Kind: r.kind})
 	}
 	return out, nil
+}
+
+// relayEndedWithoutCheckpoint tells parentID that sessionID was ended for its
+// agent with no completed/failed/blocked/handoff checkpoint since its
+// accepted (BUG-40, chore-43 decision 7), so the work it was doing is not
+// lost silently. A no-op when the session's latest checkpoint already closed
+// its turn.
+func (s *Store) relayEndedWithoutCheckpoint(ctx context.Context, tx *sql.Tx, sessionID, parentID, agentName, rootItemID, itemID string) error {
+	var kind, summary string
+	err := tx.QueryRowContext(ctx, `SELECT kind, summary FROM checkpoints WHERE session_id = ?
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, sessionID).Scan(&kind, &summary)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	switch CheckpointKind(kind) {
+	case CompletedCkp, FailedCkp, BlockedCkp, Handoff:
+		return nil
+	}
+	var itemKey string
+	if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, itemID).Scan(&itemKey); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]any{"event": "ended_without_checkpoint", "agent": agentName,
+		"item": itemKey, "last_checkpoint": summary,
+		"next": "swarm_read the agent, then swarm_control retry or reassign."})
+	if err != nil {
+		return err
+	}
+	_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: parentID,
+		RootItemID: rootItemID, ItemID: itemID, Payload: payload})
+	return err
 }
 
 // WriteCheckpoint is swarm_checkpoint (§8.1, L24).

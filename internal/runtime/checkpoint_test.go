@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2860,5 +2861,93 @@ func TestIntegratedOnBlockedRootOpensAcceptFix(t *testing.T) {
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'accept_fix'
 		AND state = 'open'`, it.ID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("open accept_fix = %d (err %v), want 1", n, err)
+	}
+}
+
+// BUG-40 root cause: CHORE-35's researchers all share the spike's item and
+// role, so closeCompletedSiblings ended every live sibling the moment one of
+// them wrote completed ("checkpoint: closing grind-process, its item
+// completed under ..."), mid-task, with no checkpoint and no relay. A
+// researcher answers one sub-question; its completed never closes another.
+func TestResearcherCompletedDoesNotCloseSiblingResearchers(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Grind", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawn := func(name string) (Agent, string) {
+		t.Helper()
+		a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: key, Role: RoleResearcher, Kind: Fake, Model: "fake-1",
+			ParentAgentID: orch.ID, Name: name, Brief: BriefInput{Objective: "answer " + name}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses := mustSessionID(t, s, a.ID)
+		if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "researching"}); err != nil {
+			t.Fatal(err)
+		}
+		return a, ses
+	}
+	_, brewersSes := spawn("grind-brewers")
+	process, _ := spawn("grind-process")
+	if _, err := s.WriteCheckpoint(ctx, brewersSes, CheckpointInput{Kind: CompletedCkp, Summary: "notes written"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, process.ID); got != Running {
+		t.Fatalf("grind-process session state = %s, want running -- a sibling researcher's completed must not close it", got)
+	}
+}
+
+// BUG-40 (chore-43 decision 7): a worker whose session is ended for it with
+// no completed/failed/blocked/handoff checkpoint since its accepted must not
+// vanish silently -- its parent gets an ended_without_checkpoint relay.
+func TestClosedSiblingWithoutCheckpointRelaysToParent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Accepted, Summary: "building"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "half way"}); err != nil {
+		t.Fatal(err)
+	}
+	coder2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it too"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder2Ses := mustSessionID(t, s, coder2.ID)
+	if _, err := s.WriteCheckpoint(ctx, coder2Ses, CheckpointInput{Kind: Accepted, Summary: "building too"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coder2Ses, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder.ID); got != Completed {
+		t.Fatalf("first coder session state = %s, want completed (closed as a same-role sibling)", got)
+	}
+	var payload string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%ended_without_checkpoint%'`, orch.ID).Scan(&payload); err != nil {
+		t.Fatalf("no ended_without_checkpoint relay to the parent: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["agent"] != coder.Name || got["item"] != "TASK-1" || got["last_checkpoint"] != "half way" ||
+		!strings.Contains(fmt.Sprint(got["next"]), "swarm_control retry") {
+		t.Fatalf("relay payload = %v", got)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%ended_without_checkpoint%' AND payload_json LIKE ?`, `%"`+coder2.Name+`"%`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("the completing coder itself got an ended_without_checkpoint relay")
 	}
 }
