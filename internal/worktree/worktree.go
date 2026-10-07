@@ -628,6 +628,9 @@ func (s *Service) WouldRemove(ctx context.Context, wt Worktree) (bool, string) {
 
 // keepReason is remove's dirty and merged checks: "" means safe to delete.
 func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
+	if s.discardable(ctx, wt) {
+		return ""
+	}
 	dirty, err := s.DirtyStrict(ctx, wt.Path)
 	if dirty {
 		if err != nil {
@@ -647,6 +650,13 @@ func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
 	return ""
 }
 
+// discardable is true for a review tree still at its detached_sha: it holds no
+// commit of its own, so whatever dirt build tooling left (next-env.d.ts,
+// Podfile.lock, project.pbxproj) is thrown away with it rather than retained.
+func (s *Service) discardable(ctx context.Context, wt Worktree) bool {
+	return wt.Branch == "" && wt.DetachedSHA != "" && s.atDetachedSHA(ctx, wt)
+}
+
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	// A path that is already gone is 'removed', not 'dirty': without this,
 	// DirtyStrict's git call fails, dirty comes back true, and a vanished
@@ -663,7 +673,11 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if err != nil {
 		return Worktree{}, err
 	}
-	if out, rerr := s.git(ctx, repoPath, "worktree", "remove", wt.Path); rerr != nil {
+	rmArgs := []string{"worktree", "remove", wt.Path}
+	if s.discardable(ctx, wt) {
+		rmArgs = []string{"worktree", "remove", "--force", wt.Path}
+	}
+	if out, rerr := s.git(ctx, repoPath, rmArgs...); rerr != nil {
 		s.logf("worktree: remove %s failed: %v: %s", wt.Path, rerr, out)
 		wt, err := s.retain(ctx, wt, "remove_failed")
 		wt.RemoveError = strings.TrimSpace(rerr.Error() + ": " + string(out))
