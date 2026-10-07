@@ -2854,3 +2854,31 @@ func TestItemsToolUpdateResolvedBy(t *testing.T) {
 		t.Fatalf("item = %+v", it)
 	}
 }
+
+// BUG-46/47/48: an orchestrator spawned on another top-level root starts
+// top-level — no parent, no relays back to the caller.
+func TestSpawnOrchestratorOnOtherRootStartsTopLevel(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	other := seedOtherRoot(t, s)
+	out, err := s.call(ctx, seed.Caller, "swarm_spawn",
+		`{"item":"`+other+`","role":"orchestrator","brief":{"objective":"x"},"worktrees":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agent    string `json:"agent"`
+		TopLevel bool   `json:"top_level"`
+	}
+	json.Unmarshal(mustJSON(out), &res)
+	if !res.TopLevel || res.Agent == "" {
+		t.Fatalf("result = %+v", res)
+	}
+	a, err := s.RT.Agent(ctx, res.Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ParentAgentID != "" {
+		t.Fatalf("parent = %q, want none", a.ParentAgentID)
+	}
+}
