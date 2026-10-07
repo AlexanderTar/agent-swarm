@@ -3509,54 +3509,72 @@ func TestReconcileKeepsAPausedSessionsCodexHomeButRemovesADeadOnesSession(t *tes
 	}
 }
 
-// MINOR 4 (review round 1): a one-time cleanup of the pre-fix per-launch
-// codex-home dirs (<home>/run/launch/<session id>/codex-home), scoped to
-// sessions in a terminal state only (never a live/paused one, which could
-// still legitimately be running against its old, long CODEX_HOME), removing
-// only the codex-home subdir -- never the whole per-launch dir, which other
-// files (e.g. claude's own per-launch settings) may still live in.
-func TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome(t *testing.T) {
+// BUG-35 (chore-43 decision 5): reclaimLaunchDirs removes the whole
+// <home>/run/launch/<session> dir for a session that ended more than 24h
+// ago, keeps one that ended recently, never touches a live (or paused /
+// interrupted) session's dir, and removes a dir with no sessions row once it
+// is older than 7 days (a younger orphan may be a launch whose row has not
+// landed yet).
+func TestReclaimLaunchDirsRemovesOldTerminalAndOrphanDirsOnly(t *testing.T) {
 	ctx := context.Background()
+	s, _, _ := newStore(t)
+	_, _, liveSes := worker(t, s)
+	now := s.now()
+	// Each spike is moved to its target state as soon as it starts, so the
+	// live-session cap never queues the next one.
+	spike := func(name, state string, ended time.Time) Session {
+		t.Helper()
+		_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: name, Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, err := s.LatestSession(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = ?, ended_at = ? WHERE id = ?`,
+			state, db.Millis(ended), ses.ID); err != nil {
+			t.Fatal(err)
+		}
+		return ses
+	}
+	oldSes := spike("Old", "completed", now.Add(-25*time.Hour))
+	recentSes := spike("Recent", "failed", now.Add(-time.Hour))
+	// Paused long ago: still resumable, so its dir must stay.
+	pausedSes := spike("Paused", "paused", now.Add(-30*24*time.Hour))
+	launch := filepath.Join(s.Home, "run", "launch")
+	dir := func(name string) string {
+		p := filepath.Join(launch, name)
+		if err := os.MkdirAll(filepath.Join(p, "codex-home"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "settings.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	oldDir, recentDir, liveDir, pausedDir := dir(oldSes.ID), dir(recentSes.ID), dir(liveSes.ID), dir(pausedSes.ID)
+	oldOrphan, youngOrphan := dir("ses_gone_long_ago"), dir("ses_gone_yesterday")
+	if err := os.Chtimes(oldOrphan, time.Now().Add(-8*24*time.Hour), time.Now().Add(-8*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(youngOrphan, time.Now().Add(-24*time.Hour), time.Now().Add(-24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 
-	// Terminal session: its old codex-home must go, but a sibling file in
-	// the same per-launch dir must survive.
-	sDone, _, _ := newStore(t)
-	_, _, doneSes := worker(t, sDone)
-	if _, err := sDone.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, doneSes.ID); err != nil {
+	if err := s.reclaimLaunchDirs(ctx); err != nil {
 		t.Fatal(err)
-	}
-	doneLaunchDir := filepath.Join(sDone.Home, "run", "launch", doneSes.ID)
-	doneCodexHome := filepath.Join(doneLaunchDir, "codex-home")
-	doneOtherFile := filepath.Join(doneLaunchDir, "codex-instructions.md")
-	if err := os.MkdirAll(doneCodexHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(doneOtherFile, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := sDone.reclaimOldCodexLaunchHomes(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(doneCodexHome); !os.IsNotExist(err) {
-		t.Errorf("a terminal session's old codex-home still exists: %v", err)
-	}
-	if _, err := os.Stat(doneOtherFile); err != nil {
-		t.Errorf("a sibling file in the same per-launch dir was removed: %v", err)
 	}
 
-	// Non-terminal (running) session: its old codex-home must be left alone.
-	sLive, _, _ := newStore(t)
-	_, _, liveSes := worker(t, sLive)
-	liveLaunchDir := filepath.Join(sLive.Home, "run", "launch", liveSes.ID)
-	liveCodexHome := filepath.Join(liveLaunchDir, "codex-home")
-	if err := os.MkdirAll(liveCodexHome, 0o700); err != nil {
-		t.Fatal(err)
+	for _, gone := range []string{oldDir, oldOrphan} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed: %v", filepath.Base(gone), err)
+		}
 	}
-	if err := sLive.reclaimOldCodexLaunchHomes(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(liveCodexHome); err != nil {
-		t.Errorf("a non-terminal session's old codex-home was removed: %v", err)
+	for _, kept := range []string{recentDir, liveDir, pausedDir, youngOrphan} {
+		if _, err := os.Stat(filepath.Join(kept, "settings.json")); err != nil {
+			t.Errorf("%s should have been kept: %v", filepath.Base(kept), err)
+		}
 	}
 }
 
@@ -3727,55 +3745,46 @@ func TestReconcileForgetsClaudeTrustOnlyOncePerSession(t *testing.T) {
 	}
 }
 
-// D8 (batch-2 review): reclaimOldCodexLaunchHomes must run at most once per
-// daemon run, not on every 5s Reconcile tick -- it already self-limits in
-// effect (nothing is left to remove after the first pass), but before this
-// fix it still paid a DB query and an os.ReadDir every tick forever.
-func TestReclaimOldCodexLaunchHomesRunsOnlyOnceADaemonRun(t *testing.T) {
+// D8 (batch-2 review), carried over to the launch-dir GC: the sweep pays a DB
+// query and an os.ReadDir, so Reconcile runs it at most once an hour rather
+// than on every 5s tick. A dir that becomes eligible between two ticks a few
+// seconds apart is left for the next hourly pass.
+func TestReclaimLaunchDirsRunsAtMostHourly(t *testing.T) {
 	ctx := context.Background()
 	s, _, _ := newStore(t)
-	_, a1, _, err := s.StartSpike(ctx, SpikeInput{Name: "Reclaim1", Intent: "feature", Kind: Fake, Model: "fake-1"})
-	if err != nil {
-		t.Fatal(err)
+	ended := func(name string) string {
+		t.Helper()
+		_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: name, Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, err := s.LatestSession(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = ? WHERE id = ?`,
+			db.Millis(s.now().Add(-48*time.Hour)), ses.ID); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(s.Home, "run", "launch", ses.ID)
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	ses1, err := s.LatestSession(ctx, a1.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, ses1.ID); err != nil {
-		t.Fatal(err)
-	}
-	codexHome1 := filepath.Join(s.Home, "run", "launch", ses1.ID, "codex-home")
-	if err := os.MkdirAll(codexHome1, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	first := ended("Reclaim1")
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(codexHome1); !os.IsNotExist(err) {
-		t.Fatalf("first terminal session's old codex-home still exists: %v", err)
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("first terminal session's launch dir still exists: %v", err)
 	}
-
-	_, a2, _, err := s.StartSpike(ctx, SpikeInput{Name: "Reclaim2", Intent: "feature", Kind: Fake, Model: "fake-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ses2, err := s.LatestSession(ctx, a2.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, ses2.ID); err != nil {
-		t.Fatal(err)
-	}
-	codexHome2 := filepath.Join(s.Home, "run", "launch", ses2.ID, "codex-home")
-	if err := os.MkdirAll(codexHome2, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	second := ended("Reclaim2")
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(codexHome2); err != nil {
-		t.Fatalf("a second terminal session's old codex-home was removed on a later tick; the sweep must run only once per daemon run: %v", err)
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("a launch dir was removed on the very next tick; the sweep must run at most hourly: %v", err)
 	}
 }
 

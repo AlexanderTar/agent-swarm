@@ -9,6 +9,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
@@ -452,13 +453,12 @@ type Store struct {
 	// follows (one lock, one parse, review round 3) is the cost of D2 ever
 	// running at all, not a regression.
 	forgottenClaudeTrust map[string]bool
-	// codexLaunchHomesReclaim guards reclaimOldCodexLaunchHomes (D8, batch-2
-	// review): it is a one-time cleanup of pre-fix per-launch codex-home
-	// dirs, but ungated it paid a DB query and an os.ReadDir on every 5s
-	// Reconcile tick forever, long after there was ever anything left to
-	// remove. sync.Once, not a bool: Reconcile has no other lock around this
-	// call, and Once.Do is itself concurrency-safe.
-	codexLaunchHomesReclaim sync.Once
+	// launchDirsReclaimedAt is the real wall-clock time (UnixNano) of the
+	// last reclaimLaunchDirs pass. The sweep costs a DB query and an
+	// os.ReadDir, so Reconcile runs it at most once per launchDirGCEvery
+	// rather than on every 5s tick (D8, batch-2 review). Atomic: Reconcile
+	// has no other lock around this call.
+	launchDirsReclaimedAt atomic.Int64
 	// lastTitle is the Ghostty tab title (sessionTitle's output) each live
 	// session had as of the last tick that set it, so a tick whose status,
 	// role and tree haven't changed skips the tmux rename-window call instead
