@@ -2133,6 +2133,22 @@ func TestStopAfterPrintedBlockSendsAskAndBlocks(t *testing.T) {
 	}
 }
 
+// Claude Code fires Stop before the final assistant text reaches the transcript, so the reply is
+// judged from the Stop input's last_assistant_message when it is there.
+func TestStopJudgesLastAssistantMessageOverStaleTranscript(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	reqID, block := printingApproval(t, h, "Users table gets id and email.")
+	tr := writeTranscript(t, claudeUserLine("go"))
+	in, _ := json.Marshal(map[string]any{"session_id": "p1", "transcript_path": tr, "last_assistant_message": block})
+	if _, err := h.Handle(ctx, runtime.Claude, "Stop", ses, in); err != nil {
+		t.Fatal(err)
+	}
+	if ev := relayEvent(t, h, reqID); ev != "request_ask" {
+		t.Fatalf("event = %q, want request_ask", ev)
+	}
+}
+
 func TestStopAfterParaphraseSendsReprint(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)

@@ -91,6 +91,8 @@ type HookInput struct {
 	// carries it separately. Both empty when the hook says nothing.
 	Model  string
 	Effort string
+	// LastAssistantMessage is the Stop hook's final reply text (Claude only); empty when not sent.
+	LastAssistantMessage string
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.

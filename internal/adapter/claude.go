@@ -455,7 +455,8 @@ func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolInput      json.RawMessage `json:"tool_input"`
 		ToolResponse   json.RawMessage `json:"tool_response"`
 		Prompt         string          `json:"prompt"`
-		Model          string          `json:"model"` // SessionStart only
+		Model          string          `json:"model"`                  // SessionStart only
+		LastAssistant  string          `json:"last_assistant_message"` // Stop only
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -471,18 +472,19 @@ func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
 		cmd = inputWithCmd.Command
 	}
 	return HookInput{
-		ProviderSessionID: raw.SessionID,
-		Event:             event,
-		ToolName:          raw.ToolName,
-		Command:           cmd,
-		Source:            raw.Source,
-		Cwd:               raw.Cwd,
-		TranscriptPath:    raw.TranscriptPath,
-		RawToolInput:      raw.ToolInput,
-		ToolResponse:      raw.ToolResponse,
-		Prompt:            raw.Prompt,
-		Model:             raw.Model,
-		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
+		ProviderSessionID:    raw.SessionID,
+		Event:                event,
+		ToolName:             raw.ToolName,
+		Command:              cmd,
+		Source:               raw.Source,
+		Cwd:                  raw.Cwd,
+		TranscriptPath:       raw.TranscriptPath,
+		RawToolInput:         raw.ToolInput,
+		ToolResponse:         raw.ToolResponse,
+		Prompt:               raw.Prompt,
+		Model:                raw.Model,
+		LastAssistantMessage: raw.LastAssistant,
+		IsSwarmTool:          strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
 	}, nil
 }
 
