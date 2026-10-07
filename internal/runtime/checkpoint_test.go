@@ -2923,3 +2923,31 @@ func TestProgressOnWorkflowRunStepReturnsKeepWorkingNext(t *testing.T) {
 		t.Fatalf("Next = %q, want %q", res.Next, progressKeepWorkingNext)
 	}
 }
+
+// BUG-38: a chore has no worktree commits, so integrated with git: [] plus
+// verification is accepted; without verification it is still refused.
+func TestIntegratedChoreEmptyGitAccepted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "chore", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "bumping"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "no code change",
+		Git: []GitRef{}}); err == nil {
+		t.Fatal("integrated still needs verification")
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "no code change",
+		Git:          []GitRef{},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatalf("chore with git: [] plus verification: %v", err)
+	}
+	it, _ := s.Items.Get(ctx, key)
+	if it.Status != items.InReview {
+		t.Fatalf("status = %s, want in_review", it.Status)
+	}
+}
