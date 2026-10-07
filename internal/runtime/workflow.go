@@ -774,11 +774,12 @@ func (s *Store) rwRepoCandidates(ctx context.Context, wts []WorkflowWorktree) ([
 
 // reviewWorktreeFor returns the one review worktree id shared by every
 // reviewer of (stepID, round): reused if a sibling reviewer's row already
-// has one, else created fresh at sha, owned by the workflow's orchestrator.
+// has an active one (a removed tree is never reused), else created fresh at sha, owned by the workflow's orchestrator.
 func (s *Store) reviewWorktreeFor(ctx context.Context, wf wfRow, stepID string, round int, sha string) (string, error) {
 	var existing string
-	err := s.DB.QueryRowContext(ctx, `SELECT review_worktree_id FROM workflow_runs
-		WHERE workflow_id = ? AND step_id = ? AND round = ? AND review_worktree_id IS NOT NULL LIMIT 1`,
+	err := s.DB.QueryRowContext(ctx, `SELECT r.review_worktree_id FROM workflow_runs r
+		JOIN worktrees w ON w.id = r.review_worktree_id AND w.state = 'active'
+		WHERE r.workflow_id = ? AND r.step_id = ? AND r.round = ? LIMIT 1`,
 		wf.ID, stepID, round).Scan(&existing)
 	if err == nil && existing != "" {
 		return existing, nil

@@ -116,3 +116,37 @@ func TestReclaimKeepsReviewTreeReferencedByANonTerminalRun(t *testing.T) {
 		t.Fatalf("state = %s, want removed once the run is terminal", state)
 	}
 }
+
+// A sibling run's review_worktree_id that points at a removed worktree must
+// not be reused: the reviewer would be launched into a deleted directory.
+func TestReviewWorktreeForSkipsARemovedSiblingTree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, task := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: task, Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf, ok, err := s.workflowRowByID(ctx, st.ID)
+	if err != nil || !ok {
+		t.Fatalf("workflow row: ok=%v err=%v", ok, err)
+	}
+	first, err := s.reviewWorktreeFor(ctx, wf, "review", 1, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `INSERT INTO workflow_runs (id, workflow_id, step_id, round, role, state, review_worktree_id, created_at)
+		VALUES ('run_sib', ?, 'review', 1, 'sibling', 'completed', ?, 1)`, wf.ID, first)
+	if again, err := s.reviewWorktreeFor(ctx, wf, "review", 1, head); err != nil || again != first {
+		t.Fatalf("active sibling tree: got %q err=%v, want reuse of %q", again, err, first)
+	}
+	mustExec(t, s.DB, `UPDATE worktrees SET state = 'removed' WHERE id = ?`, first)
+	fresh, err := s.reviewWorktreeFor(ctx, wf, "review", 1, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh == first {
+		t.Fatalf("reviewWorktreeFor returned the removed worktree %s", first)
+	}
+}
