@@ -1574,12 +1574,13 @@ func (s *Store) recoverWorkflows(ctx context.Context) error {
 func (s *Store) BriefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]BriefWorktree, error) {
 	out := make([]BriefWorktree, 0, len(wts))
 	for _, w := range wts {
-		var repo, path, branch, base string
-		err := s.DB.QueryRowContext(ctx, `SELECT r.name, wt.path, COALESCE(wt.branch, ''), COALESCE(wt.base_sha, '')
-			FROM worktrees wt JOIN repos r ON r.id = wt.repo_id WHERE wt.id = ?`, w.WorktreeID).Scan(&repo, &path, &branch, &base)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
+		id, err := s.ResolveWorktreeRef(ctx, w.WorktreeID)
+		if err != nil {
+			return nil, err
 		}
+		var repo, path, branch, base string
+		err = s.DB.QueryRowContext(ctx, `SELECT r.name, wt.path, COALESCE(wt.branch, ''), COALESCE(wt.base_sha, '')
+			FROM worktrees wt JOIN repos r ON r.id = wt.repo_id WHERE wt.id = ?`, id).Scan(&repo, &path, &branch, &base)
 		if err != nil {
 			return nil, err
 		}
