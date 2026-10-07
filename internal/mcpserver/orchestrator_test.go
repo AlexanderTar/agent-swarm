@@ -2882,3 +2882,29 @@ func TestSpawnOrchestratorOnOtherRootStartsTopLevel(t *testing.T) {
 		t.Fatalf("parent = %q, want none", a.ParentAgentID)
 	}
 }
+
+// BUG-46/47/48: every other cross-root spawn is refused with the spec copy.
+func TestSpawnRefusesOtherCrossRootSpawns(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	other := seedOtherRoot(t, s)
+	story, err := s.RT.Items.Create(ctx, items.CreateInput{Type: items.Story, Title: "Foreign story", ParentKey: other}, items.User("cli"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.RT.Items.Create(ctx, items.CreateInput{Type: items.Task, Title: "Foreign task", ParentKey: story.Key, Brief: "b", Acceptance: []string{"a"}}, items.User("cli"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ item, role, want string }{
+		{story.Key, "orchestrator", story.Key + " belongs to " + other + ", another top-level item. Spawn agents only inside your own tree; to start " + other + "'s orchestrator, spawn it on " + other + "."},
+		{task.Key, "reviewer", task.Key + " belongs to " + other + ", another top-level item. Spawn agents only inside your own tree."},
+		{other, "reviewer", other + " belongs to " + other + ", another top-level item. Spawn agents only inside your own tree."},
+	} {
+		_, err := s.call(ctx, seed.Caller, "swarm_spawn",
+			`{"item":"`+c.item+`","role":"`+c.role+`","brief":{"objective":"x"},"worktrees":[]}`)
+		if err == nil || err.Error() != c.want {
+			t.Fatalf("%s %s: err = %v, want %q", c.role, c.item, err, c.want)
+		}
+	}
+}
