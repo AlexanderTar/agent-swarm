@@ -83,11 +83,15 @@ text, `skills/swarm-coder`. A and D both edit `skills/`; different files.
    the parent gets a `relay` `event: "ended_without_checkpoint"` with the
    agent name, item, last checkpoint summary and a hint to `swarm_control retry`.
    The debugger root-causes why researcher sessions end mid-task first.
-8. **TDD gate in fix rounds (BUG-43).** In round ≥ 2 of a workflow run step,
-   the `tdd` gate requires a red→green pair this round only for units named by
-   the previous round's `changes_requested` findings (`unit` field). Units with
-   red/green from an earlier round and no findings carry over. If no finding
-   carries a unit, one red→green pair this round (any unit) satisfies it.
+8. **TDD gate in fix rounds (BUG-43, revised 2026-10-07 after root cause).**
+   Root cause from TASK-546's rows: the gate already scoped to finding units,
+   but every unit-tagged finding, even a minor/nit one with nothing to test
+   (stale comment, commit hygiene), demanded a red→green pair. Revised rule: in
+   a fix round the `tdd` gate requires a pair this round only for units with a
+   major or critical finding. Units with only minor/nit findings need none. A
+   major/critical finding with no unit tag requires one pair (any unit). A round
+   whose findings are all minor/nit needs no tdd pair (commit and verify still
+   apply). A bare blocked verdict with no findings still needs one pair.
 9. **Progress is not a turn boundary (BUG-41).** A `progress` checkpoint from a
    workflow run step returns `"next": "Keep working in this turn: continue with the next unit. Don't end your turn until you write completed, blocked or failed."`
    and `skills/swarm-coder` says the same (after `make skills-sync`).
