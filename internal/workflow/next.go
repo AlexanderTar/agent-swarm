@@ -46,6 +46,7 @@ type Run struct {
 	Findings    []Finding
 	SHA         string
 	AutoRetries int
+	Error       string // why a spawn failed, when recorded
 }
 
 // ActionKind is what the engine should do next.
@@ -560,6 +561,14 @@ func firstSummary(findings []Finding) string {
 }
 
 func failureReason(run Run, retries int) string {
+	reason := failureReasonBase(run, retries)
+	if run.Error != "" {
+		reason += ": " + run.Error
+	}
+	return reason
+}
+
+func failureReasonBase(run Run, retries int) string {
 	if retries == 0 {
 		return fmt.Sprintf("%s %s", run.Role, run.State)
 	}

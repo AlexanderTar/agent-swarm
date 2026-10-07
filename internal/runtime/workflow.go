@@ -57,6 +57,7 @@ type WorkflowRunView struct {
 	Round       int                `json:"round"`
 	AutoRetries int                `json:"auto_retries,omitempty"`
 	Findings    []workflow.Finding `json:"findings"`
+	Error       string             `json:"error,omitempty"`
 }
 
 // WorkflowState is swarm_workflow's result shape (spec B7): the workflow's
@@ -77,7 +78,7 @@ type wfRow struct {
 // wfRunRow is one workflow_runs table row.
 type wfRunRow struct {
 	ID, WorkflowID, StepID, Role, AgentID, State, Verdict, SHA, ReviewWorktreeID string
-	FindingsJSON                                                                 string
+	FindingsJSON, Error                                                          string
 	Round, AutoRetries                                                           int
 	CreatedAt                                                                    time.Time
 	EndedAt                                                                      *time.Time
@@ -91,7 +92,7 @@ func (r wfRunRow) findings() []workflow.Finding {
 
 func (r wfRunRow) toRun() workflow.Run {
 	return workflow.Run{StepID: r.StepID, Round: r.Round, Role: r.Role, State: workflow.RunState(r.State),
-		Verdict: workflow.Verdict(r.Verdict), Findings: r.findings(), SHA: r.SHA, AutoRetries: r.AutoRetries}
+		Verdict: workflow.Verdict(r.Verdict), Findings: r.findings(), SHA: r.SHA, AutoRetries: r.AutoRetries, Error: r.Error}
 }
 
 func (r wfRunRow) toView() WorkflowRunView {
@@ -100,7 +101,7 @@ func (r wfRunRow) toView() WorkflowRunView {
 		f = []workflow.Finding{}
 	}
 	return WorkflowRunView{ID: r.ID, StepID: r.StepID, Role: r.Role, AgentID: r.AgentID, State: r.State,
-		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: f}
+		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: f, Error: r.Error}
 }
 
 // workflowLocks is the per-workflow mutex the engine holds across a whole
@@ -471,7 +472,7 @@ func (r wfRow) contextLines() []string {
 func (s *Store) loadWorkflowRuns(ctx context.Context, workflowID string) ([]wfRunRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id, step_id, round, role, COALESCE(agent_id, ''), state,
 		COALESCE(verdict, ''), COALESCE(findings_json, '[]'), COALESCE(review_worktree_id, ''), COALESCE(sha, ''),
-		auto_retries, created_at, ended_at
+		auto_retries, created_at, ended_at, COALESCE(error, '')
 		FROM workflow_runs WHERE workflow_id = ? ORDER BY round, step_id, role`, workflowID)
 	if err != nil {
 		return nil, err
@@ -483,7 +484,7 @@ func (s *Store) loadWorkflowRuns(ctx context.Context, workflowID string) ([]wfRu
 		var created int64
 		var ended sql.NullInt64
 		if err := rows.Scan(&r.ID, &r.StepID, &r.Round, &r.Role, &r.AgentID, &r.State, &r.Verdict, &r.FindingsJSON,
-			&r.ReviewWorktreeID, &r.SHA, &r.AutoRetries, &created, &ended); err != nil {
+			&r.ReviewWorktreeID, &r.SHA, &r.AutoRetries, &created, &ended, &r.Error); err != nil {
 			return nil, err
 		}
 		r.WorkflowID = workflowID
@@ -1041,8 +1042,8 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		// row is handled, and a sibling waiting row (a parallel reviewer)
 		// must still get its own spawn attempt.
 		s.logf("advance: spawn %s/%s round %d: %v", run.StepID, run.Role, run.Round, err)
-		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
-			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), run.ID)
+		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?, error = ?
+			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), err.Error(), run.ID)
 		if uerr != nil {
 			return false, uerr
 		}

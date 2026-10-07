@@ -125,6 +125,10 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN resolved_by_id`); err != nil {
 		t.Fatal(err)
 	}
+	// 0028_workflow_run_error.sql adds workflow_runs.error with plain ALTER TABLE (same precedent).
+	if _, err := raw.Exec(`ALTER TABLE workflow_runs DROP COLUMN error`); err != nil {
+		t.Fatal(err)
+	}
 	// 0025_finish_options.sql adds checkpoints.finish_options_json with plain
 	// ALTER TABLE (same precedent).
 	if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN finish_options_json`); err != nil {

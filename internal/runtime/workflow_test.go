@@ -3177,3 +3177,40 @@ func TestStartWorkflowRefusesOverlongBrief(t *testing.T) {
 		t.Fatalf("workflows rows = %d, want 0", n)
 	}
 }
+
+// BUG-55 unit 2: a Spawn error is stored on the run, shown in the run view
+// and named by the escalation reason.
+func TestSpawnFailureRecordedOnRun(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	zero := 0
+	spec := buildReviewSpec(t)
+	spec.Retries = &zero
+	orch, taskKey := seedWorkflowTask(t, s, spec)
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	// Start's preflight doesn't call Spawn; with no adapter enabled the
+	// engine's own Spawn then fails.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '[]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retries 0: the failed run escalates on the next advance.
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if st, _, err = s.workflowStateByID(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Runs) != 1 || st.Runs[0].State != "failed" || st.Runs[0].Error == "" {
+		t.Fatalf("runs = %+v, want one failed run carrying an error", st.Runs)
+	}
+	if st.State != "escalated" || !strings.Contains(st.Escalation, st.Runs[0].Error) {
+		t.Fatalf("state = %q escalation = %q, want escalated naming %q", st.State, st.Escalation, st.Runs[0].Error)
+	}
+}
