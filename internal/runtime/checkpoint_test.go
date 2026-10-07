@@ -1908,7 +1908,7 @@ func TestTDDGateFixRoundMergesFindingsFromBothReviewers(t *testing.T) {
 	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "changes_requested",
 		[]workflow.Finding{{Severity: "major", File: "a.go", Summary: "fix unit 1", Unit: 1}})
 	seedReviewFindingsAs(t, s, workflowID, "review", 1, "ui_reviewer", "pass",
-		[]workflow.Finding{{Severity: "major", File: "b.go", Summary: "unit 2 still broken", Unit: 2}})
+		[]workflow.Finding{{Severity: "minor", File: "b.go", Summary: "nit on unit 2", Unit: 2}})
 
 	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
 		Verification: []Verify{
@@ -2949,60 +2949,5 @@ func TestIntegratedChoreEmptyGitAccepted(t *testing.T) {
 	it, _ := s.Items.Get(ctx, key)
 	if it.Status != items.InReview {
 		t.Fatalf("status = %s, want in_review", it.Status)
-	}
-}
-
-// BUG-43 (revised decision 8), TASK-546's real shape: a major finding on unit
-// 2 plus minor/nit findings on units 1, 3 and 4 needs a pair for unit 2 only.
-func TestTDDGateFixRoundIgnoresMinorAndNitUnits(t *testing.T) {
-	s, _, _ := newStore(t)
-	ctx := context.Background()
-	orch, coder, coderSes := worker(t, s)
-	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
-		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
-		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
-	}})
-	setItemUnits(t, s, "TASK-1", "one", "two", "three", "four")
-	it, err := s.Items.Get(ctx, "TASK-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
-	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
-		{Severity: "major", Summary: "fix unit 2", Unit: 2},
-		{Severity: "minor", Summary: "stale comment", Unit: 1},
-		{Severity: "nit", Summary: "wording", Unit: 3},
-		{Severity: "minor", Summary: "commit hygiene", Unit: 4},
-	})
-	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
-		Verification: []Verify{
-			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
-			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
-		}}); err != nil {
-		t.Fatalf("minor/nit units 1, 3, 4 need no pair: %v", err)
-	}
-}
-
-// Every finding minor or nit: the round needs no tdd pair at all. An untagged
-// major finding still needs one pair (any unit).
-func TestTDDGateFixRoundAllMinorNeedsNoPair(t *testing.T) {
-	s, _, _ := newStore(t)
-	ctx := context.Background()
-	orch, coder, coderSes := worker(t, s)
-	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
-		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
-		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
-	}})
-	it, err := s.Items.Get(ctx, "TASK-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
-	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
-		{Severity: "minor", Summary: "wording"},
-		{Severity: "nit", Summary: "comment"},
-	})
-	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"}); err != nil {
-		t.Fatalf("all minor/nit findings need no pair: %v", err)
 	}
 }

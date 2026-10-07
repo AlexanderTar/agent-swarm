@@ -707,18 +707,6 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 			// resumed): still needs its one pair, never "nothing required".
 			packageWide = true
 		default:
-			// BUG-43: only major/critical findings demand a red-before-green
-			// pair; a round of only minor/nit findings needs none.
-			var heavy []workflow.Finding
-			for _, f := range findings {
-				if f.Severity == "major" || f.Severity == "critical" {
-					heavy = append(heavy, f)
-				}
-			}
-			if len(heavy) == 0 {
-				return nil
-			}
-			findings = heavy
 			units := map[int]bool{}
 			for _, f := range findings {
 				u := f.Unit
