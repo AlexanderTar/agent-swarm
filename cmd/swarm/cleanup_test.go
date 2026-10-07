@@ -105,3 +105,40 @@ func TestCleanupRemovesAndNoGraceIsRequiredForFreshOrphans(t *testing.T) {
 		t.Fatalf("no summary in output:\n%s", out.String())
 	}
 }
+
+func TestCleanupDiscardRefusesActiveRootThenDiscardsDoneRootKeepingTheBranch(t *testing.T) {
+	home, _, _, wtPath := seedCleanupHome(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"cleanup", "--home", home, "--discard", wtPath}, &out, &errb); code == 0 {
+		t.Fatalf("discard under an in-progress root exited 0:\n%s", out.String())
+	}
+	if !strings.Contains(errb.String(), "EPIC-1") || !strings.Contains(errb.String(), "in progress") {
+		t.Fatalf("stderr = %q, want the root and its status", errb.String())
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("refused discard removed the tree: %v", err)
+	}
+
+	d, err := db.Open(context.Background(), filepath.Join(home, "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(context.Background(), `UPDATE items SET status = 'done' WHERE id = 'itm_1'`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"cleanup", "--home", home, "--discard", wtPath}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "task/x") || !strings.Contains(out.String(), "0 commits") {
+		t.Fatalf("output = %q, want the kept branch and unlanded count", out.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("tree still exists: %v", err)
+	}
+	if code := run([]string{"cleanup", "--home", home, "--discard", "/nope"}, &out, &errb); code == 0 {
+		t.Fatal("discard of an unknown path exited 0")
+	}
+}

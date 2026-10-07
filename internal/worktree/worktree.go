@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
@@ -43,7 +44,9 @@ type Service struct {
 	OnRetained func(ctx context.Context, tx *sql.Tx, wt Worktree) error
 	// Evidence adds merged-elsewhere checks (merged PRs); nil = base rules only.
 	Evidence MergeEvidence
-	pass     passState
+	// Events, when set, records worktree.discarded; nil = no event.
+	Events *events.Store
+	pass   passState
 }
 
 // worktreesDir is where every worktree lives, regardless of where its repo
@@ -813,4 +816,81 @@ func (s *Service) List(ctx context.Context, rootKey, state string) ([]Listed, er
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// Discard force-removes a worktree, by id or path, that the user has decided
+// to drop: only when its root item is done or cancelled and no live agent
+// holds it. It never deletes the branch, so the commits stay recoverable, and
+// returns how many commits the tree holds that are not on its base (-1 when
+// that cannot be counted).
+func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error) {
+	wts, err := s.query(ctx, `WHERE id = ? OR path = ?`, ref, ref)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	if len(wts) == 0 {
+		return Worktree{}, 0, fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
+	}
+	lock := lockFor(wts[0].ID)
+	lock.Lock()
+	defer lock.Unlock()
+	wt, err := s.Get(ctx, wts[0].ID)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	if wt.State == "removed" {
+		return wt, 0, fmt.Errorf("worktree %s is already removed", wt.Path)
+	}
+	var rootKey, rootStatus string
+	if err := s.DB.QueryRowContext(ctx, `SELECT key, status FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey, &rootStatus); err != nil {
+		return Worktree{}, 0, err
+	}
+	if rootStatus != "done" && rootStatus != "cancelled" {
+		return Worktree{}, 0, fmt.Errorf("worktree %s belongs to %s, which is %s; only trees of a done or cancelled root can be discarded",
+			wt.Path, rootKey, strings.ReplaceAll(rootStatus, "_", " "))
+	}
+	var holder string
+	err = s.DB.QueryRowContext(ctx, `SELECT a.name FROM worktree_reservations r JOIN agents a ON a.id = r.agent_id
+		WHERE r.worktree_id = ? AND r.released_at IS NULL AND a.state IN ('queued','active') LIMIT 1`, wt.ID).Scan(&holder)
+	if err == nil {
+		return Worktree{}, 0, fmt.Errorf("worktree %s is held by live agent %s", wt.Path, holder)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Worktree{}, 0, err
+	}
+	repoPath, err := s.repoPath(ctx, wt.RepoID)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	head := wt.Branch
+	if head == "" {
+		head = wt.DetachedSHA
+	}
+	unlanded := -1
+	if out, cerr := s.git(ctx, repoPath, "rev-list", "--count", wt.BaseRef+".."+head); cerr == nil {
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
+	}
+	if fileExists(wt.Path) {
+		if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", wt.Path); rerr != nil {
+			return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", wt.Path, rerr, strings.TrimSpace(string(out)))
+		}
+	}
+	now := s.Now()
+	wt.State, wt.RetainedReason, wt.RemovedAt = "removed", "", &now
+	err = s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET state = 'removed', retained_reason = NULL,
+			removed_at = ? WHERE id = ?`, db.Millis(now), wt.ID); err != nil {
+			return err
+		}
+		if s.Events == nil {
+			return nil
+		}
+		_, err := s.Events.Append(ctx, tx, events.WorktreeDiscarded, map[string]any{
+			"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch, "root": rootKey, "unlanded": unlanded})
+		return err
+	})
+	if err == nil && s.Events != nil {
+		s.Events.Notify()
+	}
+	return wt, unlanded, err
 }
