@@ -880,6 +880,13 @@ func (s *Store) oldestWaitingRun(ctx context.Context, workflowID string) (wfRunR
 	return *best, true, nil
 }
 
+// isSpawnRefusal reports a deterministic Spawn validation refusal (an over-long
+// brief, or any other bad_request): retrying the same spawn cannot succeed.
+func isSpawnRefusal(err error) bool {
+	var ie *items.Error
+	return err.Error() == ErrBriefTooLong || (errors.As(err, &ie) && ie.Code == items.CodeBadRequest)
+}
+
 // fillWaitingRuns spawns every one of workflowID's waiting runs, oldest
 // first. There is no per-owner budget: a spawned agent the global
 // max_concurrent_agents pool can't fit yet waits in the global queue
@@ -889,13 +896,6 @@ func (s *Store) oldestWaitingRun(ctx context.Context, workflowID string) (wfRunR
 // and a later Share failure can't strand a live agent with no row pointing
 // at it. A Spawn error itself marks the row 'failed' instead of leaving it
 // 'waiting' for the stall scan to retry forever; see spawnRunAgent.
-// isSpawnRefusal reports a deterministic Spawn validation refusal (an over-long
-// brief, or any other bad_request): retrying the same spawn cannot succeed.
-func isSpawnRefusal(err error) bool {
-	var ie *items.Error
-	return err.Error() == ErrBriefTooLong || (errors.As(err, &ie) && ie.Code == items.CodeBadRequest)
-}
-
 func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 	wf, ok, err := s.workflowRowByID(ctx, workflowID)
 	if err != nil || !ok {
