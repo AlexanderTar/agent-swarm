@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -3143,5 +3144,36 @@ func TestWorkflowIdempotencyStartResumeCancel(t *testing.T) {
 	}
 	if canSt1.ID != canSt2.ID || canSt1.State != canSt2.State {
 		t.Fatalf("CancelWorkflow replay mismatch: %+v vs %+v", canSt1, canSt2)
+	}
+}
+
+// BUG-55 unit 1: Start renders every first-spawn brief up front, so an
+// over-long one is refused with the key and ErrBriefTooLong instead of
+// leaving a committed workflow with a silently failed run.
+func TestStartWorkflowRefusesOverlongBrief(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET brief = ? WHERE key = ?`,
+		strings.Repeat("x", 5990), taskKey); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeBadRequest {
+		t.Fatalf("err = %v, want items bad_request", err)
+	}
+	if want := taskKey + ": " + ErrBriefTooLong; ie.Message != want {
+		t.Fatalf("message = %q, want %q", ie.Message, want)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflows`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("workflows rows = %d, want 0", n)
 	}
 }

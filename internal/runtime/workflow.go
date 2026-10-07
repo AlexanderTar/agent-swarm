@@ -194,6 +194,40 @@ func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, 
 	return false, nil
 }
 
+// preflightBriefs renders the brief of every step the first advance would
+// spawn, so an over-long one is refused at Start (BUG-55) rather than
+// failing the run after the workflows row is committed.
+func (s *Store) preflightBriefs(ctx context.Context, orch Agent, it items.Item, wf wfRow) error {
+	action := workflow.Next(*it.Workflow, nil, 1, 0)
+	if action.Kind != workflow.ActionSpawn {
+		return nil
+	}
+	step, ok := stepFor(it.Workflow, action.StepID)
+	if !ok {
+		return nil
+	}
+	roles := action.Roles
+	if step.Run != "" {
+		roles = []string{step.Run}
+	}
+	for _, role := range roles {
+		brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: action.StepID, Role: role, Round: action.Round})
+		if err != nil {
+			return err
+		}
+		name, err := defaultName(Role(role), it.Title)
+		if err != nil {
+			return err
+		}
+		brief.Key, brief.Title, brief.Name, brief.Role = it.Key, it.Title, name, Role(role)
+		brief.RootKey, brief.ParentName = it.RootKey, orch.Name
+		if _, err := RenderBrief(brief); err != nil {
+			return &items.Error{Code: items.CodeBadRequest, Message: it.Key + ": " + err.Error()}
+		}
+	}
+	return nil
+}
+
 // StartWorkflow is swarm_workflow op:"start" (spec B4/B7): validates, inserts
 // the workflows row (round 1, running) and calls advance.
 func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error) {
@@ -252,8 +286,6 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 		}
 	}
 
-	wfID := ids.New("wf")
-	now := s.now()
 	wtJSON, err := json.Marshal(in.Worktrees)
 	if err != nil {
 		return WorkflowState{}, err
@@ -262,6 +294,12 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err != nil {
 		return WorkflowState{}, err
 	}
+	if err := s.preflightBriefs(ctx, orch, it, wfRow{ContextJSON: string(ctxJSON), WorktreesJSON: string(wtJSON)}); err != nil {
+		return WorkflowState{}, err
+	}
+
+	wfID := ids.New("wf")
+	now := s.now()
 	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO workflows
 			(id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds, context_json, worktrees_json, created_at, updated_at)
@@ -912,6 +950,56 @@ func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *
 	return []string{"Previous round's review findings:\n" + renderFindings(findings)}, nil
 }
 
+// stepBrief builds the brief spawnRunAgent hands Spawn for run (identity
+// fields are Spawn's), plus the rw worktrees a build step shares. StartWorkflow's
+// preflight calls it too, so the two can't drift.
+func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (BriefInput, []WorkflowWorktree, error) {
+	step, ok := stepFor(it.Workflow, run.StepID)
+	if !ok {
+		return BriefInput{}, nil, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
+	}
+	artifactLines, err := s.artifactContextLines(ctx, it.ID)
+	if err != nil {
+		return BriefInput{}, nil, err
+	}
+	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
+	if step.Run != "" && run.Round > 1 {
+		findingLines, err := s.roundFindingLines(ctx, wf.ID, it.Workflow, run.StepID, run.Round)
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		ctxLines = append(ctxLines, findingLines...)
+	}
+	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
+
+	var shareRW []WorkflowWorktree
+	if step.Run != "" {
+		for _, w := range wf.worktrees() {
+			if w.Mode == "rw" {
+				shareRW = append(shareRW, w)
+			}
+		}
+		wts, err := s.BriefWorktrees(ctx, shareRW)
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		brief.Worktrees = wts
+	} else if run.ReviewWorktreeID != "" {
+		wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		brief.Worktrees = wts
+	} else if it.Type == items.Story {
+		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		brief.Worktrees = wts
+	}
+	return brief, shareRW, nil
+}
+
 func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (bool, error) {
 	step, ok := stepFor(it.Workflow, run.StepID)
 	if !ok {
@@ -929,44 +1017,9 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		}
 		run.ReviewWorktreeID = wtID
 	}
-	artifactLines, err := s.artifactContextLines(ctx, it.ID)
+	brief, shareRW, err := s.stepBrief(ctx, wf, it, run)
 	if err != nil {
 		return false, err
-	}
-	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
-	if step.Run != "" && run.Round > 1 {
-		findingLines, err := s.roundFindingLines(ctx, wf.ID, it.Workflow, run.StepID, run.Round)
-		if err != nil {
-			return false, err
-		}
-		ctxLines = append(ctxLines, findingLines...)
-	}
-	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
-
-	var shareRW []WorkflowWorktree
-	if step.Run != "" {
-		for _, w := range wf.worktrees() {
-			if w.Mode == "rw" {
-				shareRW = append(shareRW, w)
-			}
-		}
-		wts, err := s.BriefWorktrees(ctx, shareRW)
-		if err != nil {
-			return false, err
-		}
-		brief.Worktrees = wts
-	} else if run.ReviewWorktreeID != "" {
-		wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
-		if err != nil {
-			return false, err
-		}
-		brief.Worktrees = wts
-	} else if it.Type == items.Story {
-		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
-		if err != nil {
-			return false, err
-		}
-		brief.Worktrees = wts
 	}
 
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: it.Key, Role: Role(run.Role), ParentAgentID: wf.OwnerAgentID,
