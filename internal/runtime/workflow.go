@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -79,6 +80,7 @@ type wfRow struct {
 type wfRunRow struct {
 	ID, WorkflowID, StepID, Role, AgentID, State, Verdict, SHA, ReviewWorktreeID string
 	FindingsJSON, Error                                                          string
+	ErrorFatal                                                                   bool
 	Round, AutoRetries                                                           int
 	CreatedAt                                                                    time.Time
 	EndedAt                                                                      *time.Time
@@ -92,7 +94,7 @@ func (r wfRunRow) findings() []workflow.Finding {
 
 func (r wfRunRow) toRun() workflow.Run {
 	return workflow.Run{StepID: r.StepID, Round: r.Round, Role: r.Role, State: workflow.RunState(r.State),
-		Verdict: workflow.Verdict(r.Verdict), Findings: r.findings(), SHA: r.SHA, AutoRetries: r.AutoRetries, Error: r.Error}
+		Verdict: workflow.Verdict(r.Verdict), Findings: r.findings(), SHA: r.SHA, AutoRetries: r.AutoRetries, Error: r.Error, Fatal: r.ErrorFatal}
 }
 
 func (r wfRunRow) toView() WorkflowRunView {
@@ -472,7 +474,7 @@ func (r wfRow) contextLines() []string {
 func (s *Store) loadWorkflowRuns(ctx context.Context, workflowID string) ([]wfRunRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id, step_id, round, role, COALESCE(agent_id, ''), state,
 		COALESCE(verdict, ''), COALESCE(findings_json, '[]'), COALESCE(review_worktree_id, ''), COALESCE(sha, ''),
-		auto_retries, created_at, ended_at, COALESCE(error, '')
+		auto_retries, created_at, ended_at, COALESCE(error, ''), error_fatal
 		FROM workflow_runs WHERE workflow_id = ? ORDER BY round, step_id, role`, workflowID)
 	if err != nil {
 		return nil, err
@@ -484,7 +486,7 @@ func (s *Store) loadWorkflowRuns(ctx context.Context, workflowID string) ([]wfRu
 		var created int64
 		var ended sql.NullInt64
 		if err := rows.Scan(&r.ID, &r.StepID, &r.Round, &r.Role, &r.AgentID, &r.State, &r.Verdict, &r.FindingsJSON,
-			&r.ReviewWorktreeID, &r.SHA, &r.AutoRetries, &created, &ended, &r.Error); err != nil {
+			&r.ReviewWorktreeID, &r.SHA, &r.AutoRetries, &created, &ended, &r.Error, &r.ErrorFatal); err != nil {
 			return nil, err
 		}
 		r.WorkflowID = workflowID
@@ -608,7 +610,21 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 		// waiting/active. Fall through to the waiting-run fill pass below
 		// anyway -- it may be exactly what Wait is waiting on.
 	}
-	return s.fillWaitingRuns(ctx, wf.ID)
+	if err := s.fillWaitingRuns(ctx, wf.ID); err != nil {
+		return err
+	}
+	// A deterministic spawn refusal escalates on this same advance, not on
+	// the next trigger (BUG-55): Next turns a fatal failed run into Escalate.
+	runs, err = s.loadWorkflowRuns(ctx, wf.ID)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(runs, func(r wfRunRow) bool { return r.State == string(workflow.RunStateFailed) && r.ErrorFatal }) {
+		if a := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds); a.Kind == workflow.ActionEscalate {
+			return s.applyEscalate(ctx, wf, it, a, runs)
+		}
+	}
+	return nil
 }
 
 // healStrandedActiveRuns marks an 'active' run 'failed' or 'cancelled' when
@@ -873,6 +889,13 @@ func (s *Store) oldestWaitingRun(ctx context.Context, workflowID string) (wfRunR
 // and a later Share failure can't strand a live agent with no row pointing
 // at it. A Spawn error itself marks the row 'failed' instead of leaving it
 // 'waiting' for the stall scan to retry forever; see spawnRunAgent.
+// isSpawnRefusal reports a deterministic Spawn validation refusal (an over-long
+// brief, or any other bad_request): retrying the same spawn cannot succeed.
+func isSpawnRefusal(err error) bool {
+	var ie *items.Error
+	return err.Error() == ErrBriefTooLong || (errors.As(err, &ie) && ie.Code == items.CodeBadRequest)
+}
+
 func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 	wf, ok, err := s.workflowRowByID(ctx, workflowID)
 	if err != nil || !ok {
@@ -1042,8 +1065,8 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		// row is handled, and a sibling waiting row (a parallel reviewer)
 		// must still get its own spawn attempt.
 		s.logf("advance: spawn %s/%s round %d: %v", run.StepID, run.Role, run.Round, err)
-		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?, error = ?
-			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), err.Error(), run.ID)
+		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?, error = ?, error_fatal = ?
+			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), err.Error(), isSpawnRefusal(err), run.ID)
 		if uerr != nil {
 			return false, uerr
 		}
@@ -1331,7 +1354,7 @@ func (s *Store) applyAutoRetry(ctx context.Context, wf wfRow, action workflow.Ac
 		return nil
 	}
 	if row.AgentID == "" {
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'waiting', auto_retries = auto_retries + 1
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'waiting', auto_retries = auto_retries + 1, error = NULL, error_fatal = 0
 			WHERE id = ? AND state = 'failed'`, row.ID)
 		if err != nil {
 			return err

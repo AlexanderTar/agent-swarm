@@ -3214,3 +3214,71 @@ func TestSpawnFailureRecordedOnRun(t *testing.T) {
 		t.Fatalf("state = %q escalation = %q, want escalated naming %q", st.State, st.Escalation, st.Runs[0].Error)
 	}
 }
+
+// BUG-55 unit 3: start fits, the item brief then grows past the cap before
+// the review spawn. The deterministic refusal escalates on that same advance
+// (no auto-retry burned, error named), and shortening the brief + resume
+// retry spawns the reviewer.
+func TestBriefTooLongMidWorkflowEscalatesWithoutAutoRetry(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setBrief := func(n int) {
+		t.Helper()
+		if _, err := s.DB.ExecContext(ctx, `UPDATE items SET brief = ? WHERE key = ?`,
+			strings.Repeat("x", n), taskKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setBrief(6500)
+
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _, err = s.workflowStateByID(ctx, st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != "escalated" || !strings.Contains(st.Escalation, ErrBriefTooLong) {
+		t.Fatalf("state = %q escalation = %q, want escalated naming ErrBriefTooLong", st.State, st.Escalation)
+	}
+	var review *WorkflowRunView
+	for i := range st.Runs {
+		if st.Runs[i].StepID == "review" {
+			review = &st.Runs[i]
+		}
+	}
+	if review == nil || review.State != "failed" || review.AutoRetries != 0 || review.Error == "" {
+		t.Fatalf("review run = %+v, want failed, 0 auto-retries, error set", review)
+	}
+
+	setBrief(100)
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "running" {
+		t.Fatalf("state after retry = %q, want running", final.State)
+	}
+	var spawned bool
+	for _, r := range final.Runs {
+		if r.StepID == "review" && r.State == "active" && r.AgentID != "" {
+			spawned = true
+		}
+	}
+	if !spawned {
+		t.Fatalf("runs = %+v, want an active review run with an agent", final.Runs)
+	}
+}
