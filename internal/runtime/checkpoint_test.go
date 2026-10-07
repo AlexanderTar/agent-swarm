@@ -2862,3 +2862,48 @@ func TestIntegratedOnBlockedRootOpensAcceptFix(t *testing.T) {
 		t.Fatalf("open accept_fix = %d (err %v), want 1", n, err)
 	}
 }
+
+// BUG-43 (spec decision 8): a fix round with a mix of unit-tagged and
+// package-wide findings needs a pair only for the tagged units; round 1 of
+// the same step still needs every unit.
+func TestTDDGateFixRoundMixedFindingsNeedOnlyTaggedUnits(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two", "three")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "b.go", Summary: "fix unit 2", Unit: 2},
+		{Severity: "minor", Summary: "package-wide wording"},
+	})
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
+		}}); err != nil {
+		t.Fatalf("only unit 2 is named; units 1 and 3 carry over: %v", err)
+	}
+}
+
+func TestTDDGateRoundOneStillNeedsEveryUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}})
+	if err == nil {
+		t.Fatal("round 1 must still require unit 2")
+	}
+}
