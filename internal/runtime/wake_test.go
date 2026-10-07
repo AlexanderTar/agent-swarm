@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
 
 // A real tmux failure to list panes must surface, not be treated as "no
@@ -1199,6 +1201,70 @@ func TestTryPasteUsesPasteReadyWhenTheAdapterHasIt(t *testing.T) {
 		}
 		if c.log != "" && !strings.Contains(strings.Join(logs, "\n"), c.log) {
 			t.Errorf("%s: logs %v missing %q", c.name, logs, c.log)
+		}
+	}
+}
+
+// BUG-37 (chore-43 decision 6): CHORE-33's orchestrator, blocked with an
+// empty inbox and no open requests, got a "Quota reset window passed" wake at
+// 22:41, 08:41, 13:41 and 18:41 -- one per rolling 5h window reset. Each
+// reset is a new cutoff later than the session's last_wake_at, and the old
+// selection woke every live session of the kind on every one of them. A
+// session with nothing to do (no unacked messages, no open requests, and a
+// turn-ending latest checkpoint) must be skipped -- marked woken for the
+// cutoff, nothing pasted -- while a session still mid-task is woken.
+func TestWakeOnQuotaResetSkipsIdleBlockedSessionAcrossWindows(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: BlockedCkp, Summary: "waiting on BUG-36",
+		Blockers: []string{"BUG-36"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, busy, _, err := s.StartSpike(ctx, SpikeInput{Name: "MidTask", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	busySes, err := s.LatestSession(ctx, busy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, busySes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, busy.ID); err != nil {
+		t.Fatal(err)
+	}
+	idle := []string{"─────\n❯ \n─────\n"}
+	tm.captures[wSes.TmuxName] = idle
+	tm.captures[busySes.TmuxName] = idle
+
+	for i := 0; i < 4; i++ { // four consecutive 5h window resets
+		tm.pasted = nil
+		tm.clk.Advance(5 * time.Hour)
+		if _, err := s.WakeOnQuotaReset(ctx, Fake, tm.clk.Now().Add(-2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range tm.pasted {
+			if strings.HasPrefix(p, wSes.TmuxName+"|") {
+				t.Fatalf("window %d: idle blocked session was woken: %q", i+1, p)
+			}
+		}
+		if !slices.ContainsFunc(tm.pasted, func(p string) bool { return strings.HasPrefix(p, busySes.TmuxName+"|") }) {
+			t.Fatalf("window %d: mid-task session was not woken: %v", i+1, tm.pasted)
+		}
+		var lastWake sql.NullInt64
+		if err := s.DB.QueryRowContext(ctx, `SELECT last_wake_at FROM sessions WHERE id = ?`, wSes.ID).Scan(&lastWake); err != nil {
+			t.Fatal(err)
+		}
+		if !lastWake.Valid || lastWake.Int64 < db.Millis(tm.clk.Now().Add(-2*time.Minute)) {
+			t.Fatalf("window %d: skipped session not marked woken for the cutoff: %v", i+1, lastWake)
 		}
 	}
 }

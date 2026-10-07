@@ -539,8 +539,27 @@ func (s *Store) flushSuppressed(ctx context.Context, kind AgentKind) error {
 	return nil
 }
 
-// WakeOnQuotaReset wakes all live or waiting sessions belonging to kind that have
-// not already been woken for this cutoff cycle (last_wake_at < cutoff).
+// quotaWakePending reports whether a quota-reset wake has anything to give
+// sessionID (BUG-37, chore-43 decision 6): unacked inbox messages, an open
+// request the agent raised, or no turn-ending checkpoint yet this session --
+// a session mid-task may have stalled on the limit, so it is woken. One whose
+// latest checkpoint is blocked/handoff/completed/failed/integrated, with an
+// empty inbox and no open requests, is idle by choice and is not.
+func (s *Store) quotaWakePending(ctx context.Context, agentID, sessionID string) (bool, error) {
+	var pending bool
+	err := s.DB.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM messages WHERE to_agent_id = ?1 AND state != 'acked')
+		OR EXISTS (SELECT 1 FROM requests WHERE agent_id = ?1 AND state = 'open')
+		OR COALESCE((SELECT kind FROM checkpoints WHERE session_id = ?2
+			ORDER BY created_at DESC, rowid DESC LIMIT 1), '')
+			NOT IN ('blocked', 'handoff', 'completed', 'failed', 'integrated')`,
+		agentID, sessionID).Scan(&pending)
+	return pending, err
+}
+
+// WakeOnQuotaReset wakes the live sessions belonging to kind that have not
+// already been woken for this cutoff cycle (last_wake_at < cutoff) and have
+// something to do (quotaWakePending); the rest are marked woken silently.
 func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff time.Time) (int, error) {
 	if err := s.flushSuppressed(ctx, kind); err != nil {
 		return 0, err
@@ -562,6 +581,15 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		var waiting bool
 		if err := rows.Scan(&sessionID, &agentID, &agentName, &tmuxName, &state, &waiting, &model, &effort, &providerID); err != nil {
 			return woken, err
+		}
+		// BUG-37: a session with nothing to do is marked woken for this
+		// cutoff without pasting anything, so a rolling window's next reset
+		// does not wake an idle blocked session again and again.
+		if pending, err := s.quotaWakePending(ctx, agentID, sessionID); err != nil {
+			s.logf("wake: quota-reset pending check for %s: %v", agentName, err)
+		} else if !pending {
+			s.markWoken(ctx, sessionID, false)
+			continue
 		}
 		// Epic-approval-lane decision 2: a quota-reset wake re-surfaces what
 		// this live session can't already see (fresh=false). The same write-
