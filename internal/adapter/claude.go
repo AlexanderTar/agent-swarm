@@ -362,7 +362,7 @@ var (
 	claudeIdle = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;]*m)*\u276f[\u00a0 ]" +
 		"(?:\x1b\\[2m.*|(?:\x1b\\[[0-9;]*m)*\x1b\\[7m(?:\x1b\\[[0-9;]*m)*[ \u00a0]?(?:\x1b\\[[0-9;]*m)*)?\\s*$")
 	// P0-4: the spinner, e.g. "✽ Beboppin'… (48s · ↓ 114 tokens)".
-	claudeBusy     = regexp.MustCompile("(?m)^[\u273b\u273d\u2736\u2722\u00b7*] \\S+\u2026 \\(")
+	claudeBusy     = regexp.MustCompile("(?m)^[\u273b\u273d\u2736\u2722\u2733\u00b7*] \\S+(?: \\S+)*\u2026 \\(")
 	claudeTrust    = regexp.MustCompile(`Is this a project you created or one you trust\?`)
 	claudeTrustYes = regexp.MustCompile(`Yes, I trust this folder`)
 	claudeDev      = regexp.MustCompile(`I am using this for local development`)
