@@ -24,6 +24,7 @@ const (
 	ReposChanged      = "repos.changed"
 
 	AgentChanged        = "agent.changed"
+	AgentDetached       = "agent.detached"
 	CheckpointCreated   = "checkpoint.created"
 	NotificationCreated = "notification.created"
 	UsageChanged        = "usage.changed"
