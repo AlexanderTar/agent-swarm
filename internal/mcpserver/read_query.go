@@ -16,6 +16,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 // readKinds is the validated filter.kind vocabulary (spec §6, F6).
@@ -119,7 +120,8 @@ var readFieldAllowlist = map[string]map[string]bool{
 	"checkpoint": {"item": true, "kind": true, "summary": true, "created_at": true},
 	"artifact":   {"artifact_id": true, "kind": true, "revision": true, "sections": true},
 	"request":    {"request_id": true, "kind": true, "state": true},
-	"worktree":   {"worktree_id": true, "path": true, "branch": true, "base_sha": true, "state": true},
+	"worktree": {"worktree_id": true, "path": true, "branch": true, "base_sha": true, "state": true,
+		"retained_reason": true, "root": true, "owner": true},
 }
 
 // readIdentityKeys are retained in every projection of their collection.
@@ -239,4 +241,41 @@ func refError(ref string, err error) map[string]any {
 	}
 	return map[string]any{"ref": ref, "code": "read_failed",
 		"message": fmt.Sprintf("could not resolve ref %q.", ref)}
+}
+
+// listedWorktreeOut is the filter-read worktree row: worktreeOut plus the
+// retained reason, root item key and owner agent name.
+func listedWorktreeOut(l worktree.Listed) map[string]any {
+	m := worktreeOut(l.Worktree)
+	m["retained_reason"] = l.RetainedReason
+	m["root"] = l.RootKey
+	m["owner"] = l.OwnerName
+	return m
+}
+
+// pageWorktrees slices the newest-first worktree list after the cursor
+// (created_at millis + id tie-break, the order List returns).
+func pageWorktrees(list []worktree.Listed, limit int, cursor string) ([]worktree.Listed, string, error) {
+	start := 0
+	if cursor != "" {
+		ms, id, err := decodePageCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		for start < len(list) {
+			c := db.Millis(list[start].CreatedAt)
+			if c < ms || (c == ms && list[start].ID > id) {
+				break
+			}
+			start++
+		}
+	}
+	end := min(start+limit, len(list))
+	page := list[start:end]
+	next := ""
+	if end < len(list) {
+		last := page[len(page)-1]
+		next = encodePageCursor(db.Millis(last.CreatedAt), last.ID)
+	}
+	return page, next, nil
 }

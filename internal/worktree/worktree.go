@@ -759,3 +759,58 @@ func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, err
 	}
 	return out, nil
 }
+
+// Listed is a worktree row with the root item key and owner agent name
+// joined in, for read-side listings.
+type Listed struct {
+	Worktree
+	RootKey, OwnerName string
+}
+
+// List returns worktrees newest-first (id tie-break). An empty state means
+// every live row (active and retained); removed rows are listed only when
+// asked for by state. rootKey narrows to one root item.
+func (s *Service) List(ctx context.Context, rootKey, state string) ([]Listed, error) {
+	q := `SELECT w.id, w.repo_id, w.path, w.branch, w.detached_sha, w.base_ref, w.base_sha,
+		w.owner_agent_id, w.root_item_id, w.state, w.retained_reason, w.created_at, w.removed_at,
+		i.key, a.name
+		FROM worktrees w JOIN items i ON i.id = w.root_item_id JOIN agents a ON a.id = w.owner_agent_id
+		WHERE 1 = 1`
+	var args []any
+	if state == "" {
+		q += ` AND w.state != 'removed'`
+	} else {
+		q += ` AND w.state = ?`
+		args = append(args, state)
+	}
+	if rootKey != "" {
+		q += ` AND i.key = ?`
+		args = append(args, rootKey)
+	}
+	q += ` ORDER BY w.created_at DESC, w.id`
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Listed
+	for rows.Next() {
+		var l Listed
+		var branch, detached, reason sql.NullString
+		var created int64
+		var removed sql.NullInt64
+		w := &l.Worktree
+		if err := rows.Scan(&w.ID, &w.RepoID, &w.Path, &branch, &detached, &w.BaseRef, &w.BaseSHA,
+			&w.OwnerAgentID, &w.RootItemID, &w.State, &reason, &created, &removed, &l.RootKey, &l.OwnerName); err != nil {
+			return nil, err
+		}
+		w.Branch, w.DetachedSHA, w.RetainedReason = branch.String, detached.String, reason.String
+		w.CreatedAt = db.FromMillis(created)
+		if removed.Valid {
+			t := db.FromMillis(removed.Int64)
+			w.RemovedAt = &t
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}

@@ -617,10 +617,29 @@ func readTool(s *Server) ToolDef {
 			if in.Filter != nil {
 				// root/type/status/q select items; pairing them with a
 				// non-item kind is an explicit unsupported-filter error.
-				if kind != "" && kind != "item" &&
+				if kind != "" && kind != "item" && kind != "worktree" &&
 					(in.Filter.Root != "" || in.Filter.Type != "" || in.Filter.Status != "" || in.Filter.Q != "") {
 					return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 						"unsupported filter: root/type/status/q select items, which kind %q excludes; drop the item filter or use kind \"item\".", kind)}
+				}
+				if kind == "worktree" {
+					list, err := s.RT.Worktree.List(ctx, in.Filter.Root, in.Filter.Status)
+					if err != nil {
+						return nil, err
+					}
+					page, next, err := pageWorktrees(list, parseReadLimit(in.Limit), in.Cursor)
+					if err != nil {
+						return nil, err
+					}
+					for _, l := range page {
+						projected, err := projectFields("worktree", listedWorktreeOut(l), in.Fields)
+						if err != nil {
+							return nil, err
+						}
+						out["worktrees"] = append(out["worktrees"].([]any), projected)
+					}
+					out["page_cursor"] = next
+					out["has_more"] = next != ""
 				}
 				if want("item") {
 					// Flat view: paginated reads return the match set
