@@ -741,6 +741,30 @@ func spawnTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
+			if it.RootID != a.RootItemID && (in.Role != string(runtime.RoleOrchestrator) || it.ID != it.RootID) {
+				rootKey, err := rootKeyFor(ctx, s, it.RootID)
+				if err != nil {
+					return nil, err
+				}
+				msg := fmt.Sprintf("%s belongs to %s, another top-level item. Spawn agents only inside your own tree", it.Key, rootKey)
+				if in.Role == string(runtime.RoleOrchestrator) {
+					msg += fmt.Sprintf("; to start %s's orchestrator, spawn it on %s", rootKey, rootKey)
+				}
+				return nil, errors.New(msg + ".")
+			}
+			if it.RootID != a.RootItemID {
+				// BUG-46/47/48: another root's orchestrator is top-level, started
+				// like a user start; the caller gets no relays from it.
+				agent, _, err := s.RT.StartOrchestrator(ctx, runtime.OrchestratorInput{ItemKey: in.Item, Name: in.Name})
+				if err != nil {
+					return nil, err
+				}
+				var sessionID string
+				if ses, err := s.RT.LatestSession(ctx, agent.ID); err == nil {
+					sessionID = ses.ID
+				}
+				return map[string]any{"agent": agent.Name, "session": sessionID, "queued": false, "top_level": true}, nil
+			}
 			if err := promoteDraft(ctx, s, it, items.Orchestrator(a.ID, a.RootItemID)); err != nil {
 				return nil, err
 			}

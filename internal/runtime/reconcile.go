@@ -13,6 +13,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
@@ -261,6 +262,9 @@ func (s *Store) Reconcile(ctx context.Context) error {
 		return err
 	}
 	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		return err
+	}
+	if err := s.detachCrossRootParents(ctx); err != nil {
 		return err
 	}
 	// P9 (spec B4): crash recovery for a daemon restart between a
@@ -2031,4 +2035,50 @@ func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([
 		return results, ctx.Err()
 	}
 	return results, nil
+}
+
+// detachCrossRootParents self-heals agents whose parent_agent_id points at an
+// agent in another root (BUG-46/47/48): they become top-level, with the brief
+// header rewritten and an assignment_update telling them to ask the user.
+// Idempotent: once the parent is NULL the agent no longer matches.
+func (s *Store) detachCrossRootParents(ctx context.Context) error {
+	ids, err := s.queryIDs(ctx, `SELECT a.id FROM agents a JOIN agents p ON p.id = a.parent_agent_id
+		WHERE p.root_item_id != a.root_item_id ORDER BY a.created_at`)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		a, err := s.agentByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		parent, err := s.agentByID(ctx, a.ParentAgentID)
+		if err != nil {
+			return err
+		}
+		brief := strings.Replace(a.Brief, " · parent: "+parent.Name+" · ", " · parent: none · ", 1)
+		payload, err := json.Marshal(map[string]string{"note": brief + "\n\nYou are now a top-level orchestrator: ask the user with your native question tool."})
+		if err != nil {
+			return err
+		}
+		err = s.tx(ctx, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `UPDATE agents SET parent_agent_id = NULL, brief = ? WHERE id = ?`, brief, a.ID); err != nil {
+				return err
+			}
+			if _, err := s.enqueue(ctx, tx, Message{Kind: "assignment_update", Origin: "daemon",
+				ToAgentID: a.ID, RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload}); err != nil {
+				return err
+			}
+			rootKey, err := s.itemKey(ctx, tx, a.RootItemID)
+			if err != nil {
+				return err
+			}
+			_, err = s.Events.Append(ctx, tx, events.AgentDetached, map[string]string{"name": a.Name, "root_key": rootKey})
+			return err
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
