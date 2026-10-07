@@ -24,6 +24,7 @@ import (
 )
 
 const verifyMissing = "Verification evidence missing: record what was run to verify this work before completing."
+
 // progressKeepWorkingNext is the progress response's next for a workflow run
 // step (BUG-41): a progress checkpoint is not a turn boundary.
 const progressKeepWorkingNext = "Keep working in this turn: continue with the next unit. Don't end your turn until you write completed, blocked or failed."
@@ -1786,6 +1787,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// own workflow_succeeded/escalated relay with a redundant raw
 		// checkpoint one). blocked/failed/handoff and swarm_send questions
 		// still reach the orchestrator exactly as today.
+		// Only coder-type run steps emit progress; reviewers are excluded.
 		if hasRun && in.Kind == Progress && run.Role != "reviewer" && run.Role != "ui_reviewer" {
 			out.Next = progressKeepWorkingNext
 		}
