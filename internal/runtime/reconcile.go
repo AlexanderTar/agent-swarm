@@ -1552,23 +1552,48 @@ const staleHolder = `EXISTS (
 // (measured: 91 real rows look like this, from the self-completion asymmetry
 // in WriteCheckpoint's sibling-only release); any other agent's does.
 const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
-	AND EXISTS (
-		SELECT 1 FROM agents a
-		WHERE a.id = w.owner_agent_id
-		  AND a.state IN ('finished', 'acknowledged')
-		  AND a.finished_at IS NOT NULL
-		  AND a.finished_at <= ?)
-	AND NOT EXISTS (
-		SELECT 1 FROM sessions s
-		WHERE s.agent_id = w.owner_agent_id
-		  AND s.state IN ('spawning','running','pause_requested','quiescing','stopping'))
+	AND ((
+		EXISTS (
+			SELECT 1 FROM agents a
+			WHERE a.id = w.owner_agent_id
+			  AND a.state IN ('finished', 'acknowledged')
+			  AND a.finished_at IS NOT NULL
+			  AND a.finished_at <= ?1)
+		AND NOT EXISTS (
+			SELECT 1 FROM sessions s
+			WHERE s.agent_id = w.owner_agent_id
+			  AND s.state IN ('spawning','running','pause_requested','quiescing','stopping'))
+		AND NOT EXISTS (
+			SELECT 1 FROM worktree_reservations r
+			WHERE r.worktree_id = w.id
+			  AND r.agent_id <> w.owner_agent_id
+			  AND r.released_at IS NULL
+			  AND NOT (` + staleHolder + `)))
+	OR (` + reviewTreeGate + `))
+	ORDER BY w.created_at`
+
+// reviewTreeGate is the gate for a detached review tree (branch empty,
+// detached_sha set). Its owner is the root orchestrator, which outlives every
+// reviewer, so owner state is irrelevant: the tree is reclaimable once no
+// reviewer holds it, the last one let go over a grace ago, and no queued
+// workflow run still points at it (a queued reviewer has no reservation yet).
+// ?1 is the cutoff.
+const reviewTreeGate = `COALESCE(w.branch, '') = '' AND COALESCE(w.detached_sha, '') <> ''
+	AND w.created_at <= ?1
 	AND NOT EXISTS (
 		SELECT 1 FROM worktree_reservations r
 		WHERE r.worktree_id = w.id
 		  AND r.agent_id <> w.owner_agent_id
 		  AND r.released_at IS NULL
 		  AND NOT (` + staleHolder + `))
-	ORDER BY w.created_at`
+	AND NOT EXISTS (
+		SELECT 1 FROM worktree_reservations r
+		WHERE r.worktree_id = w.id
+		  AND r.agent_id <> w.owner_agent_id
+		  AND COALESCE(r.released_at, (SELECT h.finished_at FROM agents h WHERE h.id = r.agent_id), 9223372036854775807) > ?1)
+	AND NOT EXISTS (
+		SELECT 1 FROM workflow_runs wr
+		WHERE wr.review_worktree_id = w.id AND wr.state IN ('waiting', 'active'))`
 
 // ReleaseStaleReservations releases wtID's unreleased reservations held by
 // finished agents with no live session, so the worktree's own removal guard
@@ -1999,7 +2024,13 @@ func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([
 		if ctx.Err() != nil {
 			break
 		}
-		live, err := s.liveDescendants(ctx, s.DB, wt.OwnerAgentID)
+		// A review tree is owned by the root orchestrator, which always has
+		// live descendants; the gate has already checked its reviewers.
+		isReview := wt.Branch == "" && wt.DetachedSHA != ""
+		live := 0
+		if !isReview {
+			live, err = s.liveDescendants(ctx, s.DB, wt.OwnerAgentID)
+		}
 		if err != nil {
 			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
 			results = append(results, CleanupResult{Path: wt.Path, Action: "kept", Reason: "error: " + err.Error()})
