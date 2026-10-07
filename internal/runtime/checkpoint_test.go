@@ -2951,3 +2951,92 @@ func TestClosedSiblingWithoutCheckpointRelaysToParent(t *testing.T) {
 		t.Fatalf("the completing coder itself got an ended_without_checkpoint relay")
 	}
 }
+
+// BUG-43 (spec decision 8): a fix round with a mix of unit-tagged and
+// package-wide findings needs a pair only for the tagged units; round 1 of
+// the same step still needs every unit.
+func TestTDDGateFixRoundMixedFindingsNeedOnlyTaggedUnits(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two", "three")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "b.go", Summary: "fix unit 2", Unit: 2},
+		{Severity: "minor", Summary: "package-wide wording"},
+	})
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
+		}}); err != nil {
+		t.Fatalf("only unit 2 is named; units 1 and 3 carry over: %v", err)
+	}
+}
+
+func TestTDDGateRoundOneStillNeedsEveryUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}})
+	if err == nil {
+		t.Fatal("round 1 must still require unit 2")
+	}
+}
+
+// BUG-41 (spec decision 9): progress from a workflow run step is not a turn
+// boundary; the response says so. Completed carries no such hint.
+func TestProgressOnWorkflowRunStepReturnsKeepWorkingNext(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	res, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1 red",
+		Verification: []Verify{{Cmd: "go test ./x", Phase: "red", OK: false}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Next != progressKeepWorkingNext {
+		t.Fatalf("Next = %q, want %q", res.Next, progressKeepWorkingNext)
+	}
+}
+
+// BUG-38: a chore has no worktree commits, so integrated with git: [] plus
+// verification is accepted; without verification it is still refused.
+func TestIntegratedChoreEmptyGitAccepted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "chore", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "bumping"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "no code change",
+		Git: []GitRef{}}); err == nil {
+		t.Fatal("integrated still needs verification")
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "no code change",
+		Git:          []GitRef{},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatalf("chore with git: [] plus verification: %v", err)
+	}
+	it, _ := s.Items.Get(ctx, key)
+	if it.Status != items.InReview {
+		t.Fatalf("status = %s, want in_review", it.Status)
+	}
+}
