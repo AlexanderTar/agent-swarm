@@ -180,6 +180,9 @@ func checkpointTool(s *Server) ToolDef {
 			if res.TodosIgnored != "" {
 				out["todos_ignored"] = res.TodosIgnored
 			}
+			if res.Next != "" {
+				out["next"] = res.Next
+			}
 			return out, nil
 		},
 	}

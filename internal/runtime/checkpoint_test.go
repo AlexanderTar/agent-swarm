@@ -2907,3 +2907,19 @@ func TestTDDGateRoundOneStillNeedsEveryUnit(t *testing.T) {
 		t.Fatal("round 1 must still require unit 2")
 	}
 }
+
+// BUG-41 (spec decision 9): progress from a workflow run step is not a turn
+// boundary; the response says so. Completed carries no such hint.
+func TestProgressOnWorkflowRunStepReturnsKeepWorkingNext(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	res, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1 red",
+		Verification: []Verify{{Cmd: "go test ./x", Phase: "red", OK: false}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Next != progressKeepWorkingNext {
+		t.Fatalf("Next = %q, want %q", res.Next, progressKeepWorkingNext)
+	}
+}
