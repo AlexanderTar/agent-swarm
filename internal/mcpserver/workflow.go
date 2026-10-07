@@ -110,8 +110,12 @@ func workflowTool(s *Server) ToolDef {
 				}
 				wts := make([]runtime.WorkflowWorktree, len(in.Worktrees))
 				for i, w := range in.Worktrees {
+					id, err := s.RT.ResolveWorktreeRef(ctx, w.Worktree)
+					if err != nil {
+						return nil, err
+					}
 					wts[i] = runtime.WorkflowWorktree{
-						WorktreeID: w.Worktree,
+						WorktreeID: id,
 						Mode:       w.Mode,
 					}
 				}

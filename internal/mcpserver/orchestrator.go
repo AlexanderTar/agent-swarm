@@ -517,6 +517,11 @@ func worktreeTool(s *Server) ToolDef {
 			// exactly as the first call's did if the row was already
 			// released), so gating it would add machinery without adding
 			// safety.
+			if in.Op != "create" && in.Op != "review" && in.Worktree != "" {
+				if in.Worktree, err = s.RT.ResolveWorktreeRef(ctx, in.Worktree); err != nil {
+					return nil, err
+				}
+			}
 			switch in.Op {
 			case "create", "review":
 				// Catalog ids are opaque; paths can be absolute, contain a
@@ -773,8 +778,12 @@ func spawnTool(s *Server) ToolDef {
 			if len(in.Worktrees) > 0 {
 				wts = make([]runtime.WorkflowWorktree, len(in.Worktrees))
 				for i, wt := range in.Worktrees {
+					id, err := s.RT.ResolveWorktreeRef(ctx, wt.Worktree)
+					if err != nil {
+						return nil, err
+					}
 					wts[i] = runtime.WorkflowWorktree{
-						WorktreeID: wt.Worktree,
+						WorktreeID: id,
 						Mode:       wt.Mode,
 					}
 				}
