@@ -570,6 +570,7 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 		return Worktree{}, err
 	}
 	s.ignoreGraphifyOut(ctx, in.RepoPath)
+	s.cloneDeps(ctx, in.RepoID, in.RepoPath, sha, path)
 	return wt, nil
 }
 
