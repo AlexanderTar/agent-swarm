@@ -97,3 +97,19 @@ func TestDiscardRefusals(t *testing.T) {
 		t.Fatalf("refused discard removed the tree: %v", err)
 	}
 }
+
+func TestRemoveByNonOwnerNamesStateAndPointsToDiscardForFinishedRoot(t *testing.T) {
+	s, wt, _ := retainedUnmerged(t)
+	ctx := context.Background()
+	_, err := s.Remove(ctx, wt.ID, "agt_2")
+	if err == nil || !strings.Contains(err.Error(), "only the owner") ||
+		!strings.Contains(err.Error(), "retained") || !strings.Contains(err.Error(), "dirty") ||
+		strings.Contains(err.Error(), "cleanup --discard") {
+		t.Fatalf("active root err = %v, want owner-only + state/reason and no discard hint", err)
+	}
+	setRoot(t, s, "done")
+	_, err = s.Remove(ctx, wt.ID, "agt_2")
+	if err == nil || !strings.Contains(err.Error(), "swarm cleanup --discard "+wt.Path) {
+		t.Fatalf("done root err = %v, want the discard command", err)
+	}
+}

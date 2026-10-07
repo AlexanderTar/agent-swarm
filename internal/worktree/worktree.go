@@ -606,7 +606,7 @@ func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Workt
 		return Worktree{}, err
 	}
 	if wt.OwnerAgentID != callerAgentID {
-		return Worktree{}, fmt.Errorf("worktree: only the owner can remove %s", wt.Path)
+		return Worktree{}, s.notOwnerError(ctx, wt)
 	}
 	var others int
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
@@ -893,4 +893,23 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 		s.Events.Notify()
 	}
 	return wt, unlanded, err
+}
+
+// notOwnerError explains a non-owner remove: the tree's state and reason, and
+// for a done or cancelled root the user command that can drop it.
+func (s *Service) notOwnerError(ctx context.Context, wt Worktree) error {
+	state := wt.State
+	if wt.RetainedReason != "" {
+		state += ", " + wt.RetainedReason
+	}
+	msg := fmt.Sprintf("worktree: only the owner can remove %s (%s)", wt.Path, state)
+	var rootKey, status string
+	if s.DB.QueryRowContext(ctx, `SELECT key, status FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey, &status) == nil {
+		if status == "done" || status == "cancelled" {
+			msg += fmt.Sprintf("; its root %s is %s, so you can run `swarm cleanup --discard %s` to drop it (the branch is kept)", rootKey, status, wt.Path)
+		} else {
+			msg += fmt.Sprintf("; its root %s is %s", rootKey, strings.ReplaceAll(status, "_", " "))
+		}
+	}
+	return errors.New(msg)
 }
