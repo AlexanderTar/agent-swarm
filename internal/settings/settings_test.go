@@ -361,3 +361,22 @@ func TestSettingsInstructionsRoundTrip(t *testing.T) {
 		t.Fatalf("Get returned instructions %q, want %q", reloaded.Instructions, s.Instructions)
 	}
 }
+
+func TestPutKeepsLowTokenMode(t *testing.T) {
+	s := newStore(t, kinds.Claude)
+	if err := s.SetLowTokenMode(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := s.Get(ctx)
+	if !cfg.LowTokenMode {
+		t.Fatal("SetLowTokenMode did not store the flag")
+	}
+	cfg.LowTokenMode = false
+	if _, err := s.Put(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(ctx)
+	if !got.LowTokenMode {
+		t.Fatal("PUT reset low_token_mode")
+	}
+}

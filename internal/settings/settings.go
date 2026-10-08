@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -62,6 +63,9 @@ type Settings struct {
 	UsagePollSec        int      `json:"usage_poll_sec"`
 	PauseDeadlineSec    int      `json:"pause_deadline_sec"`
 	Instructions        string   `json:"instructions"`
+	// LowTokenMode is the global low-token default. Put never changes it;
+	// only SetLowTokenMode (POST /api/low-token) writes it.
+	LowTokenMode bool `json:"low_token_mode"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
@@ -179,6 +183,7 @@ func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
 		return Settings{}, err
 	}
 	next.Roles, next.Notifications = maps.Clone(next.Roles), maps.Clone(next.Notifications)
+	next.LowTokenMode = prev.LowTokenMode
 	fillMissing(&next, Defaults(nil))
 	if err := s.switchDisabled(ctx, prev, &next); err != nil {
 		return prev, err
@@ -211,6 +216,29 @@ func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
 	}
 	s.Events.Notify()
 	return next, nil
+}
+
+// SetLowTokenMode writes only the global low-token default.
+func (s *Store) SetLowTokenMode(ctx context.Context, on bool) error {
+	cur, err := s.Get(ctx)
+	if err != nil {
+		return err
+	}
+	cur.LowTokenMode = on
+	err = s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES ('low_token_mode', ?, ?)
+			ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+			strconv.FormatBool(on), db.Millis(s.Now())); err != nil {
+			return err
+		}
+		_, err := s.Events.Append(ctx, tx, events.SettingsChanged, cur)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	s.Events.Notify()
+	return nil
 }
 
 // reassignDefault is I18's own per-default logic: what a RoleDefault (a
