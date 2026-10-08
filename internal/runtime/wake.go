@@ -146,6 +146,10 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 // undeliverable escalation): pinging a quota-dead session only feeds the
 // pileup the quota-reset flush then has to digest.
 func (s *Store) WakeDue(ctx context.Context) error {
+	renamed, err := s.pasteSessionRenames(ctx)
+	if err != nil {
+		return err
+	}
 	rows, err := s.wakeCandidates(ctx)
 	if err != nil {
 		return err
@@ -162,6 +166,9 @@ func (s *Store) WakeDue(ctx context.Context) error {
 	for _, r := range rows {
 		if isExhausted(r.Kind) {
 			continue
+		}
+		if renamed[r.SessionID] {
+			continue // one paste per pane per tick; the notice goes out on a later one
 		}
 		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter {
 			if err := s.raiseUndeliverable(ctx, r); err != nil {
@@ -237,6 +244,98 @@ func (s *Store) WakeDue(ctx context.Context) error {
 	return nil
 }
 
+// pasteSessionRenames pastes each live session's pending rename command
+// (TASK-769) into its pane once the pane passes the same gate as tryPaste, and
+// clears the pending name. A pane that is not ready is simply retried on a
+// later tick: unlike a wake notice this is never a wake failure, so it adds no
+// backoff. It returns the sessions it pasted into this tick.
+func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.pending_name, ses.tmux_name, a.kind
+		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
+		WHERE ses.pending_name IS NOT NULL
+		AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
+	if err != nil {
+		return nil, err
+	}
+	type pend struct{ id, name, tmux, kind string }
+	var due []pend
+	for rows.Next() {
+		var p pend
+		if err := rows.Scan(&p.id, &p.name, &p.tmux, &p.kind); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		due = append(due, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	pasted := map[string]bool{}
+	if len(due) == 0 {
+		return pasted, nil
+	}
+	panes, err := s.Tmux.Panes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	command := map[string]string{}
+	for _, p := range panes {
+		command[p.Session] = p.Command
+	}
+	for _, p := range due {
+		ad := s.Adapters[AgentKind(p.kind)]
+		r, ok := ad.(adapter.SessionRenamer)
+		if !ok {
+			continue
+		}
+		line, ok := r.RenameCommand(p.name)
+		if !ok {
+			continue
+		}
+		if s.Usage != nil && s.Usage.Exhausted(ctx, AgentKind(p.kind)) {
+			continue
+		}
+		if why := s.panePasteReady(ctx, ad, p.tmux, command[p.tmux]); why != "" {
+			s.logf("wake: rename for %s deferred (%s)", p.tmux, why)
+			continue
+		}
+		if err := s.Tmux.PasteLine(ctx, p.tmux, line); err != nil {
+			s.logf("wake: rename paste for %s: %v", p.tmux, err)
+			continue
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET pending_name = NULL WHERE id = ? AND pending_name = ?`,
+			p.id, p.name); err != nil {
+			s.logf("wake: clear pending name for %s: %v", p.tmux, err)
+			continue
+		}
+		pasted[p.id] = true
+	}
+	return pasted, nil
+}
+
+// panePasteReady is tryPaste's pane gate: "" when the pane may take a paste,
+// otherwise the reason it may not.
+func (s *Store) panePasteReady(ctx context.Context, ad adapter.Adapter, tmuxName, paneCommand string) string {
+	if !(matchesAny(ad.ProcessNames(), paneCommand) && !isShell(paneCommand)) {
+		return fmt.Sprintf("pane command %q matches no ProcessNames pattern", paneCommand)
+	}
+	capture, err := s.Tmux.Capture(ctx, tmuxName, 15)
+	if err != nil {
+		return "capture failed"
+	}
+	// An adapter whose TUI safely steers or queues a paste mid-turn (Muse)
+	// gates on PasteReady instead of Idle; everyone else needs a real idle pane.
+	if pr, ok := ad.(interface{ PasteReady(capture string) bool }); ok {
+		if !pr.PasteReady(capture) {
+			return "question dialog open"
+		}
+	} else if !ad.Idle(capture) {
+		return "pane not idle"
+	}
+	return ""
+}
+
 // isShell rejects a bare shell prompt from the idle-paste check (I2).
 var shellNames = regexp.MustCompile(`^(sh|bash|zsh|fish|login)$`)
 
@@ -269,21 +368,8 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 		s.logf("wake: paste for %s skipped/failed (%s; fail=%d backoff=%s)", r.AgentName, reason, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
 		return nil
 	}
-	if !(matchesAny(ad.ProcessNames(), r.PaneCommand) && !isShell(r.PaneCommand)) {
-		return fail(fmt.Sprintf("pane command %q matches no ProcessNames pattern", r.PaneCommand))
-	}
-	capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
-	if err != nil {
-		return fail("capture failed")
-	}
-	// An adapter whose TUI safely steers or queues a paste mid-turn (Muse)
-	// gates on PasteReady instead of Idle; everyone else needs a real idle pane.
-	if pr, ok := ad.(interface{ PasteReady(capture string) bool }); ok {
-		if !pr.PasteReady(capture) {
-			return fail("question dialog open")
-		}
-	} else if !ad.Idle(capture) {
-		return fail("pane not idle")
+	if why := s.panePasteReady(ctx, ad, r.TmuxName, r.PaneCommand); why != "" {
+		return fail(why)
 	}
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")

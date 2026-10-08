@@ -7,6 +7,14 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 )
 
+// renameStore is newStore with the Fake adapter's session-rename command on.
+func renameStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
+	t.Helper()
+	s, tm, fa := newStore(t)
+	fa.NoRename = false
+	return s, tm, fa
+}
+
 func pendingName(t *testing.T, s *Store, sesID string) string {
 	t.Helper()
 	var n string
@@ -20,7 +28,7 @@ func pendingName(t *testing.T, s *Store, sesID string) string {
 // TASK-769: a RenameCommand kind's session carries its agent name as pending
 // at launch and at resume; the hook-titled kind (claude) never does.
 func TestLaunchAndResumeSetPendingSessionName(t *testing.T) {
-	s, _, _ := newStore(t)
+	s, _, _ := renameStore(t)
 	ctx := context.Background()
 	a, ses, _ := titlePendingSpike(t, s)
 	if got := pendingName(t, s, ses.ID); got != a.Name {
@@ -36,7 +44,7 @@ func TestLaunchAndResumeSetPendingSessionName(t *testing.T) {
 }
 
 func TestHookTitledKindNeverGetsAPendingName(t *testing.T) {
-	s, _, _ := newStore(t)
+	s, _, _ := renameStore(t)
 	ctx := context.Background()
 	a, ses, _ := titlePendingSpike(t, s)
 	ad, err := adapter.New(Claude, adapter.Deps{Home: s.Home, UserHome: t.TempDir(), Bin: "/usr/local/bin/swarm",
@@ -64,7 +72,7 @@ func TestHookTitledKindNeverGetsAPendingName(t *testing.T) {
 }
 
 func TestRenameSetsPendingNameOnTheLiveSession(t *testing.T) {
-	s, _, _ := newStore(t)
+	s, _, _ := renameStore(t)
 	ctx := context.Background()
 	_, ses, _ := titlePendingSpike(t, s)
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET pending_name = NULL WHERE id = ?`, ses.ID); err != nil {

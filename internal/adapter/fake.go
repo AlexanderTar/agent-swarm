@@ -42,6 +42,10 @@ type Fake struct {
 	// muse-style print-then-ask turn-end path (see Muse.LastReply).
 	LastReplyText                     string
 	LastReplyFound, LastReplyReadable bool
+
+	// NoRename makes RenameCommand report ok=false, so a test about wake
+	// notices is not preceded by a session-rename paste.
+	NoRename bool
 }
 
 func NewFake(d Deps) *Fake {
@@ -153,4 +157,4 @@ func (f *Fake) ParseHook(event string, stdin []byte) (HookInput, error) {
 }
 
 // RenameCommand implements SessionRenamer.
-func (*Fake) RenameCommand(name string) (string, bool) { return "/rename " + name, true }
+func (f *Fake) RenameCommand(name string) (string, bool) { return "/rename " + name, !f.NoRename }

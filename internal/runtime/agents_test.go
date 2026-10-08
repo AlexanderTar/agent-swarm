@@ -178,6 +178,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		Installed: func(context.Context) []AgentKind { return []AgentKind{Fake} }}
 	fa := adapter.NewFake(adapter.Deps{Home: home, UserHome: t.TempDir(),
 		Bin: "/usr/local/bin/swarm", Run: execx.Run, Log: func(string, ...any) {}})
+	fa.NoRename = true // renameStore turns the TASK-769 session-rename paste back on
 	tm := newFakeTmux()
 	tm.clk = clk
 	s := &Store{DB: d, Events: ev, Items: it, Settings: st, Catalog: cat, Home: home,
