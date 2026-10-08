@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -2906,5 +2907,30 @@ func TestSpawnRefusesOtherCrossRootSpawns(t *testing.T) {
 		if err == nil || err.Error() != c.want {
 			t.Fatalf("%s %s: err = %v, want %q", c.role, c.item, err, c.want)
 		}
+	}
+}
+
+// abandon_unmerged on swarm_items update reaches the landed-check guard.
+func TestItemsToolUpdateResolvedByAbandonUnmerged(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	other := seedOtherRoot(t, s)
+	if _, err := s.RT.Items.DB.Exec(`UPDATE items SET status = 'done' WHERE key = ?`, seed.RootKey); err != nil {
+		t.Fatal(err)
+	}
+	s.RT.Items.CheckLanded = func(context.Context, *sql.Tx, items.Item, []byte) error {
+		return errors.New("112d3df is not on main")
+	}
+	s.RT.Items.DB.Exec(`PRAGMA foreign_keys = OFF`)
+	if _, err := s.RT.Items.DB.Exec(`INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, git_json, created_at)
+		SELECT 'ckp_x', 'ses_x', 'agt_x', id, 'integrated', 1, 's', '[{"repo":"r","branch":"b","sha":"112d3dfc"}]', 5 FROM items WHERE key = ?`, other); err != nil {
+		t.Fatal(err)
+	}
+	args := `{"op":"update","key":"` + other + `","status":"done","resolved_by":"` + seed.RootKey + `","revision":1`
+	if _, err := s.call(ctx, seed.Caller, "swarm_items", args+`}`); err == nil || !strings.Contains(err.Error(), "112d3df is not on main") {
+		t.Fatalf("unacknowledged err = %v", err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items", args+`,"abandon_unmerged":true}`); err != nil {
+		t.Fatal(err)
 	}
 }

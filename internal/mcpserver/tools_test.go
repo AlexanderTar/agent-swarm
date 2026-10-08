@@ -937,6 +937,42 @@ func TestSwarmReadIncludesParentAgent(t *testing.T) {
 	}
 }
 
+// TASK-754: a paused agent keeps agents.state 'active', so swarm_read also
+// reports its latest session's state.
+func TestSwarmReadShowsAPausedAgentsSessionState(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	worker := spawnWorker(t, s, seed)
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE agent_id = ?`, worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+worker.Name+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agents []struct {
+			State        string `json:"state"`
+			SessionState string `json:"session_state"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].SessionState != "paused" {
+		t.Fatalf("agents = %+v, want session_state paused", res.Agents)
+	}
+	out, err = s.call(ctx, seed.Caller, "swarm_read",
+		`{"refs":["`+worker.Name+`"],"fields":["session_state"]}`)
+	if err != nil {
+		t.Fatalf("session_state is not a projectable agent field: %v", err)
+	}
+	if !strings.Contains(string(mustJSON(out)), `"session_state":"paused"`) {
+		t.Fatalf("projected read = %s", mustJSON(out))
+	}
+}
+
 func TestSyncToolReturnsAnUnackedListEvenWhenEmpty(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	out, err := s.call(context.Background(), seed.Caller, "swarm_sync", `{}`)

@@ -1017,6 +1017,10 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			r := runtime.TurnReply{}
 			if texter, ok := a.(transcriptTexter); !ok {
 				r.Trusted = true
+			} else if in.LastAssistantMessage != "" {
+				// Claude fires Stop before the final text reaches the transcript; its hook input
+				// carries that text directly.
+				r.Text, r.Readable = in.LastAssistantMessage, true
 			} else if in.TranscriptPath != "" {
 				r.Text, r.Readable = texter.AssistantTextSinceLastTurn(in.TranscriptPath)
 			}

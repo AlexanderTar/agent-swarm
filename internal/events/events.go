@@ -29,6 +29,7 @@ const (
 	NotificationCreated = "notification.created"
 	UsageChanged        = "usage.changed"
 	TerminalOpen        = "terminal.open"
+	WorktreeDiscarded   = "worktree.discarded"
 )
 
 type Event struct {

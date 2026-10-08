@@ -951,6 +951,10 @@ func TestClaudeParseHook(t *testing.T) {
 	if sh.IsSwarmTool || sh.Command != "git commit -m x" || sh.ToolName != "Bash" {
 		t.Fatalf("shell parse = %+v", sh)
 	}
+	stop, err := a.ParseHook("Stop", []byte(`{"session_id":"abc","transcript_path":"/t.jsonl","last_assistant_message":"final reply"}`))
+	if err != nil || stop.LastAssistantMessage != "final reply" {
+		t.Fatalf("stop parse = %+v, err = %v", stop, err)
+	}
 }
 
 // The native wake goes through the channel bridge: the daemon publishes, the shim delivers.

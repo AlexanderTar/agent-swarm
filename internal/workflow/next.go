@@ -46,6 +46,8 @@ type Run struct {
 	Findings    []Finding
 	SHA         string
 	AutoRetries int
+	Error       string // why a spawn failed, when recorded
+	Fatal       bool   // the failure is deterministic: auto-retry cannot fix it
 }
 
 // ActionKind is what the engine should do next.
@@ -149,6 +151,9 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 				return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s cancelled", run.Role)}
 			}
 			if run.State == RunStateFailed {
+				if run.Fatal {
+					return Action{Kind: ActionEscalate, Reason: failureReason(run, 0)}
+				}
 				retries := defaultRetries
 				if s.Retries != nil {
 					retries = *s.Retries
@@ -560,6 +565,14 @@ func firstSummary(findings []Finding) string {
 }
 
 func failureReason(run Run, retries int) string {
+	reason := failureReasonBase(run, retries)
+	if run.Error != "" {
+		reason += ": " + run.Error
+	}
+	return reason
+}
+
+func failureReasonBase(run Run, retries int) string {
 	if retries == 0 {
 		return fmt.Sprintf("%s %s", run.Role, run.State)
 	}

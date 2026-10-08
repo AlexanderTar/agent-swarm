@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
@@ -20,6 +21,7 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	fs, home, _ := flags("cleanup", stderr, false)
 	dry := fs.Bool("dry-run", false, "list what would be removed and change nothing")
 	noGrace := fs.Bool("no-grace", false, "ignore the one-hour grace after an agent finishes")
+	discard := fs.String("discard", "", "force-remove one worktree (path or id) of a done or cancelled root; the branch is kept")
 	if code, done := parse(fs, args); done {
 		return code
 	}
@@ -37,6 +39,19 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	wt := &worktree.Service{DB: d, Run: execx.Run, Now: time.Now, Log: logf, Home: *home}
 	rt := &runtime.Store{DB: d, Home: *home, Now: time.Now, Log: logf, Worktree: wt}
 	wt.Evidence = rt.MergeEvidence()
+	if *discard != "" {
+		wt.Events = events.New(d, time.Now)
+		w, unlanded, err := wt.Discard(ctx, *discard)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		count := fmt.Sprintf("%d commits not on %s", unlanded, w.BaseRef)
+		if unlanded < 0 {
+			count = "unlanded commits unknown"
+		}
+		fmt.Fprintf(stdout, "worktree discarded %s; branch %s kept (%s)\n", w.Path, w.Branch, count)
+		return 0
+	}
 	opt := runtime.CleanupOptions{DryRun: *dry, NoGrace: *noGrace}
 
 	counts := map[string]int{}
