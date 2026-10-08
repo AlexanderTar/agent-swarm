@@ -79,6 +79,10 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 //     `swarm install` writes ~/.claude/skills and ~/.claude/CLAUDE.md live --
 //     writeProjectSwarmConfig re-admits the swarm skill and MCP config at
 //     project scope instead (see its own comment for why).
+//   - --plugin-dir <dir> (repeated): every user-scope superpowers-marketplace
+//     plugin dir supported by all agent kinds from install.ClaudePluginDirs
+//     (plus any Spec.PluginDirs), so superpowers:* skills load despite the
+//     excluded user scope.
 //   - --append-system-prompt-file <path>: the role's instructions, when set.
 //   - --dangerously-load-development-channels server:swarm: required for the
 //     swarm MCP server's own channel/notification bridge (Wake).
@@ -104,7 +108,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeProjectSwarmConfig(s.Cwd, c.d.Home, mcp); err != nil {
+	if err := writeProjectSwarmConfig(s.Cwd, c.d.Home, c.d.UserHome, mcp); err != nil {
 		return nil, err
 	}
 	set, err := c.settingsJSON(s)
@@ -124,6 +128,21 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 		"--mcp-config", mcpPath,
 		"--settings", setPath,
 		"--setting-sources", "project,local")
+	seen := map[string]bool{}
+	for _, p := range s.PluginDirs {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		a = append(a, "--plugin-dir", p)
+	}
+	for _, p := range install.ClaudePluginDirs(c.d.UserHome) {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		a = append(a, "--plugin-dir", p)
+	}
 	if s.Instructions != "" {
 		instrPath, err := c.d.writeLaunchFile(s.SessionID, "claude-instructions.md", []byte("\n\n"+strings.TrimLeft(s.Instructions, "\n")))
 		if err != nil {
@@ -151,7 +170,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 // (rather than copying every skill's files, as before) matches WriteSkills'
 // own choice for Claude and avoids re-copying the vendored skills' data on
 // every single spawn -- ui-ux-pro-max alone is 3.1 MB.
-func writeProjectSwarmConfig(cwd, swarmHome string, mcp []byte) error {
+func writeProjectSwarmConfig(cwd, swarmHome, userHome string, mcp []byte) error {
 	if cwd == "" {
 		return nil
 	}
@@ -166,8 +185,54 @@ func writeProjectSwarmConfig(cwd, swarmHome string, mcp []byte) error {
 	if err := adoptPreExistingSkills(skillsRoot); err != nil {
 		return err
 	}
-	_, err = install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude))
-	return err
+	if _, err := install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude)); err != nil {
+		return err
+	}
+	return linkUserSkills(skillsRoot, userHome)
+}
+
+// linkUserSkills symlinks each non-swarm-owned entry of
+// userHome/.claude/skills into the session's skillsRoot, so user-owned
+// skills are visible under --setting-sources project,local without
+// re-admitting the whole excluded user scope (and with it
+// ~/.claude/CLAUDE.md). Swarm-registered names win: an entry sharing a name
+// with a swarm skill is skipped, and an existing destination is never
+// overwritten. User skills are best-effort: an unreadable or non-directory
+// user skills root, and any per-entry failure, is skipped without failing
+// the launch. A missing user skills root is a no-op; an existing correct
+// symlink makes relaunch idempotent.
+func linkUserSkills(skillsRoot, userHome string) error {
+	if userHome == "" {
+		return nil
+	}
+	userSkills := filepath.Join(userHome, ".claude", "skills")
+	entries, err := os.ReadDir(userSkills)
+	if err != nil {
+		return nil // best-effort: unreadable, non-dir, or missing
+	}
+	registered := make(map[string]bool, len(install.SkillNames()))
+	for _, name := range install.SkillNames() {
+		registered[name] = true
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if registered[name] {
+			continue
+		}
+		dst := filepath.Join(skillsRoot, name)
+		if _, err := os.Lstat(dst); err == nil {
+			continue // never overwrite: a swarm link or a previous user link
+		} else if !os.IsNotExist(err) {
+			continue // best-effort: leave this entry unlinked
+		}
+		if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+			continue // best-effort: leave this entry unlinked
+		}
+		if err := os.Symlink(filepath.Join(userSkills, name), dst); err != nil {
+			continue // best-effort, including the raced-exists case
+		}
+	}
+	return nil
 }
 
 // adoptPreExistingSkills removes any non-symlink entry already at root.
