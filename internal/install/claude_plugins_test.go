@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -167,9 +168,7 @@ func TestClaudePluginDirsKeepsOnlyAllKindPlugins(t *testing.T) {
 	got := install.ClaudePluginDirs(home)
 	// want is sorted (ClaudePluginDirs sorts output)
 	want := []string{es, sp}
-	if len(want) == 2 && want[0] > want[1] {
-		want[0], want[1] = want[1], want[0]
-	}
+	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ClaudePluginDirs() = %q, want %q (only all-kind plugins)", got, want)
 	}

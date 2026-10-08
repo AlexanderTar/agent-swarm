@@ -211,3 +211,10 @@ func TestClaudeRelaunchRefreshesUserSkillLinks(t *testing.T) {
 		t.Fatalf("stale user link survived the relaunch: %v", err)
 	}
 }
+
+// linkUserSkills is best-effort: it has no error to return, so it cannot fail
+// a launch. Assigning it to a result-less func type pins that contract.
+func TestLinkUserSkillsHasNoErrorReturn(t *testing.T) {
+	var f func(skillsRoot, userHome string) = linkUserSkills
+	f(t.TempDir(), filepath.Join(t.TempDir(), "absent"))
+}

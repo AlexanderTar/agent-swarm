@@ -192,7 +192,8 @@ func writeProjectSwarmConfig(cwd, swarmHome, userHome string, mcp []byte) error 
 	if _, err := install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude)); err != nil {
 		return err
 	}
-	return linkUserSkills(skillsRoot, userHome)
+	linkUserSkills(skillsRoot, userHome)
+	return nil
 }
 
 // dropUserSkillLinks removes every symlink under skillsRoot that points into
@@ -225,14 +226,14 @@ func dropUserSkillLinks(skillsRoot, userHome string) {
 // user skills root, and any per-entry failure, is skipped without failing
 // the launch. A missing user skills root is a no-op; an existing correct
 // symlink makes relaunch idempotent.
-func linkUserSkills(skillsRoot, userHome string) error {
+func linkUserSkills(skillsRoot, userHome string) {
 	if userHome == "" {
-		return nil
+		return
 	}
 	userSkills := filepath.Join(userHome, ".claude", "skills")
 	entries, err := os.ReadDir(userSkills)
 	if err != nil {
-		return nil // best-effort: unreadable, non-dir, or missing
+		return // best-effort: unreadable, non-dir, or missing
 	}
 	registered := make(map[string]bool, len(install.SkillNames()))
 	for _, name := range install.SkillNames() {
@@ -256,7 +257,6 @@ func linkUserSkills(skillsRoot, userHome string) error {
 			continue // best-effort, including the raced-exists case
 		}
 	}
-	return nil
 }
 
 // adoptPreExistingSkills removes any non-symlink entry already at root.
