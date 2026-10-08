@@ -1553,6 +1553,9 @@ func TestOrchestratorSkillDocumentsResolvedBy(t *testing.T) {
 		"once your root is Done",
 		"Don't use it for items you didn't actually resolve",
 		"list the resolved keys in your final summary",
+		"never landed",
+		"abandon_unmerged",
+		"swarm resolve --by KEY2 [--abandon-unmerged] KEY...",
 	} {
 		if !strings.Contains(orch, want) {
 			t.Errorf("swarm-orchestrator is missing %q", want)

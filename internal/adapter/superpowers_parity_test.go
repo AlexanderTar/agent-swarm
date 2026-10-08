@@ -36,6 +36,28 @@ func superpowersParityFixtures() []isolatingKindFixture {
 			launch:       func(t *testing.T, d Deps) (Launch, error) { return newAgy(d).Launch(agySpec(t)) },
 			isolatedHome: func(l Launch) string { return l.Env["HOME"] },
 		},
+		{
+			// Claude excludes the user scope via --setting-sources
+			// project,local, so the plugin reaches the spawned session
+			// only through --plugin-dir pointing at its installPath.
+			name:        "claude",
+			realRel:     []string{".claude", "plugins", "cache", "superpowers-marketplace", "superpowers", "6.3.0", "skills", "brainstorming", "SKILL.md"},
+			isolatedRel: []string{"skills", "brainstorming", "SKILL.md"},
+			launch: func(t *testing.T, d Deps) (Launch, error) {
+				t.Helper()
+				installPath := filepath.Join(d.UserHome, ".claude", "plugins", "cache", "superpowers-marketplace", "superpowers", "6.3.0")
+				seedClaudePlugin(t, d.UserHome, installPath, nil)
+				return newClaude(d).Launch(claudeSpec(t, d))
+			},
+			isolatedHome: func(l Launch) string {
+				for i, v := range l.Argv {
+					if v == "--plugin-dir" && i+1 < len(l.Argv) {
+						return l.Argv[i+1]
+					}
+				}
+				return ""
+			},
+		},
 	}
 }
 
