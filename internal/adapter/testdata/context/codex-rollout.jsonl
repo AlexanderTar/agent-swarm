@@ -1,0 +1,4 @@
+{"timestamp":"2026-10-01T10:00:00Z","type":"session_meta","payload":{"id":"conv-codex"}}
+{"timestamp":"2026-10-01T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":70000},"last_token_usage":{"input_tokens":66693,"cached_input_tokens":60000},"model_context_window":258400}}}
+{"timestamp":"2026-10-01T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":270000},"last_token_usage":{"input_tokens":198007,"cached_input_tokens":194816,"output_tokens":300},"model_context_window":258400}}}
+{"timestamp":"2026-10-01T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":null}}

@@ -1,0 +1,5 @@
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"early"}],"usage":{"input_tokens":5,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":3}}}
+{"type":"user","message":{"role":"user","content":"more"}}
+{"type":"assistant","message":{"id":"msg_02","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"late"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":1640,"cache_read_input_tokens":91481,"output_tokens":120}}}
+{"type":"system","subtype":"turn_duration","durationMs":1234}
