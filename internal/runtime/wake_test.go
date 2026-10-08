@@ -1012,9 +1012,11 @@ func TestUndeliverableSecondBatchStartsItsOwnClock(t *testing.T) {
 	}
 }
 
-// After a successful paste the agent gets pasteRetry (30 s) to respond before
-// it is pasted again, unless a newer pending message arrived. Previously only
-// the 5 s wakeGap applied, so a mid-turn agent got a paste every ~20 s.
+// After a batch's first paste the agent gets pasteRetry (30 s) to respond
+// before it is pasted again, unless a newer pending message arrived.
+// Previously only the 5 s wakeGap applied, so a mid-turn agent got a paste
+// every ~20 s. Later re-pastes of the same batch back off further
+// (TestSameBatchRepasteBacksOffExponentially).
 func TestNoRepasteWithinTheCooldownUnlessAMessageIsNewer(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
@@ -1051,6 +1053,41 @@ func TestNoRepasteWithinTheCooldownUnlessAMessageIsNewer(t *testing.T) {
 	if len(tm.pasted) != 3 {
 		t.Fatalf("a newer message must be woken at the next tick: %d pastes", len(tm.pasted))
 	}
+}
+
+// BUG-64: every re-paste of a batch the agent hasn't synced lands in the
+// agent's input queue when its TUI is busy (e.g. /compact) and is replayed
+// as a stale prompt later. Re-pastes of the same batch back off
+// exponentially (30 s, 60 s, 120 s, ... capped); a newer message resets it.
+func TestSameBatchRepasteBacksOffExponentially(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Backoff", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+
+	tick := func(d time.Duration, want int) {
+		t.Helper()
+		at.Advance(d)
+		s.WakeDue(ctx)
+		if len(tm.pasted) != want {
+			t.Fatalf("after +%s: %d pastes, want %d", d, len(tm.pasted), want)
+		}
+	}
+	tick(25*time.Second, 1) // first paste
+	tick(31*time.Second, 2) // 30 s after the first
+	tick(31*time.Second, 2) // 60 s after the second
+	tick(30*time.Second, 3)
+	tick(119*time.Second, 3) // 120 s after the third
+	tick(2*time.Second, 4)
+
+	// A newer message is pasted at the next tick and restarts the schedule.
+	at.Advance(time.Second)
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"newer"}`, 1)
+	tick(6*time.Second, 5)
+	tick(31*time.Second, 6)
 }
 
 func TestTryPasteReceivesTheSameRichNoticeAsNativeWake(t *testing.T) {
