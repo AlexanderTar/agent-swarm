@@ -86,6 +86,22 @@ public struct AgentAction: Equatable, Sendable, Identifiable {
 public enum AgentTree {
     public static func isFinished(_ a: AgentNode) -> Bool { a.state == .finished || a.state == .acknowledged }
 
+    /// The eco leaf: an unfinished orchestrator whose effective low-token mode is on. Workers inherit silently.
+    public static func showsLowTokenLeaf(_ a: AgentNode) -> Bool {
+        a.role == .orchestrator && a.lowTokenEffective == true && !isFinished(a)
+    }
+
+    /// The "Low-token mode" context-menu item: unfinished orchestrators, and only when the daemon sends the field.
+    public static func offersLowToken(_ a: AgentNode) -> Bool {
+        a.role == .orchestrator && a.lowTokenEffective != nil && !isFinished(a)
+    }
+
+    /// VoiceOver label for an agent row; the leaf is hidden from VoiceOver, so the mode is read here.
+    public static func rowLabel(_ a: AgentNode) -> String {
+        let base = "\(a.name), \(DisplayState(a).label ?? Copy.runningLabel)"
+        return showsLowTokenLeaf(a) ? "\(base), \(Copy.lowTokenA11y)" : base
+    }
+
     /// Retryable-but-broken: still agent-level `active`, but its session ended badly (§16.2).
     public static func isFailed(_ a: AgentNode) -> Bool {
         [.crashed, .failed, .preflightFailed].contains(DisplayState(a))

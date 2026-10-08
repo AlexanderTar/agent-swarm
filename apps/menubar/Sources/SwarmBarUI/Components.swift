@@ -86,12 +86,18 @@ public struct IconButton: View {
     let symbol: String
     let help: String
     let disabled: Bool
+    let tint: Color?
+    let toggleValue: Bool?
     let action: () -> Void
 
-    public init(_ symbol: String, help: String, disabled: Bool = false, action: @escaping () -> Void) {
+    /// `tint` recolours the symbol; a non-nil `toggleValue` makes it a VoiceOver toggle reading On/Off.
+    public init(_ symbol: String, help: String, disabled: Bool = false, tint: Color? = nil, toggleValue: Bool? = nil,
+                action: @escaping () -> Void) {
         self.symbol = symbol
         self.help = help
         self.disabled = disabled
+        self.tint = tint
+        self.toggleValue = toggleValue
         self.action = action
     }
 
@@ -99,6 +105,7 @@ public struct IconButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12))
+                .foregroundStyle(tint ?? Color.primary)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
@@ -107,6 +114,22 @@ public struct IconButton: View {
         .opacity(disabled ? 0.35 : 1) // .borderless barely dims a disabled symbol in the popover
         .help(help)
         .accessibilityLabel(help)
+        .accessibilityAddTraits(toggleValue == nil ? [] : .isToggle)
+        .accessibilityValue(toggleValue.map { $0 ? Copy.on : Copy.off } ?? "")
+    }
+}
+
+/// The low-token mode mark on an orchestrator row: a 9 pt green leaf, the same green as a running `StateDot`.
+/// Hidden from VoiceOver; the row label carries "low-token mode" instead (`AgentTree.rowLabel`).
+public struct EcoLeaf: View {
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: "leaf.fill")
+            .font(.system(size: 9))
+            .foregroundStyle(.green)
+            .help(Copy.lowTokenOnHelp)
+            .accessibilityHidden(true)
     }
 }
 

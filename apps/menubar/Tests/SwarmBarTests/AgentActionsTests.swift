@@ -47,6 +47,27 @@ final class AgentActionsTests: XCTestCase {
     }
 
     // §10.7, one test per row.
+    func testLowTokenLeafMenuItemAndLabel() {
+        func node(_ role: Role, effective: Bool?, state: AgentState = .active) -> AgentNode {
+            AgentNode(name: "orch", model: "opus", role: role, state: state, lowTokenEffective: effective)
+        }
+        let on = node(.orchestrator, effective: true)
+        XCTAssertTrue(AgentTree.showsLowTokenLeaf(on))
+        XCTAssertFalse(AgentTree.showsLowTokenLeaf(node(.orchestrator, effective: false)))
+        XCTAssertFalse(AgentTree.showsLowTokenLeaf(node(.orchestrator, effective: nil)))
+        XCTAssertFalse(AgentTree.showsLowTokenLeaf(node(.coder, effective: true)), "workers inherit silently")
+        XCTAssertFalse(AgentTree.showsLowTokenLeaf(node(.orchestrator, effective: true, state: .finished)))
+
+        XCTAssertTrue(AgentTree.offersLowToken(on))
+        XCTAssertTrue(AgentTree.offersLowToken(node(.orchestrator, effective: false)))
+        XCTAssertFalse(AgentTree.offersLowToken(node(.orchestrator, effective: nil)), "older daemon hides the item")
+        XCTAssertFalse(AgentTree.offersLowToken(node(.coder, effective: true)))
+        XCTAssertFalse(AgentTree.offersLowToken(node(.orchestrator, effective: true, state: .acknowledged)))
+
+        XCTAssertEqual(AgentTree.rowLabel(on), "orch, Running, low-token mode")
+        XCTAssertEqual(AgentTree.rowLabel(node(.orchestrator, effective: false)), "orch, Running")
+    }
+
     func testQueued() { XCTAssertEqual(labels(agent(nil, agentState: .queued)), ["cancel:Cancel:menu", "handoff:Wait for startup:disabled:menu"]) }
 
     func testSpawning() {
