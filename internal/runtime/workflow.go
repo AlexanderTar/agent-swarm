@@ -157,15 +157,15 @@ func (s *Store) validateWorktrees(ctx context.Context, wts []WorkflowWorktree) e
 }
 
 // callerOwnsRWWorktree reports whether wts names at least one 'rw' worktree
-// that is currently active and owned by ownerAgentID (spec B4's Start
-// validation).
+// that is currently active (or retained, BUG-60) and owned by ownerAgentID
+// (spec B4's Start validation).
 func (s *Store) callerOwnsRWWorktree(ctx context.Context, wts []WorkflowWorktree, ownerAgentID string) (bool, error) {
 	for _, w := range wts {
 		if w.Mode != "rw" {
 			continue
 		}
 		var owner string
-		err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id FROM worktrees WHERE id = ? AND state = 'active'`,
+		err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id FROM worktrees WHERE id = ? AND state IN ('active', 'retained')`,
 			w.WorktreeID).Scan(&owner)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -181,11 +181,12 @@ func (s *Store) callerOwnsRWWorktree(ctx context.Context, wts []WorkflowWorktree
 }
 
 // callerOwnsWorktree reports whether wts names at least one worktree
-// that is currently active and owned by ownerAgentID (stories accept mode "ro" or "rw").
+// that is currently active (or retained, BUG-60) and owned by ownerAgentID
+// (stories accept mode "ro" or "rw").
 func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, ownerAgentID string) (bool, error) {
 	for _, w := range wts {
 		var owner string
-		err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id FROM worktrees WHERE id = ? AND state = 'active'`,
+		err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id FROM worktrees WHERE id = ? AND state IN ('active', 'retained')`,
 			w.WorktreeID).Scan(&owner)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue

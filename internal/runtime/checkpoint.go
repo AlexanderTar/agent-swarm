@@ -793,17 +793,18 @@ func (s *Store) verifyGate(ctx context.Context, tx *sql.Tx, it items.Item, run w
 }
 
 // rwWorktree is one read-write worktree share the commit gate checks.
-type rwWorktree struct{ Repo, Path string }
+type rwWorktree struct{ Repo, Path, Branch string }
 
 // rwWorktreesFor returns every currently-held 'rw' worktree reservation for
-// agentID, repo name and worktree path, ordered by repo name for
-// deterministic sha selection when a task shares more than one repo.
+// agentID, repo name, worktree path and branch, ordered by repo name then
+// share order for deterministic sha selection when a task shares more than
+// one tree.
 func (s *Store) rwWorktreesFor(ctx context.Context, tx *sql.Tx, agentID string) ([]rwWorktree, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.name, w.path FROM worktree_reservations wr
+	rows, err := tx.QueryContext(ctx, `SELECT r.name, w.path, COALESCE(w.branch, '') FROM worktree_reservations wr
 		JOIN worktrees w ON w.id = wr.worktree_id
 		JOIN repos r ON r.id = w.repo_id
 		WHERE wr.agent_id = ? AND wr.mode = 'rw' AND wr.released_at IS NULL
-		ORDER BY r.name`, agentID)
+		ORDER BY r.name, wr.rowid`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +812,7 @@ func (s *Store) rwWorktreesFor(ctx context.Context, tx *sql.Tx, agentID string) 
 	var out []rwWorktree
 	for rows.Next() {
 		var w rwWorktree
-		if err := rows.Scan(&w.Repo, &w.Path); err != nil {
+		if err := rows.Scan(&w.Repo, &w.Path, &w.Branch); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -848,12 +849,10 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		return &items.Error{Code: items.CodeBadRequest,
 			Message: "Completed needs git: [{repo, branch, sha, dirty:false}]."}
 	}
-	byRepo := map[string]GitRef{}
 	for _, g := range in.Git {
 		if g.Dirty {
 			return dirtyRepoError(g.Repo)
 		}
-		byRepo[g.Repo] = g
 	}
 	wts, err := s.rwWorktreesFor(ctx, tx, a.ID)
 	if err != nil {
@@ -872,14 +871,14 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		if dirty {
 			return dirtyRepoError(wt.Repo)
 		}
-		g, ok := byRepo[wt.Repo]
-		if !ok {
-			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
-				"Commit your work before completing: no git entry for %s", wt.Repo)}
-		}
 		head, err := s.gitHead(ctx, wt.Path)
 		if err != nil {
 			return err
+		}
+		g, ok := gitEntryFor(in.Git, wt, head)
+		if !ok {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Commit your work before completing: no git entry for %s", wt.Repo)}
 		}
 		if len(g.SHA) < 7 || !strings.HasPrefix(head, strings.ToLower(g.SHA)) {
 			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
@@ -896,6 +895,30 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		}
 	}
 	return nil
+}
+
+// gitEntryFor picks wt's own git entry (BUG-63): two rw trees of one repo
+// each need their own entry, so an entry naming the tree's branch wins, then
+// one whose sha is the tree's HEAD, then the repo's last entry (the one a
+// single-tree checkpoint has always been checked against).
+func gitEntryFor(git []GitRef, wt rwWorktree, head string) (GitRef, bool) {
+	var last GitRef
+	found := false
+	for _, g := range git {
+		if g.Repo != wt.Repo {
+			continue
+		}
+		if wt.Branch != "" && g.Branch == wt.Branch {
+			return g, true
+		}
+		last, found = g, true
+	}
+	for _, g := range git {
+		if g.Repo == wt.Repo && len(g.SHA) >= 7 && strings.HasPrefix(head, strings.ToLower(g.SHA)) {
+			return g, true
+		}
+	}
+	return last, found
 }
 
 // registerArtifactAsDaemon registers a design/research artifact the

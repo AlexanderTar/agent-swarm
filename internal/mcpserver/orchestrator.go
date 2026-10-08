@@ -590,9 +590,10 @@ func worktreeTool(s *Server) ToolDef {
 					map[string]string{"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch, "mode": in.Mode}); err != nil {
 					return nil, err
 				}
-				// Share doesn't mutate the worktrees row (only a reservation
-				// table), so the pre-share `wt` already reflects the true state.
-				out = wt
+				// Share reactivates a retained tree (BUG-60), so re-read it.
+				if out, err = s.RT.Worktree.Get(ctx, in.Worktree); err != nil {
+					return nil, err
+				}
 				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_worktree", &out,
 					func(tx *sql.Tx) error { return nil }); err != nil {
 					return nil, err
@@ -1093,7 +1094,12 @@ func materializeTool(s *Server) ToolDef {
 			if created == nil {
 				created = []string{}
 			}
-			return map[string]any{"root": res.Root, "created": created}, nil
+			out := map[string]any{"root": res.Root, "created": created}
+			if len(res.OpenTasks) > 0 {
+				// BUG-58: the spike stays open until these finish.
+				out["open_tasks"] = res.OpenTasks
+			}
+			return out, nil
 		},
 	}
 }

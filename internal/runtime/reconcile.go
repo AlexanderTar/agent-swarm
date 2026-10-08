@@ -1697,6 +1697,18 @@ func (s *Store) agentCanReceive(ctx context.Context, q txQuerier, agentID string
 	return st.Live() || st == Paused || st == Interrupted, nil
 }
 
+// agentReachable is Send's delivery test: agentCanReceive, or a target
+// owned by an in-flight replacement or queued retry (between sessions, not
+// gone). notifyUnansweredQuestions asks it of a question's asker, so it never
+// nags about a question whose answer Send would refuse (BUG-61).
+func (s *Store) agentReachable(ctx context.Context, q txQuerier, agentID string) (bool, error) {
+	if can, err := s.agentCanReceive(ctx, q, agentID); err != nil || can {
+		return can, err
+	}
+	_, ok, err := s.pendingOperationTx(ctx, q, agentID)
+	return ok, err
+}
+
 // nearestLiveAncestor walks from agentID's parent upward -- the same
 // agentByID/LatestSession ancestor walk pauseTarget uses (pause.go ~888), so
 // a dead intermediate never hides a live ancestor further up -- and returns
@@ -1884,6 +1896,9 @@ func (s *Store) notifyUnansweredQuestions(ctx context.Context) error {
 			}
 			if answered > 0 {
 				return nil
+			}
+			if reachable, err := s.agentReachable(ctx, tx, u.FromAgentID); err != nil || !reachable {
+				return err
 			}
 			_, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: u.ToAgentID,
 				RootItemID: u.RootItemID, ItemID: u.ItemID, ReplyTo: u.ID, Payload: payload})

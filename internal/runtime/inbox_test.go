@@ -88,6 +88,51 @@ func TestSyncRedeliversUntilAcked(t *testing.T) {
 	}
 }
 
+// BUG-64: a stale notice (a paste queued while the agent was busy) can make
+// it ack an id it already acked. That is a harmless no-op, not an error.
+func TestSyncReAckOfAnAckedMessageIsANoOp(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "ReAck", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	first, _ := s.Sync(ctx, ses.ID, nil, 20)
+	id := first.Messages[0].MsgID
+	if _, err := s.Sync(ctx, ses.ID, []string{id}, 20); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Sync(ctx, ses.ID, []string{id}, 20)
+	if err != nil {
+		t.Fatalf("re-ack of an acked message: %v", err)
+	}
+	for _, m := range again.Messages {
+		if m.MsgID == id {
+			t.Fatal("an acked message must not come back")
+		}
+	}
+}
+
+// The hook and wake notice list only messages still pending: once acked, a
+// message never appears in InboxNotice again (BUG-64 guard).
+func TestInboxNoticeOmitsAnAckedMessage(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoticeAck", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	m := enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
+	if n, _ := s.InboxNotice(ctx, a.ID, a.Name, "SPIKE"); !strings.Contains(n, m.ID) {
+		t.Fatalf("a pending message must be listed: %q", n)
+	}
+	if _, err := s.Sync(ctx, ses.ID, nil, 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sync(ctx, ses.ID, []string{m.ID}, 20); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.InboxNotice(ctx, a.ID, a.Name, "SPIKE"); strings.Contains(n, m.ID) {
+		t.Fatalf("an acked message is still listed: %q", n)
+	}
+}
+
 func TestSyncRefusesAckingSomeoneElsesMessage(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

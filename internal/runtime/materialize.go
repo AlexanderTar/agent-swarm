@@ -18,6 +18,9 @@ import (
 type MaterializeResult struct {
 	Root    string   // the new top-level item's key
 	Created []string // every key created, root first
+	// OpenTasks are the spike's own tasks still Ready, In progress or In
+	// review; while any is open the spike stays open (BUG-58).
+	OpenTasks []string
 }
 
 // checkEverySectionApproved is C1/I10 for a spec: every section of the head
@@ -332,8 +335,15 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 		if err := s.copyArtifacts(ctx, tx, out.Root, specID, planID, reportID); err != nil {
 			return err
 		}
-		if _, err := s.Items.TransitionTx(ctx, tx, spikeKey, items.Done, items.Daemon()); err != nil {
+		// BUG-58: a spike with open tasks stays open; reconcileSpike closes it
+		// once they finish, and the orchestrator is told which they are.
+		if out.OpenTasks, err = s.Items.OpenSpikeTasksTx(ctx, tx, spike.ID); err != nil {
 			return err
+		}
+		if len(out.OpenTasks) == 0 {
+			if _, err := s.Items.TransitionTx(ctx, tx, spikeKey, items.Done, items.Daemon()); err != nil {
+				return err
+			}
 		}
 		if err := s.relayMaterialized(ctx, tx, a, spikeKey, out); err != nil {
 			return err

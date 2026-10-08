@@ -361,12 +361,12 @@ func (s *Service) repoPath(ctx context.Context, repoID string) (string, error) {
 }
 
 // Share records agentID's reservation on the worktree. It refuses once the
-// worktree has left the active state (C4). lockFor(wtID) makes this mutually
-// exclusive with Remove for the same worktree: a Share that starts first
-// completes (insert, then Remove's guard sees it and backs off); a Share that
-// starts after a Remove has finished sees the worktree's final state (still
-// 'active' if Remove backed off, or 'retained'/'removed' otherwise) and
-// refuses accordingly. Never an in-between state, because Remove holds the
+// worktree is removed (C4) and reactivates a retained one (BUG-60).
+// lockFor(wtID) makes this mutually exclusive with Remove for the same
+// worktree: a Share that starts first completes (insert, then Remove's guard
+// sees it and backs off); a Share that starts after a Remove has finished
+// sees the worktree's final state (still 'active' if Remove backed off,
+// 'retained' -- reactivated -- or 'removed' -- refused). Never an in-between state, because Remove holds the
 // lock for its whole guard-check-through-delete sequence.
 //
 // This takes lockFor(wtID) before touching the database at all, not inside a
@@ -416,12 +416,8 @@ func (s *Service) ShareTx(ctx context.Context, tx *sql.Tx, wtID, agentID, mode s
 	if mode != "rw" && mode != "ro" {
 		return fmt.Errorf("worktree: unknown share mode %q", mode)
 	}
-	var state string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
+	if err := reactivate(ctx, tx, wtID); err != nil {
 		return err
-	}
-	if state != "active" {
-		return fmt.Errorf("worktree: %s is not active", wtID)
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO worktree_reservations
 		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
@@ -437,18 +433,35 @@ func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	lock := lockFor(wtID)
 	lock.Lock()
 	defer lock.Unlock()
-	var state string
-	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
+	if err := reactivate(ctx, s.DB, wtID); err != nil {
 		return err
-	}
-	if state != "active" {
-		return fmt.Errorf("worktree: %s is not active", wtID)
 	}
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
 		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
 		ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
 		wtID, agentID, mode, db.Millis(s.Now()))
 	return err
+}
+
+// reactivate is Share's state guard: an active tree is shareable, and a
+// retained one (Remove kept it, dirty or unmerged) is still on disk with its
+// owner, so sharing it makes it active again (BUG-60). Anything else refuses.
+func reactivate(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, wtID string) error {
+	var state string
+	if err := q.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
+		return err
+	}
+	switch state {
+	case "active":
+		return nil
+	case "retained":
+		_, err := q.ExecContext(ctx, `UPDATE worktrees SET state = 'active', retained_reason = NULL WHERE id = ?`, wtID)
+		return err
+	}
+	return fmt.Errorf("worktree: %s is not active", wtID)
 }
 
 // Release clears agentID's reservation on the worktree.

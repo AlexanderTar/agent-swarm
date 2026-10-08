@@ -18,6 +18,7 @@ const wakeGap = 5 * time.Second
 const pasteDelay = 20 * time.Second
 const controlPasteDelay = 5 * time.Second
 const pasteRetry = 30 * time.Second
+const repasteCap = 10 * time.Minute
 const undeliverableAfter = 5 * time.Minute
 
 // wakeFailBase/wakeFailCap shape the unified retry backoff for failed wake
@@ -54,6 +55,7 @@ type wakeRow struct {
 	StartedAt                                                    time.Time
 	PaneCommand                                                  string
 	PasteAttempts                                                int // only spaces paste retries; the alert is database-derived (undeliverableAfter)
+	BatchPastes                                                  int // successful pastes of the current batch so far
 	NativeTried                                                  bool
 }
 
@@ -118,6 +120,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 			r.NativeTried = !r.NewestPendingAt.After(t)
 		}
 		r.PasteAttempts, r.LastPasteAttemptAt = s.getPasteAttempts(r.SessionID)
+		r.BatchPastes = s.getBatchPastes(r.SessionID)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -176,8 +179,10 @@ func (s *Store) WakeDue(ctx context.Context) error {
 			}
 		}
 		// After a wake (native or paste) give the agent pasteRetry to respond,
-		// unless a pending immediate message is newer than that wake.
-		cool := pasteRetry
+		// unless a pending immediate message is newer than that wake. Each
+		// further paste of the same batch doubles that wait: a busy TUI
+		// queues every paste and replays them as stale prompts (BUG-64).
+		cool := repasteCooldown(r.BatchPastes)
 		if r.HasControl {
 			cool = wakeGap
 		}
@@ -214,6 +219,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 				s.logf("wake: native wake for %s: %v (fail=%d backoff=%s)", r.AgentName, err, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
 			}
 			if delivered {
+				s.setBatchPastes(r.SessionID, 0)
 				if err := s.markWoken(ctx, r.SessionID, true); err != nil {
 					s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 					s.logf("wake: markWoken for %s: %v (fail=%d backoff=%s)", r.AgentName, err, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
@@ -374,6 +380,11 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")
 	}
+	n := 1
+	if r.LastWakeAt != nil && !r.NewestPendingAt.After(*r.LastWakeAt) {
+		n = r.BatchPastes + 1 // a re-paste of a batch an earlier wake already covered
+	}
+	s.setBatchPastes(r.SessionID, n)
 	if err := s.markWoken(ctx, r.SessionID, false); err != nil {
 		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 		s.logf("wake: markWoken for %s failed (fail=%d backoff=%s)", r.AgentName, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
@@ -481,6 +492,33 @@ func (s *Store) recordPasteAttemptMem(sessionID string, n int, at time.Time) {
 	} else {
 		delete(s.lastPasteAttemptAt, sessionID)
 	}
+}
+
+// repasteCooldown is pasteRetry after a batch's first paste (or a native
+// wake), doubling with each further paste of that batch, capped at repasteCap.
+func repasteCooldown(batchPastes int) time.Duration {
+	if batchPastes <= 1 {
+		return pasteRetry
+	}
+	if batchPastes > 10 {
+		return repasteCap
+	}
+	return min(pasteRetry<<(batchPastes-1), repasteCap)
+}
+
+func (s *Store) setBatchPastes(sessionID string, n int) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.batchPastes == nil {
+		s.batchPastes = map[string]int{}
+	}
+	s.batchPastes[sessionID] = n
+}
+
+func (s *Store) getBatchPastes(sessionID string) int {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	return s.batchPastes[sessionID]
 }
 
 func (s *Store) getPasteAttempts(sessionID string) (int, *time.Time) {
