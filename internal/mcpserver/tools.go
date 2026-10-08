@@ -439,6 +439,10 @@ func (s *Server) agentOut(ctx context.Context, a runtime.Agent) map[string]any {
 		if step, ok, err := s.RT.StepForAgent(ctx, a.ID); err == nil && ok {
 			out["step"] = step
 		}
+		// agents.state stays 'active' through a pause; the session says paused.
+		if ses, err := s.RT.LatestSession(ctx, a.ID); err == nil {
+			out["session_state"] = ses.State
+		}
 	}
 	return out
 }

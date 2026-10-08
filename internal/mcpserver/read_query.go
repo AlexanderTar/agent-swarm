@@ -114,7 +114,7 @@ var readFieldAllowlist = map[string]map[string]bool{
 	},
 	"agent": {
 		"name": true, "kind": true, "model": true, "role": true, "state": true,
-		"role_overrides": true, "parent": true, "step": true,
+		"role_overrides": true, "parent": true, "step": true, "session_state": true,
 	},
 	"checkpoint": {"item": true, "kind": true, "summary": true, "created_at": true},
 	"artifact":   {"artifact_id": true, "kind": true, "revision": true, "sections": true},
