@@ -205,11 +205,16 @@ func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, 
 // spawn, so an over-long one is refused at Start (BUG-55) rather than
 // failing the run after the workflows row is committed.
 func (s *Store) preflightBriefs(ctx context.Context, orch Agent, it items.Item, wf wfRow) error {
-	action := workflow.Next(*it.Workflow, nil, 1, 0)
+	wf.OwnerAgentID = orch.ID
+	spec, err := s.engineSpec(ctx, it, orch.ID)
+	if err != nil {
+		return err
+	}
+	action := workflow.Next(spec, nil, 1, 0)
 	if action.Kind != workflow.ActionSpawn {
 		return nil
 	}
-	step, ok := stepFor(it.Workflow, action.StepID)
+	step, ok := stepFor(&spec, action.StepID)
 	if !ok {
 		return nil
 	}
@@ -580,7 +585,11 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 		return err
 	}
 
-	action := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds)
+	spec, err := s.engineSpec(ctx, it, wf.OwnerAgentID)
+	if err != nil {
+		return err
+	}
+	action := workflow.Next(spec, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds)
 	if action.Kind != workflow.ActionWait {
 		// Every applied action -- including a Spawn that only inserted a
 		// 'waiting' row -- touches updated_at, so recoverWorkflows' 30s
@@ -627,7 +636,7 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 		return err
 	}
 	if slices.ContainsFunc(runs, func(r wfRunRow) bool { return r.State == string(workflow.RunStateFailed) && r.ErrorFatal }) {
-		if a := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds); a.Kind == workflow.ActionEscalate {
+		if a := workflow.Next(spec, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds); a.Kind == workflow.ActionEscalate {
 			return s.applyEscalate(ctx, wf, it, a, runs)
 		}
 	}
@@ -723,7 +732,11 @@ func (s *Store) insertWaitingRun(ctx context.Context, workflowID, stepID string,
 // review worktree the parallel reviewers share. Actually starting an agent
 // is fillWaitingRuns' job, called once by advance after every action.
 func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action workflow.Action) error {
-	step, ok := stepFor(it.Workflow, action.StepID)
+	spec, err := s.engineSpec(ctx, it, wf.OwnerAgentID)
+	if err != nil {
+		return err
+	}
+	step, ok := stepFor(&spec, action.StepID)
 	if !ok {
 		return fmt.Errorf("advance: workflow step %q not found on %s", action.StepID, it.Key)
 	}
@@ -985,7 +998,11 @@ func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *
 // fields are Spawn's), plus the rw worktrees a build step shares. StartWorkflow's
 // preflight calls it too, so the two can't drift.
 func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (BriefInput, []WorkflowWorktree, error) {
-	step, ok := stepFor(it.Workflow, run.StepID)
+	spec, err := s.engineSpec(ctx, it, wf.OwnerAgentID)
+	if err != nil {
+		return BriefInput{}, nil, err
+	}
+	step, ok := stepFor(&spec, run.StepID)
 	if !ok {
 		return BriefInput{}, nil, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
 	}
@@ -995,13 +1012,13 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 	}
 	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
 	if step.Run != "" && run.Round > 1 {
-		findingLines, err := s.roundFindingLines(ctx, wf.ID, it.Workflow, run.StepID, run.Round)
+		findingLines, err := s.roundFindingLines(ctx, wf.ID, &spec, run.StepID, run.Round)
 		if err != nil {
 			return BriefInput{}, nil, err
 		}
 		ctxLines = append(ctxLines, findingLines...)
 	}
-	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
+	brief := BriefForStep(it, spec, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
 
 	var shareRW []WorkflowWorktree
 	if step.Run != "" {
@@ -1032,7 +1049,11 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 }
 
 func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (bool, error) {
-	step, ok := stepFor(it.Workflow, run.StepID)
+	spec, err := s.engineSpec(ctx, it, wf.OwnerAgentID)
+	if err != nil {
+		return false, err
+	}
+	step, ok := stepFor(&spec, run.StepID)
 	if !ok {
 		return false, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
 	}
@@ -1134,7 +1155,11 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 // findings as an assignment update, and releases+removes the finished
 // round's review worktree(s).
 func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, action workflow.Action) error {
-	step, ok := stepFor(it.Workflow, action.StepID)
+	spec, err := s.engineSpec(ctx, it, wf.OwnerAgentID)
+	if err != nil {
+		return err
+	}
+	step, ok := stepFor(&spec, action.StepID)
 	if !ok {
 		return fmt.Errorf("advance: workflow step %q not found on %s", action.StepID, it.Key)
 	}
@@ -1220,7 +1245,7 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 
 	// wf.Round (the pre-bump round, captured before the UPDATE above) is the
 	// finished round whose review(s) triggered this retry.
-	for _, fixStep := range findFixStepsFor(it.Workflow, action.StepID) {
+	for _, fixStep := range findFixStepsFor(&spec, action.StepID) {
 		if err := s.removeReviewWorktrees(ctx, wf, fixStep.ID, wf.Round); err != nil {
 			s.logf("advance: remove review worktree for %s round %d: %v", fixStep.ID, wf.Round, err)
 		}
@@ -1783,6 +1808,12 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		return WorkflowState{}, notWaitingOnYou(it.Key, state)
 	}
 
+	var resumeSpec workflow.Spec
+	if it.Workflow != nil {
+		if resumeSpec, err = s.engineSpec(ctx, it, wf.OwnerAgentID); err != nil {
+			return WorkflowState{}, err
+		}
+	}
 	var bumped bool
 	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		switch decision {
@@ -1792,7 +1823,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				return err
 			}
 			newRound := wf.Round
-			bumped = it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds)
+			bumped = it.Workflow != nil && resumeBumpsRound(resumeSpec, runs, wf.Round, wf.ExtraRounds)
 			if bumped {
 				newRound++
 			}
@@ -2105,4 +2136,39 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 		}
 	}
 	return st, nil
+}
+
+// engineSpec is the workflow spec the engine acts on: it.Workflow, clamped
+// when the owning orchestrator's effective low-token mode is on. It is read
+// each time, so a mid-flight toggle takes effect on the next advance. Every
+// engine read of the spec goes through here.
+func (s *Store) engineSpec(ctx context.Context, it items.Item, ownerAgentID string) (workflow.Spec, error) {
+	if it.Workflow == nil {
+		return workflow.Spec{}, fmt.Errorf("engine: %s has no workflow", it.Key)
+	}
+	owner, err := s.agentByID(ctx, ownerAgentID)
+	if err != nil {
+		return workflow.Spec{}, err
+	}
+	on, err := s.LowTokenFor(ctx, owner)
+	if err != nil {
+		return workflow.Spec{}, err
+	}
+	if on {
+		return workflow.ClampLowToken(*it.Workflow), nil
+	}
+	return *it.Workflow, nil
+}
+
+// finalReviewRoles is the integration's final-review roles for it, clamped
+// like the rest of the spec.
+func (s *Store) finalReviewRoles(ctx context.Context, it items.Item, ownerAgentID string) ([]string, error) {
+	if it.Workflow == nil || it.Workflow.Integration == nil {
+		return nil, nil
+	}
+	spec, err := s.engineSpec(ctx, it, ownerAgentID)
+	if err != nil {
+		return nil, err
+	}
+	return spec.Integration.FinalReview, nil
 }

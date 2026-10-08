@@ -1495,7 +1495,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd) + waiveHint}
 					}
 				}
-				if len(it.Workflow.Integration.FinalReview) > 0 && !waived(it, "final_review") {
+				finalRoles, err := s.finalReviewRoles(ctx, it, a.ID)
+				if err != nil {
+					return err
+				}
+				if len(finalRoles) > 0 && !waived(it, "final_review") {
 					var integratedSHA string
 					for _, g := range in.Git {
 						if g.SHA != "" {
