@@ -133,6 +133,12 @@ func typeFor(key string) (any, bool) {
 		return &paneWire{}, true
 	case "response POST /api/pause-all":
 		return &pauseAllWire{}, true
+	case "response POST /api/agents/{name}/low-token":
+		return &lowTokenAgentWire{}, true
+	case "response POST /api/low-token":
+		return &lowTokenAllWire{}, true
+	case "request POST /api/agents/{name}/low-token", "request POST /api/low-token":
+		return &lowTokenBody{}, true
 	case "response POST /api/notifications/read-all":
 		return &readAllWire{}, true
 	case "request POST /api/spikes":

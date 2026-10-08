@@ -27,6 +27,8 @@
     "started_at": 1789644720000,
     "ended_at": null
   },
+  "low_token": null,
+  "low_token_effective": false,
   "preflight_error": null,
   "created_at": 1789641120000,
   "finished_at": null,

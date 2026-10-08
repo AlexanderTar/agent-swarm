@@ -27,6 +27,8 @@ func (s *Server) spawnRoutes() []route {
 		{"POST", "/api/agents/{name}/terminal", authDaemon, s.terminal},
 		{"POST", "/api/agents/{name}/terminal-opened", authDaemon, s.terminalOpened},
 		{"POST", "/api/pause-all", authDaemon, s.pauseAll},
+		{"POST", "/api/agents/{name}/low-token", authDaemon, s.setAgentLowToken},
+		{"POST", "/api/low-token", authDaemon, s.setAllLowToken},
 	}
 }
 
