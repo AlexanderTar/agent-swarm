@@ -1426,3 +1426,24 @@ func TestClaudeOrchestratorEnablesRemoteControlOnLaunchAndResume(t *testing.T) {
 		}
 	}
 }
+
+// BUG-56: Claude 2.1.292 also draws ✳ (U+2733), and TaskCreate activeForm text
+// makes the spinner label several words ("Running tests…"). Either read as idle
+// before, so progress_deadlock fired on busy sessions.
+func TestClaudeBusySpinnerFrames(t *testing.T) {
+	a := newClaude(testDeps(t))
+	const prompt = "\n───────────\n❯ \n───────────\n"
+	for _, spin := range []string{
+		"✳ Rendering… (2m 3s · ↓ 4.1k tokens)",
+		"✻ Running tests… (12s · esc to interrupt)",
+		"· Pondering… (1s)",
+		"✢ Cogitating… (3s)",
+	} {
+		if a.Idle(spin + prompt) {
+			t.Errorf("%q above an empty prompt must not count as idle", spin)
+		}
+	}
+	if !a.Idle("Done.\n───────────\n\x1b[39m❯ \x1b[2mcheck on s0.1 progress\x1b[0m\n───────────\n") {
+		t.Error("a dim suggestion without a spinner is still idle")
+	}
+}

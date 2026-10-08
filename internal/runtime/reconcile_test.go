@@ -1263,6 +1263,52 @@ func TestProgressDeadlockRelaysAfterFiveMinutesIdle(t *testing.T) {
 	}
 }
 
+// BUG-56: a pane can read idle mid-turn (spinner frame between redraws), so a
+// recent hook call (last_seen_at) must veto the progress_deadlock relay.
+func TestProgressDeadlockWaitsForHookSilence(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway"}); err != nil {
+		t.Fatal(err)
+	}
+	relays := func() int {
+		var n int
+		s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+			AND payload_json LIKE '%"event":"progress_deadlock"%'`, orch.ID).Scan(&n)
+		return n
+	}
+	seen := func(ago time.Duration) {
+		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
+			db.Millis(at.Now().Add(-ago)), wSes.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	at.Advance(6 * time.Minute)
+	seen(time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relays(); n != 0 {
+		t.Fatalf("relay with a hook call 1m ago = %d, want 0", n)
+	}
+	seen(6 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relays(); n != 1 {
+		t.Fatalf("relay with hooks silent for 6m = %d, want 1", n)
+	}
+}
+
 // A checkpoint of any kind — not only "accepted" — counts as an ack: the
 // signal the daemon needs is that the child is alive and talking, not that
 // it led with a specific checkpoint kind.

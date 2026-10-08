@@ -30,8 +30,10 @@ const killCompletedAfter = 60 * time.Second
 const ackTimeout = 2 * time.Minute
 
 // progressDeadlockTimeout is how long a waiting session gets after its most
-// recent checkpoint -- if that checkpoint was "progress" -- before the
-// daemon assumes it's stuck on an unresolved ask and relays to its parent.
+// recent checkpoint -- if that checkpoint was "progress" -- and its most
+// recent hook call (last_seen_at; a pane can read idle between spinner
+// redraws mid-turn) before the daemon assumes it's stuck on an unresolved ask
+// and relays to its parent.
 // See docs/specs/2026-09-22-progress-checkpoint-deadlock-nudge.md.
 const progressDeadlockTimeout = 5 * time.Minute
 
@@ -587,7 +589,8 @@ func (s *Store) checkProgressDeadlock(ctx context.Context, r liveRow) error {
 	}
 	// r.LastCheckpointAt is always set together with r.LastCheckpointID (both
 	// come from the same LEFT JOIN row in liveSessionRows).
-	if s.Now().Sub(*r.LastCheckpointAt) < progressDeadlockTimeout {
+	if s.Now().Sub(*r.LastCheckpointAt) < progressDeadlockTimeout ||
+		s.Now().Sub(r.lastActivity()) < progressDeadlockTimeout {
 		return nil
 	}
 	already, err := s.alreadyRelayedForCheckpoint(ctx, r.LastCheckpointID)
