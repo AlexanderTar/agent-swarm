@@ -15,6 +15,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -174,11 +175,17 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
-		if err := os.Symlink(realConfigSkills, symConfigSkills); err != nil {
+		if err := install.LinkSkillEntries(symConfigSkills, realConfigSkills, s.Role); err != nil {
 			return nil, err
 		}
 	} else if fi.Mode()&os.ModeSymlink != 0 {
-		if cur, err := os.Readlink(symConfigSkills); err != nil || cur != realConfigSkills {
+		if cur, err := os.Readlink(symConfigSkills); err == nil && cur == realConfigSkills {
+			// Legacy whole-dir link to the real root: swap it for per-entry
+			// links (removes only the link, never the real content).
+			if err := install.LinkSkillEntries(symConfigSkills, realConfigSkills, s.Role); err != nil {
+				return nil, err
+			}
+		} else {
 			a.d.Log("agy: %s is a symlink to %q, not the real config/skills; leaving it alone", symConfigSkills, cur)
 		}
 	} else {

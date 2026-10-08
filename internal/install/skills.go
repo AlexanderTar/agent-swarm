@@ -814,3 +814,39 @@ func pruneUnkept(dst string, keep map[string]bool) error {
 		return os.Remove(p)
 	})
 }
+
+// LinkSkillEntries builds dst as a real directory of per-entry symlinks to
+// srcDir's entries (a kind's real skills root), leaving out the swarm-* skills
+// SwarmSkillsFor(role) does not name. A whole-dir symlink at dst (the old
+// layout) is removed first; that drops only the link. A missing srcDir yields
+// an empty dst.
+func LinkSkillEntries(dst, srcDir, role string) error {
+	if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(dst); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	want := map[string]bool{}
+	for _, n := range SwarmSkillsFor(role) {
+		want[n] = true
+	}
+	entries, err := os.ReadDir(srcDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if isSwarmSkill(n) && !want[n] {
+			continue
+		}
+		link := filepath.Join(dst, n)
+		_ = os.Remove(link) // relaunch: re-point a stale link; entries here are only ever our own links
+		if err := os.Symlink(filepath.Join(srcDir, n), link); err != nil {
+			return err
+		}
+	}
+	return nil
+}
