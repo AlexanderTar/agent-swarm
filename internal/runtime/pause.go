@@ -1081,7 +1081,49 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 			s.logf("resume: watchStartup %s: %v", out.Name, err)
 		}
 	})
+	// Undo the subtree pause this session was the root of. This runs only
+	// after the orchestrator's own session exists, so each child's "resumed"
+	// relay reaches it, and never on the PeekIdempotent replay path above.
+	if ses.PauseRoot && ses.PauseScope == "subtree" {
+		s.resumeSubtree(ctx, a.ID)
+	}
 	return out, nil
+}
+
+// resumeSubtree resumes, shallowest first, every descendant of rootAgentID
+// that its subtree pause paused: latest session paused or interrupted with
+// pause_scope 'subtree' and pause_root 0. A descendant that is itself a
+// subtree-pause root owns its subtree, so it and everything under it are left
+// alone; a session-scoped pause belongs to whoever requested it. A child that
+// can't be resumed (no free slot queues it inside Resume) never fails the
+// orchestrator's resume.
+func (s *Store) resumeSubtree(ctx context.Context, rootAgentID string) {
+	ds, err := s.descendantAgents(ctx, rootAgentID)
+	if err != nil {
+		s.logf("resume: descendants of %s: %v", rootAgentID, err)
+		return
+	}
+	pruned := map[string]bool{}
+	for _, d := range slices.Backward(ds) {
+		if pruned[d.ParentAgentID] {
+			pruned[d.ID] = true
+			continue
+		}
+		ses, err := s.LatestSession(ctx, d.ID)
+		if err != nil {
+			continue
+		}
+		if ses.PauseRoot {
+			pruned[d.ID] = true
+			continue
+		}
+		if (ses.State != Paused && ses.State != Interrupted) || ses.PauseScope != "subtree" {
+			continue
+		}
+		if _, err := s.Resume(ctx, d.Name, "", ""); err != nil {
+			s.logf("resume: cascade to %s: %v", d.Name, err)
+		}
+	}
 }
 
 // pauseTarget returns the highest still-live ancestor of a, or a itself if
