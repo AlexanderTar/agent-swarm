@@ -289,12 +289,16 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 		for _, id := range ack {
 			var state string
 			err := tx.QueryRowContext(ctx, `SELECT state FROM messages WHERE id = ? AND to_agent_id = ?`, id, a.ID).Scan(&state)
-			if errors.Is(err, sql.ErrNoRows) || state == "acked" {
+			if errors.Is(err, sql.ErrNoRows) {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: fmt.Sprintf("Unknown message %s.", id)}
 			}
 			if err != nil {
 				return err
+			}
+			// BUG-64: a stale queued notice can make an agent ack an id twice.
+			if state == "acked" {
+				continue
 			}
 			if state == "pending" {
 				late = append(late, id)

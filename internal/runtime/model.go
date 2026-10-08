@@ -420,6 +420,7 @@ type Store struct {
 	dialogDismissed    map[string]bool // sessions whose native question dialog a pause already dismissed
 	pasteAttempts      map[string]int
 	lastPasteAttemptAt map[string]time.Time
+	batchPastes        map[string]int // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)
 	wakeSubs           map[string][]chan string
 	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw
 	// each live session's pane present and correctly owned (§10.6's resolveDead
