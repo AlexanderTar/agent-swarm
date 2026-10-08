@@ -43,6 +43,16 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 			"PreCompact": hook("PreCompact"), "Stop": hook("Stop"),
 		},
 	}
+	// The session cwd (~/.swarm/work/<name>) sits under $HOME, so Claude Code's
+	// ancestor CLAUDE.md walk loads $HOME/.claude/CLAUDE.md as Project memory,
+	// which --setting-sources project,local cannot exclude. claudeMdExcludes
+	// (absolute paths/globs, applied to User, Project and Local memory) can.
+	if c.d.UserHome != "" {
+		cfg["claudeMdExcludes"] = []string{
+			filepath.Join(c.d.UserHome, ".claude", "CLAUDE.md"),
+			filepath.Join(c.d.UserHome, ".claude", "rules", "**"),
+		}
+	}
 	if s.AdvisorModel != "" {
 		cfg["advisorModel"] = s.AdvisorModel
 	}
@@ -76,7 +86,8 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 //     blanking the user's global status line, and wiring every hook event
 //     Swarm intercepts (see settingsJSON).
 //   - --setting-sources project,local: excludes the "user" scope, where
-//     `swarm install` writes ~/.claude/skills and ~/.claude/CLAUDE.md live --
+//     `swarm install` writes ~/.claude/skills and ~/.claude/CLAUDE.md live
+//     (CLAUDE.md is kept out by claudeMdExcludes, see settingsJSON) --
 //     writeProjectSwarmConfig re-admits the swarm skill and MCP config at
 //     project scope instead (see its own comment for why).
 //   - --plugin-dir <dir> (repeated): every user-scope superpowers-marketplace
