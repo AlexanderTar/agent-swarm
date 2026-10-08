@@ -108,7 +108,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeProjectSwarmConfig(s.Cwd, c.d.Home, c.d.UserHome, mcp); err != nil {
+	if err := writeProjectSwarmConfig(s.Cwd, c.d.Home, c.d.UserHome, s.Role, mcp); err != nil {
 		return nil, err
 	}
 	set, err := c.settingsJSON(s)
@@ -170,7 +170,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 // (rather than copying every skill's files, as before) matches WriteSkills'
 // own choice for Claude and avoids re-copying the vendored skills' data on
 // every single spawn -- ui-ux-pro-max alone is 3.1 MB.
-func writeProjectSwarmConfig(cwd, swarmHome, userHome string, mcp []byte) error {
+func writeProjectSwarmConfig(cwd, swarmHome, userHome, role string, mcp []byte) error {
 	if cwd == "" {
 		return nil
 	}
@@ -189,7 +189,7 @@ func writeProjectSwarmConfig(cwd, swarmHome, userHome string, mcp []byte) error 
 	// now swarm-registered name as foreign and would skip it, and a link whose
 	// source was since deleted would dangle. linkUserSkills re-derives them.
 	dropUserSkillLinks(skillsRoot, userHome)
-	if _, err := install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude)); err != nil {
+	if _, err := install.LinkSkillsFor(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude), role); err != nil {
 		return err
 	}
 	linkUserSkills(skillsRoot, userHome)

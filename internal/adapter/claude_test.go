@@ -1447,3 +1447,29 @@ func TestClaudeBusySpinnerFrames(t *testing.T) {
 		t.Error("a dim suggestion without a spinner is still idle")
 	}
 }
+
+// Baseline trim: a coder's skills dir holds swarm, swarm-coder and every
+// non-swarm skill, and no other swarm-* role skill.
+func TestClaudeCoderLaunchLinksOnlyItsRoleSwarmSkills(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	s := claudeSpec(t, d)
+	s.Role = "coder"
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, n := range install.SwarmSkillsFor("coder") {
+		want[n] = true
+	}
+	for _, name := range install.SkillNames() {
+		_, err := os.Lstat(filepath.Join(s.Cwd, ".claude", "skills", name))
+		swarmOwned := strings.HasPrefix(name, "swarm")
+		if swarmOwned && !want[name] && err == nil {
+			t.Errorf("%s linked for a coder", name)
+		}
+		if (!swarmOwned || want[name]) && err != nil {
+			t.Errorf("%s missing for a coder: %v", name, err)
+		}
+	}
+}
