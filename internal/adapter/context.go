@@ -12,6 +12,10 @@ import (
 // contextTailBytes bounds how much of a transcript's end ReadContext scans.
 const contextTailBytes = 256 << 10
 
+// CursorBytesPerToken is the bytes-per-token proxy for cursor, which has no
+// per-turn token source.
+const CursorBytesPerToken = 4
+
 // ContextSample is one end-of-turn reading of a session's context size.
 // Window is nil when the source does not report one.
 type ContextSample struct {
@@ -33,6 +37,14 @@ func ReadContext(kind kinds.AgentKind, transcriptPath string) (ContextSample, bo
 		parse = codexContextLine
 	case kinds.Agy:
 		parse = agyContextLine
+	case kinds.Muse:
+		parse = museContextLine
+	case kinds.Cursor:
+		st, err := os.Stat(transcriptPath)
+		if err != nil || st.Size() == 0 {
+			return ContextSample{}, false
+		}
+		return ContextSample{Tokens: int(st.Size() / CursorBytesPerToken)}, true
 	default:
 		return ContextSample{}, false
 	}
@@ -129,4 +141,21 @@ func agyContextLine(line []byte) (ContextSample, bool) {
 		return ContextSample{}, false
 	}
 	return ContextSample{Tokens: l.Input + l.Read}, true
+}
+
+func museContextLine(line []byte) (ContextSample, bool) {
+	var l struct {
+		Payload struct {
+			Event struct {
+				Kind  string `json:"kind"`
+				Usage struct {
+					Input int `json:"input_tokens"`
+				} `json:"usage"`
+			} `json:"event"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(line, &l) != nil || l.Payload.Event.Kind != "model_completed" || l.Payload.Event.Usage.Input == 0 {
+		return ContextSample{}, false
+	}
+	return ContextSample{Tokens: l.Payload.Event.Usage.Input}, true
 }

@@ -93,6 +93,9 @@ type HookInput struct {
 	Effort string
 	// LastAssistantMessage is the Stop hook's final reply text (Claude only); empty when not sent.
 	LastAssistantMessage string
+	// ContextTokens/ContextWindow are an exact context reading a hook carried
+	// (cursor preCompact only); zero when absent.
+	ContextTokens, ContextWindow int
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.

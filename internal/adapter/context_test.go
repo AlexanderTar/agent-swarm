@@ -41,3 +41,36 @@ func TestReadContext(t *testing.T) {
 		})
 	}
 }
+
+func TestReadContextMuseAndCursor(t *testing.T) {
+	got, ok := ReadContext(kinds.Muse, "testdata/context/muse-session.jsonl")
+	if !ok || got.Tokens != 157990 || got.Window != nil {
+		t.Fatalf("muse = %+v, %v; want 157990 nil", got, ok)
+	}
+	// cursor has no per-turn token source: transcript bytes / CursorBytesPerToken.
+	got, ok = ReadContext(kinds.Cursor, "testdata/context/cursor-transcript.jsonl")
+	if !ok || got.Tokens != 100000 || got.Window != nil {
+		t.Fatalf("cursor = %+v, %v; want 100000 nil", got, ok)
+	}
+	if _, ok := ReadContext(kinds.Cursor, "testdata/context/nope.jsonl"); ok {
+		t.Fatal("missing cursor transcript must not sample")
+	}
+}
+
+func TestCursorParseHookKeepsPreCompactTokens(t *testing.T) {
+	raw, err := os.ReadFile("testdata/context/cursor-precompact.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := (&Cursor{}).ParseHook("preCompact", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ContextTokens != 180000 || in.ContextWindow != 200000 {
+		t.Fatalf("tokens/window = %d/%d, want 180000/200000", in.ContextTokens, in.ContextWindow)
+	}
+	other, _ := (&Cursor{}).ParseHook("stop", []byte(`{"conversation_id":"c1"}`))
+	if other.ContextTokens != 0 || other.ContextWindow != 0 {
+		t.Fatalf("non-preCompact hook carried context: %+v", other)
+	}
+}
