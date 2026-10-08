@@ -928,6 +928,18 @@ func TestClaudeHookOutputShapes(t *testing.T) {
 	if string(stop) != `{"decision":"block","reason":"R"}` {
 		t.Errorf("stop output = %s", stop)
 	}
+	title, _ := a.HookOutput("SessionStart", HookDecision{SessionTitle: "n"})
+	if string(title) != `{"hookSpecificOutput":{"hookEventName":"SessionStart","sessionTitle":"n"}}` {
+		t.Errorf("title-only output = %s", title)
+	}
+	both, _ := a.HookOutput("UserPromptSubmit", HookDecision{Context: "T", SessionTitle: "n"})
+	if string(both) != `{"hookSpecificOutput":{"additionalContext":"T","hookEventName":"UserPromptSubmit","sessionTitle":"n"}}` {
+		t.Errorf("context+title output = %s", both)
+	}
+	other, _ := a.HookOutput("PostToolUse", HookDecision{SessionTitle: "n"})
+	if len(other) != 0 {
+		t.Errorf("sessionTitle is emitted for SessionStart/UserPromptSubmit only, got %s", other)
+	}
 	empty, _ := a.HookOutput("PostToolUse", HookDecision{})
 	if len(empty) != 0 {
 		t.Errorf("an empty decision prints nothing, got %s", empty)

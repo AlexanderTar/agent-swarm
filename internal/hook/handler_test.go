@@ -86,8 +86,40 @@ func TestSessionStartInjectsTheRichInboxNoticeOnlyWhenTheInboxHasMessages(t *tes
 	h2, ses2 := seed(t, 0, runtime.Running)
 	out2, _ := h2.Handle(context.Background(), runtime.Claude, "SessionStart", ses2,
 		[]byte(`{"session_id":"p1","source":"startup"}`))
-	if len(out2) != 0 {
-		t.Fatalf("an empty inbox prints nothing, got %s", out2)
+	if got := contextOf(t, out2); got != "" {
+		t.Fatalf("an empty inbox adds no context, got %q", got)
+	}
+}
+
+func titleOf(t *testing.T, out []byte) string {
+	t.Helper()
+	var m struct {
+		H struct {
+			Title string `json:"sessionTitle"`
+		} `json:"hookSpecificOutput"`
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m.H.Title
+}
+
+// TASK-769: claude's session title follows the Swarm agent name via the hook,
+// even when the decision carries nothing else.
+func TestClaudeSessionStartAndPromptCarryTheAgentNameAsSessionTitle(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit"} {
+		out, err := h.Handle(context.Background(), runtime.Claude, ev, ses,
+			[]byte(`{"session_id":"p1","source":"startup","prompt":"hi"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := titleOf(t, out); got != "login-form-coder" {
+			t.Errorf("%s sessionTitle = %q, want login-form-coder (out=%s)", ev, got, out)
+		}
 	}
 }
 
@@ -1669,7 +1701,7 @@ func TestUserPromptSubmitSkipsDoubleDeliveryForDaemonPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 0 {
+	if contextOf(t, out) != "" {
 		t.Fatalf("daemon prompt got a stacked context: %q", contextOf(t, out))
 	}
 }

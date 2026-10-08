@@ -71,6 +71,10 @@ type HookDecision struct {
 	// tool_input; Claude renders it as permissionDecision "ask" (never "allow",
 	// which would skip the dialog). Other adapters ignore it.
 	UpdatedInput json.RawMessage
+	// SessionTitle, set on SessionStart and UserPromptSubmit, renames the
+	// agent's session (claude hookSpecificOutput.sessionTitle; idempotent).
+	// Other adapters ignore it.
+	SessionTitle string
 }
 
 // HookInput is what ParseHook extracts from an agent's hook stdin.
