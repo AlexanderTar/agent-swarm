@@ -35,8 +35,8 @@ func TestPlaceholderAgentName(t *testing.T) {
 	cases := []struct {
 		name, title, want string
 	}{
-		{"first four words kebabed", "Fix the login redirect loop that happens after SSO sign-in…", "fix-the-login-redirect"},
-		{"short title uses every word", "Fix bug", "fix-bug"},
+		{"first four words kebabed plus role", "Fix the login redirect loop that happens after SSO sign-in…", "fix-the-login-redirect-orchestrator"},
+		{"short title uses every word", "Fix bug", "fix-bug-orchestrator"},
 		{"empty title falls back to orchestrator", "", "orchestrator"},
 		{"unkebabable title falls back to orchestrator", "!!! ???", "orchestrator"},
 	}

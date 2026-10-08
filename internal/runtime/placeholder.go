@@ -38,7 +38,8 @@ func placeholderTitle(request string) string {
 }
 
 // placeholderAgentName is spec Locked Decision 2's agent-name candidate for
-// a placeholder title: the kebab of its first four words, falling back to
+// a placeholder title: the kebab of its first four words plus "-orchestrator"
+// (the same role suffix defaultName gives), falling back to
 // "orchestrator" when that kebab is empty. The result is already kebab-form,
 // ready to pass as resolveName's "generated" argument.
 func placeholderAgentName(title string) string {
@@ -50,5 +51,5 @@ func placeholderAgentName(title string) string {
 	if err != nil || slug == "" {
 		return "orchestrator"
 	}
-	return slug
+	return slug + "-orchestrator"
 }

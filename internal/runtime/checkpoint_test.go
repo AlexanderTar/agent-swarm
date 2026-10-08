@@ -2708,7 +2708,7 @@ func TestIntegratedNeedsFinalReviewPass(t *testing.T) {
 func TestAcceptedTitleRenamesAGeneratedOrchestrator(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
-	a, ses, _ := titlePendingSpike(t, s) // generated name "fix-the-login-redirect"
+	a, ses, _ := titlePendingSpike(t, s) // generated name "fix-the-login-redirect-orchestrator"
 	old := a.Name
 	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting",
 		Title: "Fix login redirect loop"}); err != nil {
@@ -2718,19 +2718,19 @@ func TestAcceptedTitleRenamesAGeneratedOrchestrator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "fix-login-redirect-loop" {
+	if got.Name != "fix-login-redirect-loop-orchestrator" {
 		t.Fatalf("name = %q", got.Name)
 	}
-	if !slices.Contains(tm.sessRenamed, old+"|fix-login-redirect-loop") {
+	if !slices.Contains(tm.sessRenamed, old+"|fix-login-redirect-loop-orchestrator") {
 		t.Fatalf("tmux renames = %v", tm.sessRenamed)
 	}
 	ses2, _ := s.LatestSession(ctx, a.ID)
-	if ses2.TmuxName != "fix-login-redirect-loop" {
+	if ses2.TmuxName != "fix-login-redirect-loop-orchestrator" {
 		t.Fatalf("tmux_name = %q", ses2.TmuxName)
 	}
 	var n int
 	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type = 'agent.changed'
-		AND json_extract(payload_json,'$.name') = 'fix-login-redirect-loop'`).Scan(&n)
+		AND json_extract(payload_json,'$.name') = 'fix-login-redirect-loop-orchestrator'`).Scan(&n)
 	if n == 0 {
 		t.Fatal("no agent.changed for the new name")
 	}
@@ -2756,14 +2756,14 @@ func TestAcceptedTitleNeverRenamesATypedName(t *testing.T) {
 func TestAcceptedTitleRenameGetsASuffixOnCollision(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	if _, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "fix login redirect loop", Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
+	if _, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "fix login redirect loop orchestrator", Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
 		t.Fatal(err)
 	}
 	a, ses, _ := titlePendingSpike(t, s)
 	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "s", Title: "Fix login redirect loop"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.AgentByID(ctx, a.ID); got.Name != "fix-login-redirect-loop-2" {
+	if got, _ := s.AgentByID(ctx, a.ID); got.Name != "fix-login-redirect-loop-orchestrator-2" {
 		t.Fatalf("name = %q", got.Name)
 	}
 }
@@ -2781,7 +2781,7 @@ func TestMessagesToTheRenamedOrchestratorReachIt(t *testing.T) {
 	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "s", Title: "Fix login redirect loop"}); err != nil {
 		t.Fatal(err)
 	}
-	id, err := s.Send(ctx, childSes, "fix-login-redirect-loop", "finding", "hi", "", "")
+	id, err := s.Send(ctx, childSes, "fix-login-redirect-loop-orchestrator", "finding", "hi", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2793,8 +2793,8 @@ func TestMessagesToTheRenamedOrchestratorReachIt(t *testing.T) {
 	if _, err := s.Send(ctx, childSes, "parent", "finding", "via alias", "", ""); err != nil {
 		t.Fatalf("parent alias after rename: %v", err)
 	}
-	if _, err := s.Send(ctx, childSes, "fix-the-login-redirect", "finding", "old name", "", ""); err == nil ||
-		err.Error() != "No agent fix-the-login-redirect." {
+	if _, err := s.Send(ctx, childSes, "fix-the-login-redirect-orchestrator", "finding", "old name", "", ""); err == nil ||
+		err.Error() != "No agent fix-the-login-redirect-orchestrator." {
 		t.Fatalf("old name err = %v", err)
 	}
 }

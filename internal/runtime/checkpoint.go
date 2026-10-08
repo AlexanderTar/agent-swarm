@@ -229,10 +229,10 @@ func (s *Store) applyPendingTitle(ctx context.Context, tx *sql.Tx, it items.Item
 }
 
 // renameGeneratedAgentTx gives an orchestrator whose name was generated from the
-// request (title_pending was 1) the kebab of the title the agent just chose.
-// It returns "" when nothing was renamed.
+// request (title_pending was 1) the default orchestrator name for the title the
+// agent just chose. It returns "" when nothing was renamed.
 func (s *Store) renameGeneratedAgentTx(ctx context.Context, tx *sql.Tx, a Agent, title string) (string, error) {
-	base, err := ids.KebabMax(title, 24)
+	base, err := defaultName(RoleOrchestrator, title)
 	if err != nil || base == "" || base == a.Name {
 		return "", nil
 	}

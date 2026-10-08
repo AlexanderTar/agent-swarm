@@ -556,8 +556,8 @@ func TestStartSpikeWithNoNameInfersTitleAndAgentNameFromRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Name != "fix-the-login-redirect" {
-		t.Fatalf("agent name = %q, want fix-the-login-redirect", a.Name)
+	if a.Name != "fix-the-login-redirect-orchestrator" {
+		t.Fatalf("agent name = %q, want fix-the-login-redirect-orchestrator", a.Name)
 	}
 	it, err := s.Items.Get(ctx, key)
 	if err != nil {
