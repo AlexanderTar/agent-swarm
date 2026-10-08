@@ -37,6 +37,13 @@ final class MockDaemonClientTests: XCTestCase {
         ])
     }
 
+    func testRecordsLowTokenCalls() async throws {
+        let mock = MockDaemonClient()
+        _ = try await mock.setLowToken(agent: "orch", on: true)
+        _ = try await mock.setLowTokenAll(on: false)
+        XCTAssertEqual(mock.calls, ["low-token:orch:on", "low-token-all:off"])
+    }
+
     func testFailuresAndSettingsSave() async throws {
         let mock = MockDaemonClient()
         mock.failNext = .unreachable

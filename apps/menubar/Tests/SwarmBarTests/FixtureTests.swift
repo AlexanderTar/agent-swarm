@@ -35,6 +35,21 @@ final class FixtureTests: XCTestCase {
         XCTAssertTrue(empty.agents.isEmpty && empty.requests.isEmpty && empty.usage.isEmpty)
     }
 
+    func testLowTokenFieldsDecodeAndSettingsRoundTrip() throws {
+        let s: StateResponse = try Fixture.decode("state.json")
+        XCTAssertEqual(s.agents[0].lowToken, true)
+        XCTAssertEqual(s.agents[0].lowTokenEffective, true)
+        XCTAssertNil(s.agents[0].children[0].lowToken, "null override decodes to nil")
+        let agent: AgentNode = try Fixture.decode("agent.json")
+        XCTAssertNil(agent.lowToken)
+        XCTAssertEqual(agent.lowTokenEffective, false)
+        XCTAssertTrue(s.settings.lowTokenMode)
+        let settings: Settings = try Fixture.decode("settings.json")
+        XCTAssertTrue(settings.lowTokenMode)
+        let encoded = try Fixture.json(SwarmJSON.encode(settings)) as? NSDictionary
+        XCTAssertEqual(encoded?["low_token_mode"] as? Bool, true)
+    }
+
     func testNativePendingDecodesAndDefaultsFalse() throws {
         let json = #"{"id":"r","kind":"approve_plan","item_key":"K","item_title":"T","prompt":"p","state":"open","created_at":0}"#
         let absent = try SwarmJSON.decode(SwarmRequest.self, from: Data(json.utf8))

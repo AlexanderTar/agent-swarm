@@ -106,11 +106,16 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var merge: MergeProgress?
     /// Worker overrides stored on an orchestrator (`role_overrides`, keyed by role slug); nil when none.
     public var roleOverrides: [String: RoleDefault]?
+    /// Per-orchestrator low-token override (`low_token`, null = inherit the default) and the mode
+    /// actually in force (`low_token_effective`). The UI reads only the effective value; nil = older daemon.
+    public var lowToken: Bool?
+    public var lowTokenEffective: Bool?
     public var children: [AgentNode]
     public var finished: [AgentNode]
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, model, effort, role, step, state, session, replacement, children, finished, progress, merge
+        case lowToken = "low_token", lowTokenEffective = "low_token_effective"
         case roleOverrides = "role_overrides"
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
         case parentName = "parent_name", preflightError = "preflight_error"
@@ -124,8 +129,10 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
                 replacement: AgentReplacement? = nil, preflightError: String? = nil,
                 progress: AgentProgress? = nil, merge: MergeProgress? = nil,
                 roleOverrides: [String: RoleDefault]? = nil,
+                lowToken: Bool? = nil, lowTokenEffective: Bool? = nil,
                 children: [AgentNode] = [], finished: [AgentNode] = []) {
         self.roleOverrides = roleOverrides
+        self.lowToken = lowToken; self.lowTokenEffective = lowTokenEffective
         self.id = id; self.name = name; self.kind = kind; self.model = model; self.effort = effort
         self.role = role; self.step = step
         self.itemKey = itemKey; self.itemTitle = itemTitle; self.rootKey = rootKey
@@ -397,9 +404,13 @@ public struct Settings: Codable, Sendable, Equatable {
     /// own global CLAUDE.md/AGENTS.md files (docs/specs/2026-09-22-isolated-mcp-and-custom-instructions.md).
     /// "" = none configured.
     public var instructions: String = ""
+    /// Default low-token mode for new orchestrators (`low_token_mode`). Changed through the
+    /// low-token routes, never `saveSettings`, but always encoded so a save doesn't drop it.
+    public var lowTokenMode: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case roles, notifications, instructions
+        case lowTokenMode = "low_token_mode"
         case fallbackDefault = "fallback_default"
         case enabledAgents = "enabled_agents"
         case maxConcurrentAgents = "max_concurrent_agents"
@@ -449,7 +460,8 @@ public struct Settings: Codable, Sendable, Equatable {
                 maxConcurrentAgents: Int = 4,
                 scanExcludes: [String] = [], scanIntervalSec: Int = 21600,
                 menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120,
-                instructions: String = "") {
+                instructions: String = "", lowTokenMode: Bool = false) {
+        self.lowTokenMode = lowTokenMode
         self.enabledAgents = enabledAgents
         self.roles = roles
         self.fallbackDefault = fallbackDefault
@@ -480,6 +492,7 @@ public struct Settings: Codable, Sendable, Equatable {
         usagePollSec = try c.decode(Int.self, forKey: .usagePollSec)
         pauseDeadlineSec = try c.decode(Int.self, forKey: .pauseDeadlineSec)
         instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+        lowTokenMode = try c.decodeIfPresent(Bool.self, forKey: .lowTokenMode) ?? false
     }
 
     /// Hand-written (like `RoleDefault.encode`) so an empty `instructions` -- the common case --
@@ -498,6 +511,7 @@ public struct Settings: Codable, Sendable, Equatable {
         try c.encode(usagePollSec, forKey: .usagePollSec)
         try c.encode(pauseDeadlineSec, forKey: .pauseDeadlineSec)
         if !instructions.isEmpty { try c.encode(instructions, forKey: .instructions) }
+        try c.encode(lowTokenMode, forKey: .lowTokenMode)
     }
 
     public func pref(_ level: NotificationLevel) -> NotifyPref {

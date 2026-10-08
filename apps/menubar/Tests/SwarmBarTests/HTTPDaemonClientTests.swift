@@ -26,6 +26,25 @@ final class HTTPDaemonClientTests: XCTestCase {
         XCTAssertNil(seen[0].headers["X-Swarm-Via"])
     }
 
+    func testLowTokenRoutesAndBodies() async throws {
+        let session = StubURLProtocol.install { req in
+            switch req.url!.path {
+            case "/api/agents/orch/low-token": return (200, try Fixture.data("low-token-agent.json"))
+            case "/api/low-token": return (200, try Fixture.data("low-token-all.json"))
+            default: return (204, Data())
+            }
+        }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        let one = try await client.setLowToken(agent: "orch", on: true)
+        let all = try await client.setLowTokenAll(on: false)
+        XCTAssertEqual([one, all], [3, 5])
+        let seen = StubURLProtocol.seen
+        XCTAssertEqual(seen.map { "\($0.method) \($0.path)" }, ["POST /api/agents/orch/low-token", "POST /api/low-token"])
+        XCTAssertEqual(try Fixture.json(Data(seen[0].body.utf8)), try Fixture.json(Fixture.data("low-token-request.json")))
+        XCTAssertEqual(try Fixture.json(Data(seen[1].body.utf8)), ["on": false] as NSDictionary)
+        XCTAssertTrue(seen.allSatisfy { $0.headers["X-Swarm-Via"] == "menubar" })
+    }
+
     func testMutationsUseTheSpecRoutesAndBodies() async throws {
         let session = StubURLProtocol.install { req in
             switch req.url!.path {
