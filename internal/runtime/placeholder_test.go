@@ -37,6 +37,8 @@ func TestPlaceholderAgentName(t *testing.T) {
 	}{
 		{"first four words kebabed plus role", "Fix the login redirect loop that happens after SSO sign-in…", "fix-the-login-redirect-orchestrator"},
 		{"short title uses every word", "Fix bug", "fix-bug-orchestrator"},
+		{"long words cap the slug at 24 like defaultName", "Internationalization reconfiguration decentralization incomprehensibilities",
+			"internationalization-orchestrator"},
 		{"empty title falls back to orchestrator", "", "orchestrator"},
 		{"unkebabable title falls back to orchestrator", "!!! ???", "orchestrator"},
 	}
