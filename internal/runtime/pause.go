@@ -999,6 +999,12 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 		}); err != nil {
 			return Agent{}, err
 		}
+		// The children's own resumes queue behind this one, and
+		// ResumeOperations starts the oldest first, so the orchestrator
+		// still starts before them.
+		if ses.PauseRoot && ses.PauseScope == "subtree" {
+			s.resumeSubtree(ctx, a.ID)
+		}
 		return a, nil
 	}
 	resume := ses.ProviderSessionID != ""
@@ -1111,6 +1117,7 @@ func (s *Store) resumeSubtree(ctx context.Context, rootAgentID string) {
 		}
 		ses, err := s.LatestSession(ctx, d.ID)
 		if err != nil {
+			s.logf("resume: latest session of %s: %v", d.Name, err)
 			continue
 		}
 		if ses.PauseRoot {

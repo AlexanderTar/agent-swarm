@@ -2473,3 +2473,73 @@ func TestResumeCascadeQueuesAChildWhenThePoolIsFull(t *testing.T) {
 		t.Fatalf("child resume op phase = %s, want queued", phase)
 	}
 }
+
+// TASK-755: with the pool full, resuming a subtree-pause root queues it and
+// queues each child its pause paused, the orchestrator's op first; freed
+// slots then start the orchestrator before its children.
+func TestQueuedResumeCascadesToSubtreePausedChildren(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w1, _ := worker(t, s)
+	w2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "second"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A live sibling holds the only slot.
+	if _, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "holder"}}); err != nil {
+		t.Fatal(err)
+	}
+	orchOld := markPaused(t, s, orch.ID, "subtree", true)
+	old1 := markPaused(t, s, w1.ID, "subtree", false)
+	old2 := markPaused(t, s, w2.ID, "subtree", false)
+	setLimits(t, s, 1)
+
+	if _, err := s.Resume(ctx, orch.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	opRow := func(sesID string) int64 {
+		t.Helper()
+		var phase string
+		var row int64
+		if err := s.DB.QueryRow(`SELECT phase, rowid FROM agent_operations WHERE request_key = ?`,
+			"resume:"+sesID).Scan(&phase, &row); err != nil {
+			t.Fatalf("resume of session %s not queued: %v", sesID, err)
+		}
+		if phase != "queued" {
+			t.Fatalf("resume op for session %s phase = %s, want queued", sesID, phase)
+		}
+		return row
+	}
+	orchOp := opRow(orchOld.ID)
+	for _, old := range []Session{old1, old2} {
+		if row := opRow(old.ID); row < orchOp {
+			t.Fatalf("child op for session %s queued before the orchestrator's", old.ID)
+		}
+	}
+
+	setLimits(t, s, 4)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	orchRow := sessionRowid(t, s, orch.ID)
+	if ses, _ := s.LatestSession(ctx, orch.ID); ses.ID == orchOld.ID || !ses.State.Live() {
+		t.Fatalf("orchestrator not resumed: session %s state %s", ses.ID, ses.State)
+	}
+	for _, c := range []struct {
+		a   Agent
+		old Session
+	}{{w1, old1}, {w2, old2}} {
+		ses, err := s.LatestSession(ctx, c.a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ses.ID == c.old.ID || !ses.State.Live() {
+			t.Fatalf("%s not resumed: session %s state %s", c.a.Name, ses.ID, ses.State)
+		}
+		if row := sessionRowid(t, s, c.a.ID); row < orchRow {
+			t.Fatalf("%s resumed before the orchestrator", c.a.Name)
+		}
+	}
+}
