@@ -613,3 +613,26 @@ func TestResolveReportsFailuresPerKey(t *testing.T) {
 		t.Fatalf("missing --by: code = %d", code)
 	}
 }
+
+func TestResolveAbandonUnmerged(t *testing.T) {
+	srv, got, home := stubDaemon(t, map[string]string{
+		"GET /api/items/BUG-13":   `{"item":{"key":"BUG-13","revision":4}}`,
+		"PATCH /api/items/BUG-13": `{"key":"BUG-13","status":"done","resolved_by":"CHORE-27"}`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	code := run([]string{"resolve", "--home", home, "--url", srv.URL, "--by", "CHORE-27", "--abandon-unmerged", "BUG-13"}, &out, &out)
+	if code != 0 {
+		t.Fatalf("code = %d: %s", code, out.String())
+	}
+	var patches []string
+	for _, c := range *got {
+		if c.method == "PATCH" {
+			patches = append(patches, c.path+" "+c.body)
+		}
+	}
+	want := []string{`/api/items/BUG-13 {"abandon_unmerged":true,"resolved_by":"CHORE-27","revision":4,"status":"done"}`}
+	if !slices.Equal(patches, want) {
+		t.Fatalf("patches = %q", patches)
+	}
+}

@@ -1549,3 +1549,31 @@ func TestResolvedByLandedCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedByAbandonUnmerged(t *testing.T) {
+	s, bug, chore := resolveFixture(t)
+	seedCheckpoint(t, s.DB, bug, "integrated", 1, later(s), `[{"repo":"agent-swarm","branch":"b","sha":"112d3dfc"}]`)
+	s.CheckLanded = func(context.Context, *sql.Tx, items.Item, []byte) error { return errors.New("112d3df is not on main") }
+	by := chore.Key
+	cur := mustGet(t, s, bug.Key)
+	if _, err := s.Update(ctx, bug.Key, items.Patch{Status: ptr(items.Done), ResolvedBy: &by, Revision: cur.Revision}, user); err == nil {
+		t.Fatal("unmerged close was not refused")
+	}
+	if _, err := s.Update(ctx, bug.Key, items.Patch{Status: ptr(items.Done), ResolvedBy: &by, AbandonUnmerged: true, Revision: cur.Revision}, user); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, bug.Key, items.Done)
+	evs, err := s.Events.After(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Type == events.ItemResolved {
+			if !strings.Contains(string(ev.Payload), `"abandon_unmerged":"true"`) {
+				t.Fatalf("payload = %s", ev.Payload)
+			}
+			return
+		}
+	}
+	t.Fatal("no item.resolved event")
+}

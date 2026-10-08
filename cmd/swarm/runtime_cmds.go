@@ -206,14 +206,16 @@ func cmdStart(args []string, stdout, stderr io.Writer) int {
 // key is reported and the rest still run; the exit code is 1 if any failed.
 func cmdResolve(args []string, stdout, stderr io.Writer) int {
 	var by *string
+	var abandon *bool
 	c, rest, code, done := connect("resolve", args, stderr, func(fs *flag.FlagSet) {
 		by = fs.String("by", "", "key of the Done root that resolved them")
+		abandon = fs.Bool("abandon-unmerged", false, "close even if a root's integrated code never reached its default branch")
 	})
 	if done {
 		return code
 	}
 	if *by == "" || len(rest) == 0 {
-		fmt.Fprint(stderr, "Usage: swarm resolve --by KEY2 KEY...\n")
+		fmt.Fprint(stderr, "Usage: swarm resolve --by KEY2 [--abandon-unmerged] KEY...\n")
 		return 2
 	}
 	code = 0
@@ -226,8 +228,11 @@ func cmdResolve(args []string, stdout, stderr io.Writer) int {
 		}
 		err := c.do("GET", "/api/items/"+key, nil, &got)
 		if err == nil {
-			err = c.do("PATCH", "/api/items/"+key,
-				map[string]any{"status": "done", "resolved_by": *by, "revision": got.Item.Revision}, nil)
+			body := map[string]any{"status": "done", "resolved_by": *by, "revision": got.Item.Revision}
+			if *abandon {
+				body["abandon_unmerged"] = true
+			}
+			err = c.do("PATCH", "/api/items/"+key, body, nil)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", key, err)

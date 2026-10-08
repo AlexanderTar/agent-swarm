@@ -1039,7 +1039,7 @@ func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {
 // (docs/specs/2026-10-03-resolved-by-close.md); the side effects are cancel's.
 func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by Actor) (Item, error) {
 	rest := p
-	rest.ResolvedBy, rest.Status, rest.Revision = nil, nil, 0
+	rest.ResolvedBy, rest.Status, rest.Revision, rest.AbandonUnmerged = nil, nil, 0, false
 	if !reflect.DeepEqual(rest, Patch{}) {
 		return Item{}, errf(CodeBadRequest, "resolved_by can't be combined with other changes.")
 	}
@@ -1070,7 +1070,7 @@ func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by 
 	case target.Status != Done:
 		return Item{}, deny("%s must be Done before it can resolve %s; it is %s.", target.Key, it.Key, StatusLabel(target.Status))
 	}
-	if s.CheckLanded != nil {
+	if s.CheckLanded != nil && !p.AbandonUnmerged {
 		st, err := s.rootState(ctx, tx, it)
 		if err != nil {
 			return Item{}, err
@@ -1098,8 +1098,11 @@ func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by 
 	if by.AgentID != "" {
 		actor = by.AgentID
 	}
-	if _, err := s.Events.Append(ctx, tx, events.ItemResolved, map[string]string{"key": it.Key,
-		"root_key": it.RootKey, "resolved_by": target.Key, "actor": actor}); err != nil {
+	payload := map[string]string{"key": it.Key, "root_key": it.RootKey, "resolved_by": target.Key, "actor": actor}
+	if p.AbandonUnmerged {
+		payload["abandon_unmerged"] = "true"
+	}
+	if _, err := s.Events.Append(ctx, tx, events.ItemResolved, payload); err != nil {
 		return Item{}, err
 	}
 	if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {

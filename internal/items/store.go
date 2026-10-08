@@ -88,7 +88,9 @@ type Patch struct {
 	Status     *Status
 	// ResolvedBy (a Done root's key) closes a Draft/Ready root as Done; needs Status Done.
 	ResolvedBy *string
-	Waive      []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
+	// AbandonUnmerged acknowledges closing a ResolvedBy root whose integrated code never landed.
+	AbandonUnmerged bool
+	Waive           []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
 	// OverrideReason forces Status past the normal rules (orchestrator only); a
 	// Status the normal check allows still moves plainly, with no override recorded.
 	OverrideReason string
