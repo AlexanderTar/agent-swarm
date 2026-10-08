@@ -171,3 +171,43 @@ func TestClaudeLaunchSkipsUnlinkableUserSkillEntry(t *testing.T) {
 		t.Fatalf("good skill -> %s, want %s", target, want)
 	}
 }
+
+// A relaunch in the same cwd re-derives user links each pass: a stale user
+// link whose source is gone is dropped, and a user link left at a name swarm
+// now owns yields to the swarm skill, while the other user links and swarm
+// links stay correct.
+func TestClaudeRelaunchRefreshesUserSkillLinks(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	keep := seedUserSkill(t, d.UserHome, "keep-skill", "# Keep\n")
+	gone := seedUserSkill(t, d.UserHome, "gone-skill", "# Gone\n")
+	s := claudeSpec(t, d)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(s.Cwd, ".claude", "skills")
+	// An earlier launch linked a user skill at a name swarm has since registered.
+	if err := os.Remove(filepath.Join(root, "swarm")); err != nil {
+		t.Fatal(err)
+	}
+	impostor := seedUserSkill(t, d.UserHome, "swarm", "# Impostor\n")
+	if err := os.Symlink(impostor, filepath.Join(root, "swarm")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
+	if _, err := newClaude(d).Resume(s); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Readlink(filepath.Join(root, "swarm")); got != filepath.Join(d.Home, "skills", "swarm") {
+		t.Fatalf("swarm -> %s, want the swarm-owned skill", got)
+	}
+	if got, _ := os.Readlink(filepath.Join(root, "keep-skill")); got != keep {
+		t.Fatalf("keep-skill -> %s, want %s", got, keep)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "gone-skill")); !os.IsNotExist(err) {
+		t.Fatalf("stale user link survived the relaunch: %v", err)
+	}
+}

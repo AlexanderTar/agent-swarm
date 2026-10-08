@@ -185,10 +185,34 @@ func writeProjectSwarmConfig(cwd, swarmHome, userHome string, mcp []byte) error 
 	if err := adoptPreExistingSkills(skillsRoot); err != nil {
 		return err
 	}
+	// Drop last launch's user links first: LinkSkills reads a user link at a
+	// now swarm-registered name as foreign and would skip it, and a link whose
+	// source was since deleted would dangle. linkUserSkills re-derives them.
+	dropUserSkillLinks(skillsRoot, userHome)
 	if _, err := install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude)); err != nil {
 		return err
 	}
 	return linkUserSkills(skillsRoot, userHome)
+}
+
+// dropUserSkillLinks removes every symlink under skillsRoot that points into
+// userHome/.claude/skills, i.e. the links a previous linkUserSkills wrote.
+// Best-effort, like linkUserSkills.
+func dropUserSkillLinks(skillsRoot, userHome string) {
+	if userHome == "" {
+		return
+	}
+	userSkills := filepath.Join(userHome, ".claude", "skills")
+	entries, err := os.ReadDir(skillsRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		p := filepath.Join(skillsRoot, e.Name())
+		if target, err := os.Readlink(p); err == nil && filepath.Dir(target) == userSkills {
+			_ = os.Remove(p)
+		}
+	}
 }
 
 // linkUserSkills symlinks each non-swarm-owned entry of
