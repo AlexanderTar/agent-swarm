@@ -178,6 +178,7 @@ type Session struct {
 	StartedAt                              time.Time
 	EndedAt                                *time.Time
 	FailureText                            *string // full pane text failSession captured; nil unless this session failed
+	ContextTokens, ContextWindow           *int    // last end-of-turn context sample; nil until sampled / when the window is unknown
 }
 
 type GitRef struct {

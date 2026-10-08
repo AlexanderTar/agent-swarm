@@ -2351,14 +2351,17 @@ func (s *Store) LatestSession(ctx context.Context, agentID string) (Session, err
 	var lastSeen, lastWake, started, ended, pauseDeadline sql.NullInt64
 	var exitCode sql.NullInt64
 	var failureText sql.NullString
+	var ctxTokens, ctxWindow sql.NullInt64
 	err := s.DB.QueryRowContext(ctx, `SELECT
 		id, agent_id, attempt, generation, COALESCE(provider_session_id, ''), token_hash, tmux_name,
 		cwd, cwd_kind, state, waiting, COALESCE(pause_scope, ''), pause_root, pause_deadline_at, stop_blocks,
-		needs_compaction_notice, last_seen_at, last_wake_at, exit_code, failure_text, started_at, ended_at
+		needs_compaction_notice, last_seen_at, last_wake_at, exit_code, failure_text, started_at, ended_at,
+		context_tokens, context_window
 		FROM sessions WHERE agent_id = ? ORDER BY generation DESC, attempt DESC LIMIT 1`, agentID).Scan(
 		&ses.ID, &ses.AgentID, &ses.Attempt, &ses.Generation, &ses.ProviderSessionID, &ses.TokenHash,
 		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &pauseRoot, &pauseDeadline,
 		&ses.StopBlocks, &needsCompaction, &lastSeen, &lastWake, &exitCode, &failureText, &started, &ended,
+		&ctxTokens, &ctxWindow,
 	)
 	if err != nil {
 		return ses, err
@@ -2385,6 +2388,14 @@ func (s *Store) LatestSession(ctx context.Context, agentID string) (Session, err
 	}
 	if failureText.Valid {
 		ses.FailureText = &failureText.String
+	}
+	if ctxTokens.Valid {
+		n := int(ctxTokens.Int64)
+		ses.ContextTokens = &n
+	}
+	if ctxWindow.Valid {
+		n := int(ctxWindow.Int64)
+		ses.ContextWindow = &n
 	}
 	if started.Valid {
 		ses.StartedAt = db.FromMillis(started.Int64)
