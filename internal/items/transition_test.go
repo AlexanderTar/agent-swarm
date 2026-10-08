@@ -1,7 +1,10 @@
 package items_test
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -1501,5 +1504,48 @@ func TestCrossRootEditsRefusedOnOpenRoot(t *testing.T) {
 		if _, err := s.Update(ctx, story.Key, items.Patch{Brief: ptr("x"), Revision: story.Revision}, orch); err == nil {
 			t.Errorf("%s: update accepted", from)
 		}
+	}
+}
+
+func TestResolvedByLandedCheck(t *testing.T) {
+	const git = `[{"repo":"agent-swarm","branch":"bug-9/integration","sha":"112d3dfc"}]`
+	for _, c := range []struct {
+		name    string
+		git     string // "" seeds no integrated checkpoint
+		hookErr error
+		refused bool
+		called  bool
+	}{
+		{"unmerged sha refused", git, errors.New("112d3df is not on agent-swarm's main"), true, true},
+		{"landed sha resolves", git, nil, false, true},
+		{"no integrated checkpoint resolves", "", errors.New("must not run"), false, false},
+		{"integrated with no git resolves", "[]", errors.New("must not run"), false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, bug, chore := resolveFixture(t)
+			if c.git != "" {
+				seedCheckpoint(t, s.DB, bug, "integrated", 1, later(s), c.git)
+			}
+			var called bool
+			s.CheckLanded = func(_ context.Context, _ *sql.Tx, root items.Item, gotGit []byte) error {
+				called = true
+				if root.Key != bug.Key || string(gotGit) != c.git {
+					t.Fatalf("hook got %s %s", root.Key, gotGit)
+				}
+				return c.hookErr
+			}
+			err := resolve(s, bug, chore.Key, user)
+			if (err != nil) != c.refused || called != c.called {
+				t.Fatalf("err = %v, hook called = %v", err, called)
+			}
+			if c.refused {
+				if !strings.Contains(err.Error(), "112d3df") {
+					t.Fatalf("err = %v", err)
+				}
+				if mustGet(t, s, bug.Key).Status == items.Done {
+					t.Fatal("refused root went Done")
+				}
+			}
+		})
 	}
 }

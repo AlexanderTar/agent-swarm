@@ -40,6 +40,10 @@ type Store struct {
 	// rootID is that item's id; the hook finishes every agent still on the
 	// root. nil does nothing, same as the other hooks.
 	RootDone func(ctx context.Context, tx *sql.Tx, rootID string) error
+	// CheckLanded refuses a resolved-by close of root when its newest integrated
+	// checkpoint's git refs (git_json) never reached the repo's default branch.
+	// nil allows every close.
+	CheckLanded func(ctx context.Context, tx *sql.Tx, root Item, gitJSON []byte) error
 	// StoryReadyForReview fires when every child task of a story is Done and the
 	// story has an after_tasks workflow. It relays story_ready_for_review to the
 	// orchestrator.

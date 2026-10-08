@@ -1070,6 +1070,17 @@ func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by 
 	case target.Status != Done:
 		return Item{}, deny("%s must be Done before it can resolve %s; it is %s.", target.Key, it.Key, StatusLabel(target.Status))
 	}
+	if s.CheckLanded != nil {
+		st, err := s.rootState(ctx, tx, it)
+		if err != nil {
+			return Item{}, err
+		}
+		if st.ckpID != "" && !gitRefsEmpty(st.ckpGit) {
+			if err := s.CheckLanded(ctx, tx, it, []byte(st.ckpGit)); err != nil {
+				return Item{}, err
+			}
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE items SET resolved_by_id = ? WHERE id = ?`, target.ID, it.ID); err != nil {
 		return Item{}, err
 	}
@@ -1095,4 +1106,10 @@ func (s *Store) resolveTx(ctx context.Context, tx *sql.Tx, it Item, p Patch, by 
 		return Item{}, err
 	}
 	return s.getByID(ctx, tx, it.ID)
+}
+
+// gitRefsEmpty reports whether an integrated checkpoint's git_json lists no refs.
+func gitRefsEmpty(gitJSON string) bool {
+	var refs []json.RawMessage
+	return json.Unmarshal([]byte(gitJSON), &refs) != nil || len(refs) == 0
 }
