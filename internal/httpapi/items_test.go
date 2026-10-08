@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -531,5 +532,34 @@ func TestPatchItemResolvedBy(t *testing.T) {
 	got := decode[itemJSON](t, b)
 	if status != 200 || got.Status != "done" || got.ResolvedBy != chore.Key {
 		t.Fatalf("resolve = %d %s", status, b)
+	}
+}
+
+func TestPatchItemResolvedByAbandonUnmerged(t *testing.T) {
+	e := newEnv(t)
+	bug := e.create(map[string]any{"type": "bug", "title": "Broken"})
+	chore := e.create(map[string]any{"type": "chore", "title": "Fix"})
+	if _, err := e.items.DB.Exec(`UPDATE items SET status = 'done' WHERE key = ?`, chore.Key); err != nil {
+		t.Fatal(err)
+	}
+	e.items.CheckLanded = func(context.Context, *sql.Tx, items.Item, []byte) error {
+		return &items.Error{Code: items.CodeBadRequest, Message: "112d3df is not on main"}
+	}
+	if _, err := e.items.DB.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.items.DB.Exec(`INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, git_json, created_at)
+		SELECT 'ckp_x', 'ses_x', 'agt_x', id, 'integrated', 1, 's', '[{"repo":"r","branch":"b","sha":"112d3dfc"}]', 5 FROM items WHERE key = ?`, bug.Key); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"status": "done", "resolved_by": chore.Key, "revision": bug.Revision}
+	status, b := e.api("PATCH", "/api/items/"+bug.Key, body)
+	if status == 200 || !strings.Contains(string(b), "112d3df is not on main") {
+		t.Fatalf("unacknowledged = %d %s", status, b)
+	}
+	body["abandon_unmerged"] = true
+	status, b = e.api("PATCH", "/api/items/"+bug.Key, body)
+	if got := decode[itemJSON](t, b); status != 200 || got.Status != "done" {
+		t.Fatalf("acknowledged = %d %s", status, b)
 	}
 }

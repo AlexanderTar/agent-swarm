@@ -776,3 +776,42 @@ func TestFinishingResolvesIntegratedReposByPath(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckLanded(t *testing.T) {
+	const gitJSON = `[{"repo":"proj","branch":"swarm/chore-1","sha":"3f9c2ab0000"}]`
+	anc := func(ref string) string { return "git -C /tmp/proj merge-base --is-ancestor 3f9c2ab0000 " + ref }
+	notAnc := execx.Result{Err: errors.New("git: exit status 1: ")}
+	cases := []struct {
+		name string
+		git  string
+		gh   map[string]execx.Result
+		want string // "" = landed
+	}{
+		{"on local main", gitJSON, map[string]execx.Result{anc("main"): {}}, ""},
+		{"only on origin/main", gitJSON, map[string]execx.Result{anc("main"): notAnc, anc("origin/main"): {}}, ""},
+		{"on neither", gitJSON, map[string]execx.Result{anc("main"): notAnc, anc("origin/main"): notAnc},
+			"CHORE-1 can't be resolved: proj's 3f9c2ab (branch swarm/chore-1) is not on main, so its integrated code never landed. " +
+				"Merge it, or close anyway with abandon_unmerged (swarm resolve --abandon-unmerged)."},
+		{"repo not in catalog", `[{"repo":"nowhere","branch":"b","sha":"3f9c2ab0000"}]`, map[string]execx.Result{}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, _, _, key, _ := finishFixture(t, "", "")
+			fakeGH(s, c.gh)
+			it, err := s.Items.Get(context.Background(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			it.Key = "CHORE-1"
+			tx, err := s.DB.BeginTx(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			err = s.CheckLanded(context.Background(), tx, it, []byte(c.git))
+			if c.want == "" && err != nil || c.want != "" && (err == nil || err.Error() != c.want) {
+				t.Fatalf("err = %v\nwant  %q", err, c.want)
+			}
+		})
+	}
+}
