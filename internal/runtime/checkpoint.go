@@ -1399,6 +1399,10 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if newName != "" {
 						renameFrom, renameTo, renameSes = a.Name, newName, ses.ID
+						if _, err := tx.ExecContext(ctx, `UPDATE sessions SET pending_name = ? WHERE id = ?`,
+							s.pendingNameFor(a.Kind, newName), ses.ID); err != nil {
+							return err
+						}
 						a.Name = newName
 					}
 				} else {
