@@ -1562,3 +1562,32 @@ func TestOrchestratorSkillDocumentsResolvedBy(t *testing.T) {
 		}
 	}
 }
+
+func TestSwarmSkillsFor(t *testing.T) {
+	eq := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+	if got := install.SwarmSkillsFor("coder"); !eq(got, []string{"swarm", "swarm-coder"}) {
+		t.Errorf("coder = %v", got)
+	}
+	if got := install.SwarmSkillsFor("ui_reviewer"); !eq(got, []string{"swarm", "swarm-ui-reviewer"}) {
+		t.Errorf("ui_reviewer = %v", got)
+	}
+	var all []string
+	for _, n := range install.SkillNames() {
+		if strings.HasPrefix(n, "swarm") {
+			all = append(all, n)
+		}
+	}
+	if got := install.SwarmSkillsFor("orchestrator"); !eq(got, all) {
+		t.Errorf("orchestrator = %v, want %v", got, all)
+	}
+}

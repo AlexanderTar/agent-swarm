@@ -67,7 +67,7 @@ func sanitizeOneLine(s string) string {
 	return strings.TrimSpace(whitespaceRun.ReplaceAllString(b.String(), " "))
 }
 
-const maxInboxNotice = 6000
+const maxInboxNotice = 2000
 const maxItemSummary = 400
 
 // InboxItem is one pending message's one-line preview.
@@ -105,6 +105,12 @@ func truncateRunes(s string, n int) (string, bool) {
 // only newlines in the output come from this template, never from message
 // content -- that is what keeps the anti-injection property intact.
 func Inbox(items []InboxItem, more int, name, key string) string {
+	return InboxWith(items, more, name, key, true)
+}
+
+// InboxWith is Inbox with the injection trailer optional: only the first
+// notice of a session needs it.
+func InboxWith(items []InboxItem, more int, name, key string, trailer bool) string {
 	name, key = sanitizeOneLine(name), sanitizeOneLine(key)
 	header := fmt.Sprintf(inboxHeaderFmt, name, key, len(items)+more)
 	shown := items
@@ -131,7 +137,10 @@ func Inbox(items []InboxItem, more int, name, key string) string {
 		if len(lines) > 0 {
 			body += "\n" + strings.Join(lines, "\n")
 		}
-		body += tail + "\n\n" + inboxTrailer
+		body += tail
+		if trailer {
+			body += "\n\n" + inboxTrailer
+		}
 		if len(body) <= maxInboxNotice || len(shown) == 0 {
 			return body
 		}

@@ -119,7 +119,7 @@ func TestInboxNoticeOmitsAnAckedMessage(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoticeAck", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	m := enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
-	if n, _ := s.InboxNotice(ctx, a.ID, a.Name, "SPIKE"); !strings.Contains(n, m.ID) {
+	if n, _ := s.InboxNotice(ctx, "ses_test", a.ID, a.Name, "SPIKE"); !strings.Contains(n, m.ID) {
 		t.Fatalf("a pending message must be listed: %q", n)
 	}
 	if _, err := s.Sync(ctx, ses.ID, nil, 20); err != nil {
@@ -128,7 +128,7 @@ func TestInboxNoticeOmitsAnAckedMessage(t *testing.T) {
 	if _, err := s.Sync(ctx, ses.ID, []string{m.ID}, 20); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := s.InboxNotice(ctx, a.ID, a.Name, "SPIKE"); strings.Contains(n, m.ID) {
+	if n, _ := s.InboxNotice(ctx, "ses_test", a.ID, a.Name, "SPIKE"); strings.Contains(n, m.ID) {
 		t.Fatalf("an acked message is still listed: %q", n)
 	}
 }
@@ -958,7 +958,7 @@ func TestInboxNoticeListsPendingMessagesOldestFirst(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"first question here?"}`, 1)
 	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"second question here?"}`, 1)
-	notice, err := s.InboxNotice(ctx, a.ID, a.Name, "TASK-42")
+	notice, err := s.InboxNotice(ctx, "ses_test", a.ID, a.Name, "TASK-42")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,7 +994,7 @@ func TestInboxNoticeCapsAtEightItemsWithMoreCount(t *testing.T) {
 	if more != 2 {
 		t.Errorf("pendingInboxItems moreCount = %d, want 2", more)
 	}
-	notice, err := s.InboxNotice(ctx, a.ID, a.Name, "TASK-42")
+	notice, err := s.InboxNotice(ctx, "ses_test", a.ID, a.Name, "TASK-42")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1254,4 +1254,25 @@ func TestFindingAcceptsAnUnvalidatedReplyTo(t *testing.T) {
 		t.Fatalf("finding with arbitrary reply_to = %v, want accepted", err)
 	}
 	_ = w
+}
+
+// The prompt-injection trailer costs ~600 chars: only the first notice of a
+// session carries it.
+func TestInboxNoticeTrailerOnlyOnTheFirstNoticePerSession(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "TrailerOnce", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
+	first, _ := s.InboxNotice(ctx, "ses_a", a.ID, a.Name, "SPIKE")
+	second, _ := s.InboxNotice(ctx, "ses_a", a.ID, a.Name, "SPIKE")
+	other, _ := s.InboxNotice(ctx, "ses_b", a.ID, a.Name, "SPIKE")
+	if !strings.Contains(first, inboxTrailer) {
+		t.Error("first notice of a session must carry the trailer")
+	}
+	if strings.Contains(second, inboxTrailer) {
+		t.Error("second notice of the same session must not carry the trailer")
+	}
+	if !strings.Contains(other, inboxTrailer) {
+		t.Error("a new session starts with the trailer again")
+	}
 }

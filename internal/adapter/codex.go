@@ -16,6 +16,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -189,7 +190,11 @@ func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
 			}
 		}
 	}
-	for _, rel := range []string{"hooks.json", "skills", "plugins"} {
+	if err := install.LinkSkillEntries(filepath.Join(codexHome, "skills"),
+		filepath.Join(c.d.UserHome, ".codex", "skills"), s.Role); err != nil {
+		return nil, err
+	}
+	for _, rel := range []string{"hooks.json", "plugins"} {
 		if err := symlinkIfExists(
 			filepath.Join(c.d.UserHome, ".codex", rel),
 			filepath.Join(codexHome, rel),

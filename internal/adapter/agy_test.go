@@ -690,12 +690,14 @@ func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
 	}
 	agyHome := l.Env["HOME"]
 
-	skillsLink := filepath.Join(agyHome, ".gemini", "config", "skills")
-	if fi, err := os.Lstat(skillsLink); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected %s to be a symlink into the real config/skills: %v", skillsLink, err)
+	// Per-entry links (baseline trim): the dir is real, each skill a link into
+	// the real config/skills.
+	skillsDir2 := filepath.Join(agyHome, ".gemini", "config", "skills")
+	if fi, err := os.Lstat(skillsDir2); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("expected %s to be a real directory of per-entry links: %v", skillsDir2, err)
 	}
-	if target, err := os.Readlink(skillsLink); err != nil || target != filepath.Join(d.UserHome, ".gemini", "config", "skills") {
-		t.Fatalf("skills symlink target = %q, %v", target, err)
+	if target, err := os.Readlink(filepath.Join(skillsDir2, "swarm")); err != nil || target != filepath.Join(d.UserHome, ".gemini", "config", "skills", "swarm") {
+		t.Fatalf("swarm skill link target = %q, %v", target, err)
 	}
 	gotSkill, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "config", "skills", "swarm", "SKILL.md"))
 	if err != nil {
@@ -769,11 +771,8 @@ func TestAgySetupEnvLinksConfigSkillsAndMigratedMarker(t *testing.T) {
 	realSkills := filepath.Join(d.UserHome, ".gemini", "config", "skills")
 	linkSkills := filepath.Join(agyHome, ".gemini", "config", "skills")
 	fi, err := os.Lstat(linkSkills)
-	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected %s to be a symlink: %v", linkSkills, err)
-	}
-	if target, err := os.Readlink(linkSkills); err != nil || target != realSkills {
-		t.Fatalf("symlink target = %q, %v, want %q", target, err, realSkills)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("expected %s to be a real directory of per-entry links: %v", linkSkills, err)
 	}
 	if _, err := os.Stat(realSkills); err != nil {
 		t.Fatalf("expected the real skills dir created when missing: %v", err)

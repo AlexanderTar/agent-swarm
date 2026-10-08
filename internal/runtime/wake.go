@@ -182,7 +182,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < cool && !r.NewestPendingAt.After(*r.LastWakeAt) {
 			continue
 		}
-		notice, err := s.InboxNotice(ctx, r.AgentID, r.AgentName, r.ItemKey)
+		notice, err := s.InboxNotice(ctx, r.SessionID, r.AgentID, r.AgentName, r.ItemKey)
 		if err != nil {
 			s.logf("wake: inbox notice for %s: %v", r.AgentName, err)
 			notice = PendingNotice(r.Pending, r.AgentName, r.ItemKey) // fallback, never block a wake on a render error

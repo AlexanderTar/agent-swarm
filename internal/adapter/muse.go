@@ -318,8 +318,8 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := install.LinkSkills(filepath.Join(museDir, "skills"), skillsHome,
-		install.SkillLinkMode(install.KindMuse)); err != nil {
+	if _, err := install.LinkSkillsFor(filepath.Join(museDir, "skills"), skillsHome,
+		install.SkillLinkMode(install.KindMuse), s.Role); err != nil {
 		return nil, err
 	}
 

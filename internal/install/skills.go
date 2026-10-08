@@ -410,8 +410,18 @@ func copyTreeSynced(src, dst string) (bool, error) {
 // action (WriteSkills, LinkSkills), false for the daemon's own automatic
 // startup refresh (RefreshSkillLinks).
 func linkSkills(root, skillsHome string, mode LinkMode, adopt bool) (changed, skipped []string, err error) {
+	return linkSkillsKeep(root, skillsHome, mode, adopt, nil)
+}
+
+// linkSkillsKeep is linkSkills limited to the names keep admits (nil admits
+// all). A swarm-owned entry for an admitted-out name is pruned like a retired
+// one, so a launch dir never keeps another role's swarm skill.
+func linkSkillsKeep(root, skillsHome string, mode LinkMode, adopt bool, keep func(string) bool) (changed, skipped []string, err error) {
 	registered := make(map[string]bool, len(SkillNames()))
 	for _, name := range SkillNames() {
+		if keep != nil && !keep(name) {
+			continue
+		}
 		registered[name] = true
 		dst := filepath.Join(root, name)
 		src := filepath.Join(skillsHome, name)
@@ -477,6 +487,36 @@ func pruneUnregistered(root, skillsHome string, registered map[string]bool, adop
 // marker or a byte-matching pre-A1 directory is adopted (adopt=true).
 func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error) {
 	_, skipped, err = linkSkills(root, skillsHome, mode, true)
+	return skipped, err
+}
+
+// SwarmSkillsFor is the swarm-* skills an agent of role needs: "swarm" plus
+// "swarm-<role>" (underscores become dashes) for a worker, every swarm-* skill
+// for an orchestrator, and also for an empty role, where nothing is known to
+// trim. Names the registry lacks are dropped.
+func SwarmSkillsFor(role string) []string {
+	var out []string
+	for _, n := range SkillNames() {
+		if !isSwarmSkill(n) {
+			continue
+		}
+		if role == "" || role == "orchestrator" || n == "swarm" || n == "swarm-"+strings.ReplaceAll(role, "_", "-") {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func isSwarmSkill(name string) bool { return name == "swarm" || strings.HasPrefix(name, "swarm-") }
+
+// LinkSkillsFor is LinkSkills for one agent: every registered non-swarm skill
+// plus only SwarmSkillsFor(role).
+func LinkSkillsFor(root, skillsHome string, mode LinkMode, role string) (skipped []string, err error) {
+	want := map[string]bool{}
+	for _, n := range SwarmSkillsFor(role) {
+		want[n] = true
+	}
+	_, skipped, err = linkSkillsKeep(root, skillsHome, mode, true, func(n string) bool { return !isSwarmSkill(n) || want[n] })
 	return skipped, err
 }
 
@@ -773,4 +813,40 @@ func pruneUnkept(dst string, keep map[string]bool) error {
 		}
 		return os.Remove(p)
 	})
+}
+
+// LinkSkillEntries builds dst as a real directory of per-entry symlinks to
+// srcDir's entries (a kind's real skills root), leaving out the swarm-* skills
+// SwarmSkillsFor(role) does not name. A whole-dir symlink at dst (the old
+// layout) is removed first; that drops only the link. A missing srcDir yields
+// an empty dst.
+func LinkSkillEntries(dst, srcDir, role string) error {
+	if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(dst); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	want := map[string]bool{}
+	for _, n := range SwarmSkillsFor(role) {
+		want[n] = true
+	}
+	entries, err := os.ReadDir(srcDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if isSwarmSkill(n) && !want[n] {
+			continue
+		}
+		link := filepath.Join(dst, n)
+		_ = os.Remove(link) // relaunch: re-point a stale link; entries here are only ever our own links
+		if err := os.Symlink(filepath.Join(srcDir, n), link); err != nil {
+			return err
+		}
+	}
+	return nil
 }
