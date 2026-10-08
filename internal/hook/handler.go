@@ -701,7 +701,7 @@ func (h *Handler) inboxNoticeOrFallback(ctx context.Context, s *sessionRow) stri
 	if h.RT == nil {
 		return runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey)
 	}
-	notice, err := h.RT.InboxNotice(ctx, s.AgentID, s.AgentName, s.ItemKey)
+	notice, err := h.RT.InboxNotice(ctx, s.ID, s.AgentID, s.AgentName, s.ItemKey)
 	if err != nil {
 		h.logf("hook: inbox notice for %s: %v", s.ID, err)
 		return runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey)

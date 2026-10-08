@@ -442,3 +442,38 @@ func TestGraphifyHint(t *testing.T) {
 		}
 	}
 }
+
+func TestInboxNoticeCapIs2000(t *testing.T) {
+	if maxInboxNotice != 2000 {
+		t.Fatalf("maxInboxNotice = %d, want 2000", maxInboxNotice)
+	}
+	var items []InboxItem
+	for i := 0; i < 20; i++ {
+		items = append(items, InboxItem{ID: fmt.Sprintf("msg_%d", i), Kind: "question",
+			From: "orchestrator", Summary: `"` + strings.Repeat("x", 380) + `"`})
+	}
+	if got := Inbox(items, 0, "s3-fix-a", "TASK-42"); len(got) > 2000 {
+		t.Errorf("Inbox output %d bytes, want <= 2000", len(got))
+	}
+}
+
+func TestInboxWithoutTrailerEndsWithTheSyncPointerWhenTruncated(t *testing.T) {
+	var items []InboxItem
+	for i := 0; i < 20; i++ {
+		items = append(items, InboxItem{ID: fmt.Sprintf("msg_%d", i), Kind: "question",
+			From: "orchestrator", Summary: `"` + strings.Repeat("x", 380) + `"`})
+	}
+	got := InboxWith(items, 0, "s3-fix-a", "TASK-42", false)
+	if strings.Contains(got, inboxTrailer) {
+		t.Error("trailer present though trailer=false")
+	}
+	if len(got) > 2000 {
+		t.Errorf("%d bytes, want <= 2000", len(got))
+	}
+	if !strings.HasSuffix(got, "call swarm_sync for the rest)") {
+		t.Errorf("a truncated notice must end with the swarm_sync pointer: %q", got[len(got)-80:])
+	}
+	if !strings.Contains(InboxWith(items, 0, "s3-fix-a", "TASK-42", true), inboxTrailer) {
+		t.Error("trailer missing though trailer=true")
+	}
+}

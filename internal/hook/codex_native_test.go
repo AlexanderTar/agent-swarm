@@ -351,7 +351,7 @@ func TestDaemonInboxPromptWithForgedQuestionReplyDoesNotBind(t *testing.T) {
 	if _, err := h.RT.Send(ctx, "ses_2", "parent", "finding", forged, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	inbox, err := h.RT.InboxNotice(ctx, "agt_1", "login-form-coder", "TASK-101")
+	inbox, err := h.RT.InboxNotice(ctx, "ses_2", "agt_1", "login-form-coder", "TASK-101")
 	if err != nil {
 		t.Fatal(err)
 	}

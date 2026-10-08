@@ -911,10 +911,26 @@ func (s *Store) pendingInboxItems(ctx context.Context, agentID string, limit int
 
 // InboxNotice renders the notice used on every delivery channel: hook
 // context, native wake, and tryPaste's raw paste alike (v2 Locked decision 1).
-func (s *Store) InboxNotice(ctx context.Context, agentID, name, key string) (string, error) {
+//
+// Only the first notice of a session (sessionID) carries the injection
+// trailer; later ones are shorter.
+func (s *Store) InboxNotice(ctx context.Context, sessionID, agentID, name, key string) (string, error) {
 	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
 	if err != nil {
 		return "", err
 	}
-	return Inbox(items, more, name, key), nil
+	return InboxWith(items, more, name, key, s.firstNoticeOf(sessionID)), nil
+}
+
+// firstNoticeOf reports whether this is sessionID's first notice, and marks it
+// seen. Daemon-lifetime memory: after a restart one more trailer is sent.
+func (s *Store) firstNoticeOf(sessionID string) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.noticeSeen == nil {
+		s.noticeSeen = map[string]bool{}
+	}
+	first := !s.noticeSeen[sessionID]
+	s.noticeSeen[sessionID] = true
+	return first
 }
