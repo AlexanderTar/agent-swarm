@@ -612,21 +612,17 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 		// once DrainQueue admits it — only a target whose latest session is
 		// terminal (or that has finished/been acknowledged) is genuinely
 		// unreachable, hence agentCanReceive rather than a bare live check.
-		can, err := s.agentCanReceive(ctx, tx, target.ID)
+		// A target owned by an in-flight replacement or a queued retry is
+		// between sessions, not gone: the message waits in its (canonical,
+		// agent-keyed) inbox for the successor instead of being refused at
+		// the stopping gap.
+		reachable, err := s.agentReachable(ctx, tx, target.ID)
 		if err != nil {
 			return err
 		}
-		if !can {
-			// A target owned by an in-flight replacement or a queued retry
-			// is between sessions, not gone: the message waits in its
-			// (canonical, agent-keyed) inbox for the successor instead of
-			// being refused at the stopping gap.
-			if _, ok, herr := s.pendingOperationTx(ctx, tx, target.ID); herr != nil {
-				return herr
-			} else if !ok {
-				return &items.Error{Code: items.CodeBadRequest,
-					Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
-			}
+		if !reachable {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
 		}
 		var correlationID string
 		switch kind {

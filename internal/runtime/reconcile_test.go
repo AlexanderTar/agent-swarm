@@ -3246,7 +3246,9 @@ func TestUnansweredQuestionRelaysOnceToTheOrchestrator(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	orch, w, wSes := worker(t, s)
-	_ = tm
+	// The asker stays live (its pane is up) so the reminder is still owed.
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
 	q, _ := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
 	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
 	at.Advance(9 * time.Minute)
@@ -3272,6 +3274,31 @@ func TestUnansweredQuestionRelaysOnceToTheOrchestrator(t *testing.T) {
 	if to != orch.ID || !strings.Contains(payload, `"event":"question_unanswered"`) || !strings.Contains(payload, w.Name) ||
 		!strings.Contains(payload, `"item":"TASK-1"`) {
 		t.Fatalf("to=%s payload=%s", to, payload)
+	}
+}
+
+// BUG-61: a question whose asker's session has ended can never be answered
+// (Send refuses a reply to an agent that can't receive), so the daemon must
+// not nag the orchestrator about it with a question_unanswered relay.
+func TestUnansweredQuestionOfAnEndedAskerNeverRelays(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, _ := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
+	if err := s.SetSessionState(ctx, wSes.ID, Completed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", q, ""); err == nil {
+		t.Fatal("answer to an ended asker was accepted; this test assumes Send refuses it")
+	}
+	at.Advance(11 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relaysWithReplyTo(t, s, q); n != 0 {
+		t.Fatalf("question_unanswered relays for an ended asker = %d, want 0", n)
 	}
 }
 
