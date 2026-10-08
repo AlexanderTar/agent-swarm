@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
@@ -98,5 +100,44 @@ func TestLowTokenRootIntegrationListsOneFinalReviewer(t *testing.T) {
 	got, err = s.finalReviewRoles(ctx, it, orch.ID)
 	if err != nil || !reflect.DeepEqual(got, []string{"ui_reviewer"}) {
 		t.Fatalf("on: roles=%v err=%v", got, err)
+	}
+}
+
+func TestRunSpecIsClampedForOwner(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := workflowRun{WorkflowID: st.ID}
+	spec, err := s.runSpec(ctx, it, run)
+	if err != nil || spec.Retries != it.Workflow.Retries && spec.Retries != nil {
+		t.Fatalf("off: spec=%+v err=%v", spec, err)
+	}
+	mustExec(t, s.DB, `UPDATE agents SET low_token = 1 WHERE id = ?`, orch.ID)
+	spec, err = s.runSpec(ctx, it, run)
+	if err != nil || spec.Retries == nil || *spec.Retries != 0 {
+		t.Fatalf("on: spec=%+v err=%v, want clamped retries 0", spec, err)
+	}
+}
+
+// Engine reads of the workflow spec must go through engineSpec.
+func TestNoRawSpecReadsInCheckpoint(t *testing.T) {
+	src, err := os.ReadFile("checkpoint.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"stepFor(it.Workflow", "findFixStepsFor(it.Workflow", "it.Workflow.Integration.Verify"} {
+		if strings.Contains(string(src), bad) {
+			t.Errorf("checkpoint.go reads the raw spec via %q; use engineSpec", bad)
+		}
 	}
 }

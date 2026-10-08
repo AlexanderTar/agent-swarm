@@ -2160,6 +2160,18 @@ func (s *Store) engineSpec(ctx context.Context, it items.Item, ownerAgentID stri
 	return *it.Workflow, nil
 }
 
+// runSpec is engineSpec for the owner recorded on run's workflow row.
+func (s *Store) runSpec(ctx context.Context, it items.Item, run workflowRun) (workflow.Spec, error) {
+	wf, ok, err := s.workflowRowByID(ctx, run.WorkflowID)
+	if err != nil {
+		return workflow.Spec{}, err
+	}
+	if !ok {
+		return workflow.Spec{}, fmt.Errorf("engine: workflow %s not found", run.WorkflowID)
+	}
+	return s.engineSpec(ctx, it, wf.OwnerAgentID)
+}
+
 // finalReviewRoles is the integration's final-review roles for it, clamped
 // like the rest of the spec.
 func (s *Store) finalReviewRoles(ctx context.Context, it items.Item, ownerAgentID string) ([]string, error) {

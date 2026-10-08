@@ -447,7 +447,11 @@ func (s *Store) hasFinalReviewPassed(ctx context.Context, tx *sql.Tx, itemID str
 // its case in); 8.4 adds tdd/verify, 8.5 adds
 // commit/artifact:design/artifact:notes.
 func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
-	step, ok := stepFor(it.Workflow, run.StepID)
+	spec, err := s.runSpec(ctx, it, run)
+	if err != nil {
+		return err
+	}
+	step, ok := stepFor(&spec, run.StepID)
 	if !ok {
 		// A corrupted or stale run row (or an item whose workflow_json went
 		// missing) must refuse, not silently enforce zero gates (fix round
@@ -678,7 +682,11 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 
 	var required []int
 	packageWide := false
-	if fixSteps := findFixStepsFor(it.Workflow, run.StepID); len(fixSteps) > 0 {
+	spec, err := s.runSpec(ctx, it, run)
+	if err != nil {
+		return err
+	}
+	if fixSteps := findFixStepsFor(&spec, run.StepID); len(fixSteps) > 0 {
 		// Fix round 2, finding 2: more than one review step can target the
 		// same build step. Blocking if ANY of them requested changes or
 		// blocked; findings merge across all of them (mirrors B4's
@@ -1482,7 +1490,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				}
 			}
 			if it.Workflow != nil && it.Workflow.Integration != nil {
-				for _, cmd := range it.Workflow.Integration.Verify {
+				spec, err := s.engineSpec(ctx, it, a.ID)
+				if err != nil {
+					return err
+				}
+				for _, cmd := range spec.Integration.Verify {
 					if waived(it, "integration_verify") {
 						break
 					}
