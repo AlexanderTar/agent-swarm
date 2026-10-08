@@ -8,6 +8,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -376,5 +377,32 @@ func TestItemsUpdateRejectsRevisionLatest(t *testing.T) {
 	}
 	if got.Revision != 2 {
 		t.Fatalf("revision = %d, want 2", got.Revision)
+	}
+}
+
+// TestItemsToolUpdateWithoutRevisionSaysRevisionRequired (BUG-67): an absent
+// revision used to decode to zero and come back as the StaleRevision conflict
+// ("This item changed elsewhere"), which reads as a race rather than a missing
+// field. It is a bad_request naming the field, plus the item's current
+// revision and status so the caller can retry with the real number.
+func TestItemsToolUpdateWithoutRevisionSaysRevisionRequired(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	_, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"Renamed"}`)
+	if err == nil {
+		t.Fatal("an update without revision must be refused")
+	}
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeBadRequest {
+		t.Fatalf("err = %#v, want a bad_request items.Error", err)
+	}
+	for _, want := range []string{"revision is required", "Current revision: 1", "status: draft"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "changed elsewhere") {
+		t.Fatalf("err = %q, must not claim a concurrent change", err)
 	}
 }
