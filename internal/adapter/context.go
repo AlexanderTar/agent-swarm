@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
@@ -158,4 +160,36 @@ func museContextLine(line []byte) (ContextSample, bool) {
 		return ContextSample{}, false
 	}
 	return ContextSample{Tokens: l.Payload.Event.Usage.Input}, true
+}
+
+// ContextWindowTokens is the fallback context window for a kind and model id
+// when the transcript reports none. Only claude is known; muse's window is
+// Swarm's own launch limit, agy has none.
+func ContextWindowTokens(kind kinds.AgentKind, model string) (int, bool) {
+	if kind != kinds.Claude {
+		return 0, false
+	}
+	for _, p := range []string{"claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable-"} {
+		if strings.HasPrefix(model, p) {
+			return 1000000, true
+		}
+	}
+	if strings.Contains(model, "[1m]") {
+		return 1000000, true
+	}
+	return 200000, true
+}
+
+// SessionContext reads the newest context sample from this provider session's
+// session.jsonl. Muse has no hooks, so the daemon calls it while the session is live.
+func (m *Muse) SessionContext(providerSessionID string) (ContextSample, bool) {
+	if providerSessionID == "" {
+		return ContextSample{}, false
+	}
+	matches, _ := filepath.Glob(filepath.Join(m.d.UserHome, ".local", "share", "muse", "sessions",
+		"[0-9][0-9][0-9][0-9]", "[0-9][0-9]", "[0-9][0-9]", providerSessionID, "session.jsonl"))
+	if len(matches) != 1 {
+		return ContextSample{}, false
+	}
+	return ReadContext(kinds.Muse, matches[0])
 }

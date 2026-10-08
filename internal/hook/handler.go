@@ -650,6 +650,24 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 			h.logf("advisor: transcript scan for %s: %v", s.ID, err)
 		}
 	}
+	// every session records its context size at end of turn; cursor's preCompact
+	// payload carries an exact reading, its Stop falls back to the byte proxy
+	if h.RT != nil {
+		switch {
+		case ev == "Stop" && in.TranscriptPath != "":
+			if err := h.RT.SampleTranscript(ctx, s.ID, s.Kind, in.TranscriptPath); err != nil {
+				h.logf("hook: record context sample for %s: %v", s.ID, err)
+			}
+		case ev == "PreCompact" && in.ContextTokens > 0:
+			var window *int
+			if in.ContextWindow > 0 {
+				window = &in.ContextWindow
+			}
+			if err := h.RT.RecordContextSample(ctx, s.ID, in.ContextTokens, window); err != nil {
+				h.logf("hook: record context sample for %s: %v", s.ID, err)
+			}
+		}
+	}
 	// a model or effort change in the transcript tail (claude, codex)
 	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.RT != nil {
 		if mo, ok := a.(adapter.ModelObserver); ok {

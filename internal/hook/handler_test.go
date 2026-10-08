@@ -2367,3 +2367,55 @@ func TestUserPromptSubmitOmitsTheGraphifyHint(t *testing.T) {
 		t.Fatalf("context = %q, want no graphify text on UserPromptSubmit", got)
 	}
 }
+
+func sessionSample(t *testing.T, h *Handler) (tokens, window sql.NullInt64) {
+	t.Helper()
+	if err := h.DB.QueryRowContext(context.Background(),
+		`SELECT context_tokens, context_window FROM sessions WHERE id = 'ses_1'`).Scan(&tokens, &window); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestStopHookRecordsSample(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	path, err := filepath.Abs("../adapter/testdata/context/claude.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, _ := json.Marshal(map[string]string{"session_id": "p1", "transcript_path": path})
+	if _, err := h.Handle(context.Background(), runtime.Claude, "Stop", ses, in); err != nil {
+		t.Fatal(err)
+	}
+	// claude-sonnet-5 is a 1M-window model family
+	if tok, win := sessionSample(t, h); tok.Int64 != 93123 || win.Int64 != 1000000 {
+		t.Fatalf("row = %v/%v, want 93123/1000000", tok, win)
+	}
+}
+
+func TestPreCompactRecordsSample(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'cursor' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("../adapter/testdata/context/cursor-precompact.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Cursor, "preCompact", ses, raw); err != nil {
+		t.Fatal(err)
+	}
+	if tok, win := sessionSample(t, h); tok.Int64 != 180000 || win.Int64 != 200000 {
+		t.Fatalf("preCompact row = %v/%v, want 180000/200000", tok, win)
+	}
+	// a later byte-proxy Stop sample replaces the tokens and keeps the window
+	path, _ := filepath.Abs("../adapter/testdata/context/cursor-transcript.jsonl")
+	in, _ := json.Marshal(map[string]string{"conversation_id": "c1", "transcript_path": path})
+	if _, err := h.Handle(ctx, runtime.Cursor, "stop", ses, in); err != nil {
+		t.Fatal(err)
+	}
+	if tok, win := sessionSample(t, h); tok.Int64 != 100000 || win.Int64 != 200000 {
+		t.Fatalf("stop row = %v/%v, want 100000/200000", tok, win)
+	}
+}
