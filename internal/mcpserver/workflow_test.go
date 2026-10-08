@@ -829,3 +829,60 @@ func TestSwarmWorkflowIdempotentCancel(t *testing.T) {
 		t.Fatalf("cancel with different request_id err = %v, want isn't waiting on you", err)
 	}
 }
+
+// TASK-754: a run's state is its binding state and stays 'active' while its
+// agent is paused, so status also reports the agent's session state.
+func TestSwarmWorkflowStatusShowsAPausedRunAgent(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(
+		`{"op":"create","repo":"%s","branch":"wf-branch","base":"main"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		ID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.Items.Update(ctx, seed.TaskKey, items.Patch{
+		Workflow: &workflow.Spec{Template: "mechanical"},
+		Steps:    &[]string{"step 1"},
+		Verify:   &[]string{"true"},
+		Revision: 1,
+	}, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+		seed.TaskKey, wtRes.ID)); err != nil {
+		t.Fatal(err)
+	}
+	st, ok, err := s.RT.WorkflowFor(ctx, seed.TaskKey)
+	if err != nil || !ok || len(st.Runs) == 0 || st.Runs[0].AgentID == "" {
+		t.Fatalf("setup: workflow = %+v ok=%v err=%v, want a run bound to an agent", st, ok, err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE agent_id = ?`,
+		st.Runs[0].AgentID); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(`{"op":"status","item":"%s"}`, seed.TaskKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Runs []struct {
+			Agent             string `json:"agent"`
+			State             string `json:"state"`
+			AgentSessionState string `json:"agent_session_state"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Runs) == 0 || res.Runs[0].AgentSessionState != "paused" {
+		t.Fatalf("runs = %+v, want agent_session_state paused", res.Runs)
+	}
+}
