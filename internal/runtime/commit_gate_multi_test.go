@@ -87,3 +87,20 @@ func TestCommitGateRefusesDirtyOrMismatchedSecondWorktree(t *testing.T) {
 		}
 	})
 }
+
+// A checkpoint naming only tree A must not check tree B against A's entry
+// (BUG-66): B is refused with its own path, branch and HEAD, not a sha
+// mismatch quoting A's sha.
+func TestCommitGateAsksForMissingSecondWorktreeEntry(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	_, head1, dir2, head2 := seedTwoTreesOneRepo(t, s, coder)
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "task/x", SHA: head1}}})
+	want := fmt.Sprintf("Commit your work before completing: proj worktree %s (branch task/two, HEAD %s) has no git entry of its own."+
+		" Add {repo: \"proj\", branch: \"task/two\", sha: \"%s\"} to git."+hintCopy, dir2, head2, head2)
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
