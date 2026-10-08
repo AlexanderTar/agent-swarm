@@ -212,6 +212,32 @@
       "direction": "request"
     },
     {
+      "file": "low-token-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/low-token",
+      "direction": "request"
+    },
+    {
+      "file": "low-token-agent.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/low-token",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "low-token-request.json",
+      "method": "POST",
+      "path": "/api/low-token",
+      "direction": "request"
+    },
+    {
+      "file": "low-token-all.json",
+      "method": "POST",
+      "path": "/api/low-token",
+      "direction": "response",
+      "status": 200
+    },
+    {
       "file": "empty-request.json",
       "method": "POST",
       "path": "/api/pause-all",

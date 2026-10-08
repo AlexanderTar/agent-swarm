@@ -65,15 +65,17 @@ type agentNodeWire struct {
 	Replacement *replacementWire   `json:"replacement,omitempty"`
 	// RoleOverrides: the agent's stored worker overrides (omitted when none), so a
 	// client can prefill them on hand-off.
-	RoleOverrides  map[string]roleDefaultBody `json:"role_overrides,omitempty"`
-	PreflightError *string                    `json:"preflight_error"`
-	KindReason     *string                    `json:"kind_reason"`        // why kind/model isn't the role default; null = settings
-	Progress       *runtime.TodoProgress      `json:"progress,omitempty"` // orchestrators of a root with a list only
-	Merge          *runtime.MergeProgress     `json:"merge,omitempty"`    // top-level orchestrators of a root awaiting merge
-	CreatedAt      int64                      `json:"created_at"`
-	FinishedAt     *int64                     `json:"finished_at"`
-	Children       []agentNodeWire            `json:"children"`
-	Finished       []agentNodeWire            `json:"finished"`
+	RoleOverrides     map[string]roleDefaultBody `json:"role_overrides,omitempty"`
+	LowToken          *bool                      `json:"low_token"`           // orchestrator override; null follows the global default
+	LowTokenEffective bool                       `json:"low_token_effective"` // resolved through the parent chain
+	PreflightError    *string                    `json:"preflight_error"`
+	KindReason        *string                    `json:"kind_reason"`        // why kind/model isn't the role default; null = settings
+	Progress          *runtime.TodoProgress      `json:"progress,omitempty"` // orchestrators of a root with a list only
+	Merge             *runtime.MergeProgress     `json:"merge,omitempty"`    // top-level orchestrators of a root awaiting merge
+	CreatedAt         int64                      `json:"created_at"`
+	FinishedAt        *int64                     `json:"finished_at"`
+	Children          []agentNodeWire            `json:"children"`
+	Finished          []agentNodeWire            `json:"finished"`
 }
 
 type gitRefWire struct {
@@ -496,7 +498,7 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 	}
 	w := agentNodeWire{ID: a.ID, Name: a.Name, Kind: a.Kind, Model: a.Model, Effort: optStr(a.Effort), Role: a.Role,
 		ItemKey: itemKey, ItemTitle: it.Title, RootKey: rootKey, Advisor: s.advisorInfoOut(a), State: a.State,
-		PreflightError: optStr(a.PreflightError), KindReason: optStr(a.KindReason),
+		PreflightError: optStr(a.PreflightError), KindReason: optStr(a.KindReason), LowToken: a.LowToken,
 		CreatedAt: db.Millis(a.CreatedAt), FinishedAt: optMs(a.FinishedAt),
 		Children: []agentNodeWire{}, Finished: []agentNodeWire{}}
 	if a.Role == runtime.RoleOrchestrator && len(a.RoleOverrides) > 0 {
@@ -510,6 +512,7 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 			w.ParentName = &name
 		}
 	}
+	w.LowTokenEffective, _ = s.RT.LowTokenFor(ctx, a)
 	if a.PreflightError == "" {
 		ses, err := s.RT.LatestSession(ctx, a.ID)
 		if err == nil {

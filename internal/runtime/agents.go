@@ -2453,13 +2453,13 @@ func scanAgent(row *sql.Row) (Agent, error) {
 	var a Agent
 	var kind, role, state, roleOverrides string
 	var created int64
-	var finished sql.NullInt64
+	var finished, lowToken sql.NullInt64
 	err := row.Scan(
 		&a.ID, &a.Name, &kind, &a.Model, &a.Effort, &role,
 		&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 		&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode, &a.AdvisorRequestedEffort,
 		&a.Brief, &state, &a.PreflightError, &created, &finished,
-		&roleOverrides, &a.KindReason,
+		&roleOverrides, &a.KindReason, &lowToken,
 	)
 	if err != nil {
 		return a, err
@@ -2475,6 +2475,7 @@ func scanAgent(row *sql.Row) (Agent, error) {
 	if roleOverrides != "" {
 		_ = json.Unmarshal([]byte(roleOverrides), &a.RoleOverrides)
 	}
+	a.LowToken = nullBool(lowToken)
 	return a, nil
 }
 
@@ -2484,7 +2485,7 @@ func (s *Store) Agent(ctx context.Context, name string) (Agent, error) {
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), COALESCE(advisor_requested_effort, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
-		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
+		COALESCE(role_overrides, ''), COALESCE(kind_reason, ''), low_token
 		FROM agents WHERE name = ?`, name)
 	return scanAgent(row)
 }
@@ -2495,7 +2496,7 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), COALESCE(advisor_requested_effort, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
-		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
+		COALESCE(role_overrides, ''), COALESCE(kind_reason, ''), low_token
 		FROM agents WHERE id = ?`, id)
 	return scanAgent(row)
 }
@@ -2514,7 +2515,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), COALESCE(advisor_requested_effort, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
-		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
+		COALESCE(role_overrides, ''), COALESCE(kind_reason, ''), low_token
 		FROM agents WHERE root_item_id = ? ORDER BY created_at`, it.RootID)
 	if err != nil {
 		return nil, err
@@ -2526,13 +2527,13 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		var a Agent
 		var kind, role, state, roleOverrides string
 		var created int64
-		var finished sql.NullInt64
+		var finished, lowToken sql.NullInt64
 		if err := rows.Scan(
 			&a.ID, &a.Name, &kind, &a.Model, &a.Effort, &role,
 			&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 			&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode, &a.AdvisorRequestedEffort,
 			&a.Brief, &state, &a.PreflightError, &created, &finished,
-			&roleOverrides, &a.KindReason,
+			&roleOverrides, &a.KindReason, &lowToken,
 		); err != nil {
 			return nil, err
 		}
@@ -2547,6 +2548,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		if roleOverrides != "" {
 			_ = json.Unmarshal([]byte(roleOverrides), &a.RoleOverrides)
 		}
+		a.LowToken = nullBool(lowToken)
 		out = append(out, a)
 	}
 	return out, nil
@@ -2612,4 +2614,13 @@ func (s *Store) OnWorktreeRetained(ctx context.Context, tx *sql.Tx, wt worktree.
 	}
 	return s.notify(ctx, tx, NotifyInput{Kind: "worktree.retained", ItemKey: rootKey,
 		Args: map[string]string{"ROOT-KEY": rootKey, "detail": detail}})
+}
+
+// nullBool maps a nullable 0/1 column to a tri-state *bool (nil = NULL).
+func nullBool(n sql.NullInt64) *bool {
+	if !n.Valid {
+		return nil
+	}
+	b := n.Int64 != 0
+	return &b
 }

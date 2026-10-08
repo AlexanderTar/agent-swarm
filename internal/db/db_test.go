@@ -131,6 +131,15 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 0029_low_token.sql adds agents.low_token and sessions context columns with plain ALTER TABLE (same precedent).
+	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN low_token`); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"context_tokens", "context_window", "context_strikes"} {
+		if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// 0025_finish_options.sql adds checkpoints.finish_options_json with plain
 	// ALTER TABLE (same precedent).
 	if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN finish_options_json`); err != nil {
