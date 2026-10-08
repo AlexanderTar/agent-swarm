@@ -1093,7 +1093,12 @@ func materializeTool(s *Server) ToolDef {
 			if created == nil {
 				created = []string{}
 			}
-			return map[string]any{"root": res.Root, "created": created}, nil
+			out := map[string]any{"root": res.Root, "created": created}
+			if len(res.OpenTasks) > 0 {
+				// BUG-58: the spike stays open until these finish.
+				out["open_tasks"] = res.OpenTasks
+			}
+			return out, nil
 		},
 	}
 }

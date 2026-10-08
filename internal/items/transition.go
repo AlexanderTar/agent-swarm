@@ -423,10 +423,16 @@ func (s *Store) checkSpike(ctx context.Context, tx *sql.Tx, it Item, to Status, 
 	switch {
 	case to == Done:
 		if daemon {
-			done, err := exists(ctx, tx, `SELECT 1 FROM items WHERE origin_spike_id = ?
-				UNION ALL SELECT 1 FROM requests WHERE item_id = ? AND kind = 'close_spike' AND state = 'approved'`, it.ID, it.ID)
-			if err != nil || done {
+			done, err := s.spikeFinished(ctx, tx, it)
+			if err != nil {
 				return err
+			}
+			if done {
+				open, err := s.OpenSpikeTasksTx(ctx, tx, it.ID)
+				if err != nil || len(open) == 0 {
+					return err
+				}
+				return deny("This spike reaches Done once its open tasks finish: %s.", strings.Join(open, ", "))
 			}
 		}
 		return deny("This spike reaches Done after materialization.")
@@ -1001,6 +1007,34 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	return nil
 }
 
+// spikeFinished reports whether the spike's own work is over: it was
+// materialized (a root names it as origin) or its close_spike was approved.
+func (s *Store) spikeFinished(ctx context.Context, tx *sql.Tx, it Item) (bool, error) {
+	return exists(ctx, tx, `SELECT 1 FROM items WHERE origin_spike_id = ?
+		UNION ALL SELECT 1 FROM requests WHERE item_id = ? AND kind = 'close_spike' AND state = 'approved'`, it.ID, it.ID)
+}
+
+// OpenSpikeTasksTx lists the keys of spikeID's own tasks that are still
+// Ready, In progress or In review (BUG-58): the spike stays open, and its
+// root-done sweep stays off their agents, until they finish or are cancelled.
+func (s *Store) OpenSpikeTasksTx(ctx context.Context, tx *sql.Tx, spikeID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT key FROM items WHERE root_id = ? AND id != ? AND archived_at IS NULL
+		AND status IN ('ready', 'in_progress', 'in_review') ORDER BY created_at, key`, spikeID, spikeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {
 	if it.Status == Draft || it.Status == Ready {
 		ok, err := s.acceptedSince(ctx, tx, it)
@@ -1014,11 +1048,17 @@ func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {
 	if it.Status != InProgress && it.Status != AwaitingApproval {
 		return nil
 	}
-	closed, err := exists(ctx, tx, `SELECT 1 FROM requests WHERE item_id = ? AND kind = 'close_spike' AND state = 'approved'`, it.ID)
+	closed, err := s.spikeFinished(ctx, tx, it)
 	if err != nil {
 		return err
 	}
 	if closed {
+		// BUG-58: the spike waits for its own tasks; a task finishing reconciles
+		// its parent spike, which closes it then.
+		tasks, err := s.OpenSpikeTasksTx(ctx, tx, it.ID)
+		if err != nil || len(tasks) > 0 {
+			return err
+		}
 		return s.setStatus(ctx, tx, &it, Done)
 	}
 	open, err := s.openApproval(ctx, tx, it)

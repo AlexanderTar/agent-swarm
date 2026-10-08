@@ -784,3 +784,60 @@ func TestMaterializeLegacyChoreSpike(t *testing.T) {
 		t.Fatalf("spike = %s, want done", sp.Status)
 	}
 }
+
+// BUG-58: materialize must not close a spike while one of its own tasks is
+// still open, nor finish that task's live agent; the spike closes once the
+// task finishes.
+func TestMaterializeLeavesSpikeOpenWhileItsTasksRun(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "spiking"}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: "SPIKE-1",
+		Title: "Audit the landing page", Status: items.Ready}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: task.Key, Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: ses.AgentID, Brief: BriefInput{Objective: "audit"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "on it"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spike, _ := s.Items.Get(ctx, "SPIKE-1"); spike.Status == items.Done {
+		t.Fatal("the spike closed while its task is in progress")
+	}
+	if n := daemonCompleted(t, s, w.ID); n != 0 {
+		t.Fatalf("the task's live agent got %d daemon completed checkpoints", n)
+	}
+	if !slices.Equal(res.OpenTasks, []string{task.Key}) {
+		t.Fatalf("open tasks = %v, want [%s]", res.OpenTasks, task.Key)
+	}
+	if got, _ := s.Items.Get(ctx, task.Key); got.Status != items.InProgress {
+		t.Fatalf("task status = %s", got.Status)
+	}
+
+	// The task finishing closes the spike.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Items.Reconcile(ctx, task.Key); err != nil {
+		t.Fatal(err)
+	}
+	if spike, _ := s.Items.Get(ctx, "SPIKE-1"); spike.Status != items.Done {
+		t.Fatalf("spike status after its task finished = %s", spike.Status)
+	}
+}
