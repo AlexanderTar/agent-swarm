@@ -209,6 +209,13 @@ final class AgentActionsTests: XCTestCase {
                                 merge: MergeProgress(merged: 1, total: 2))
         XCTAssertEqual(AgentTree.subtitle(waiting), "Orchestrator · Awaiting merge · 1/2 merged")
         XCTAssertEqual(Copy.awaitingMerge(1, 2), "Awaiting merge · 1/2 merged")
+        XCTAssertEqual([Copy.lowTokenMode, Copy.lowTokenOnHelp, Copy.lowTokenA11y, Copy.lowTokenTurnOnAll,
+                        Copy.lowTokenTurnOffAll, Copy.on, Copy.off, Copy.lowTokenFailed("boom"), Copy.lowTokenSettingsCaption], [
+            "Low-token mode", "Low-token mode is on", "low-token mode",
+            "Turn on low-token mode for all orchestrators", "Turn off low-token mode for all orchestrators",
+            "On", "Off", "Couldn't change low-token mode: boom",
+            "Orchestrators and their agents use fewer tokens. Changing this also switches running orchestrators and clears per-orchestrator choices.",
+        ])
         let roles: [Role] = [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical]
         XCTAssertEqual(roles.map(Copy.roleLabel), ["Coder", "Reviewer", "UI reviewer", "Researcher", "Debugger", "Mechanical"])
     }

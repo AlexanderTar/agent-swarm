@@ -15,6 +15,16 @@ public enum Copy {
     public static let readAll = "Read all"
     public static let pauseAll = "Pause all"
     public static let pausing = "Pausing…"
+    public static let lowTokenMode = "Low-token mode"
+    public static let lowTokenOnHelp = "Low-token mode is on"
+    public static let lowTokenA11y = "low-token mode"
+    public static let lowTokenTurnOnAll = "Turn on low-token mode for all orchestrators"
+    public static let lowTokenTurnOffAll = "Turn off low-token mode for all orchestrators"
+    public static let on = "On"
+    public static let off = "Off"
+    public static func lowTokenFailed(_ error: String) -> String { "Couldn't change low-token mode: \(error)" }
+    public static let lowTokenSettingsCaption =
+        "Orchestrators and their agents use fewer tokens. Changing this also switches running orchestrators and clears per-orchestrator choices."
     public static let resuming = "Resuming…"
     public static let newOrchestrator = "New orchestrator"
     public static let openBoard = "Open board"

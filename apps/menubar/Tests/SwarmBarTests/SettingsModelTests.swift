@@ -23,6 +23,26 @@ final class SettingsModelTests: XCTestCase {
 
     private var saves: Int { client.calls.filter { $0 == "settings" }.count }
 
+    func testSetLowTokenModeCallsRoute() async {
+        let m = await model()
+        XCTAssertTrue(m.settings.lowTokenMode)
+        await m.setLowTokenMode(false)
+        XCTAssertFalse(m.settings.lowTokenMode)
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("low-token") }, ["low-token-all:off"])
+        XCTAssertEqual(saves, 0, "not the whole-object save")
+
+        client.failNext = .unreachable
+        await m.setLowTokenMode(true)
+        XCTAssertFalse(m.settings.lowTokenMode, "reverts on error")
+        XCTAssertEqual(m.saveError, "Couldn't change low-token mode: Daemon unavailable.")
+
+        let before = client.calls.count
+        let down = await model(connected: false)
+        await down.setLowTokenMode(false)
+        XCTAssertEqual(down.saveError, Copy.settingsDaemonDown)
+        XCTAssertEqual(client.calls.dropFirst(before).filter { $0.hasPrefix("low-token") }, [])
+    }
+
     func testAgentsTabRows() async {
         let m = await model()
         let rows = m.agentRows

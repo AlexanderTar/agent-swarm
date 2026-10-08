@@ -142,6 +142,10 @@ public final class MockDaemonClient: DaemonClient {
     public func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?, requestID: String?) async throws {
         if endpoint == .handoff { handoffRequestIDs.append(requestID) }
         try record(["agent", endpoint.rawValue, name, scope?.rawValue].compactMap { $0 }.joined(separator: " "))
+        await holdIfNeeded()
+    }
+
+    private func holdIfNeeded() async {
         if holdAgent {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in agentGates.append(cont) }
         }
@@ -154,11 +158,13 @@ public final class MockDaemonClient: DaemonClient {
 
     public func setLowToken(agent: String, on: Bool) async throws -> Int {
         try record("low-token:\(agent):\(on ? "on" : "off")")
+        await holdIfNeeded()
         return 1
     }
 
     public func setLowTokenAll(on: Bool) async throws -> Int {
         try record("low-token-all:\(on ? "on" : "off")")
+        await holdIfNeeded()
         return 1
     }
 
