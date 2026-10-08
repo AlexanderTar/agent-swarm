@@ -46,17 +46,20 @@ type StartWorkflowInput struct {
 // WorkflowRunView is one workflow_runs row the way swarm_workflow/swarm_read
 // report it (spec B3/B7).
 type WorkflowRunView struct {
-	ID          string             `json:"id,omitempty"`
-	StepID      string             `json:"step"`
-	Role        string             `json:"role"`
-	AgentID     string             `json:"agent_id,omitempty"`
-	AgentName   string             `json:"agent"`
-	State       string             `json:"state"`
-	Verdict     string             `json:"verdict"`
-	SHA         string             `json:"sha"`
-	Round       int                `json:"round"`
-	AutoRetries int                `json:"auto_retries,omitempty"`
-	Findings    []workflow.Finding `json:"findings"`
+	ID        string `json:"id,omitempty"`
+	StepID    string `json:"step"`
+	Role      string `json:"role"`
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentName string `json:"agent"`
+	State     string `json:"state"`
+	// AgentSessionState is the bound agent's latest session state: State is
+	// a binding state and stays 'active' while that agent is paused.
+	AgentSessionState string             `json:"agent_session_state,omitempty"`
+	Verdict           string             `json:"verdict"`
+	SHA               string             `json:"sha"`
+	Round             int                `json:"round"`
+	AutoRetries       int                `json:"auto_retries,omitempty"`
+	Findings          []workflow.Finding `json:"findings"`
 }
 
 // WorkflowState is swarm_workflow's result shape (spec B7): the workflow's
@@ -478,6 +481,9 @@ func (s *Store) workflowStateFromRow(ctx context.Context, row wfRow, itemKey str
 		if v.AgentID != "" {
 			if a, err := s.agentByID(ctx, v.AgentID); err == nil {
 				v.AgentName = a.Name
+			}
+			if ses, err := s.LatestSession(ctx, v.AgentID); err == nil {
+				v.AgentSessionState = string(ses.State)
 			}
 		}
 		views[i] = v

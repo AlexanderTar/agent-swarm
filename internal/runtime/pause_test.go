@@ -2322,3 +2322,224 @@ func TestPauseSendsNoKeysBeforeTheDeadlineWithoutADialog(t *testing.T) {
 		t.Fatalf("keys sent with no dialog open: %v", tm.keys)
 	}
 }
+
+// markPaused hand-sets an agent's latest session to the state a finished
+// pause leaves behind: paused, with the given scope and root marking.
+func markPaused(t *testing.T, s *Store, agentID, scope string, root bool) Session {
+	t.Helper()
+	ctx := context.Background()
+	ses, err := s.LatestSession(ctx, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := 0
+	if root {
+		r = 1
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', pause_scope = ?,
+		pause_root = ? WHERE id = ?`, scope, r, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	return ses
+}
+
+// sessionRowid is the rowid of an agent's latest session, so a test can
+// assert the order in which Resume started sessions.
+func sessionRowid(t *testing.T, s *Store, agentID string) int64 {
+	t.Helper()
+	var n int64
+	if err := s.DB.QueryRow(`SELECT MAX(rowid) FROM sessions WHERE agent_id = ?`, agentID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func resumedRelays(t *testing.T, s *Store, toAgentID, about string) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"resumed"%' AND payload_json LIKE ?`,
+		toAgentID, `%"agent":"`+about+`"%`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TASK-754: resuming the root of a subtree pause resumes the children that
+// pause paused, after the orchestrator, each relaying "resumed" to it.
+func TestResumeCascadesToSubtreePausedChildren(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w1, _ := worker(t, s)
+	w2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "second"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markPaused(t, s, orch.ID, "subtree", true)
+	old1 := markPaused(t, s, w1.ID, "subtree", false)
+	old2 := markPaused(t, s, w2.ID, "subtree", false)
+
+	if _, err := s.Resume(ctx, orch.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	orchRow := sessionRowid(t, s, orch.ID)
+	for _, c := range []struct {
+		a   Agent
+		old Session
+	}{{w1, old1}, {w2, old2}} {
+		ses, err := s.LatestSession(ctx, c.a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ses.ID == c.old.ID || !ses.State.Live() {
+			t.Fatalf("%s not resumed: session %s state %s", c.a.Name, ses.ID, ses.State)
+		}
+		if row := sessionRowid(t, s, c.a.ID); row < orchRow {
+			t.Fatalf("%s resumed before the orchestrator", c.a.Name)
+		}
+		if n := resumedRelays(t, s, orch.ID, c.a.Name); n != 1 {
+			t.Fatalf("resumed relays to orchestrator about %s = %d, want 1", c.a.Name, n)
+		}
+	}
+	if frozen, err := s.rootHasLiveSubtreePause(ctx, orch.RootItemID); err != nil || frozen {
+		t.Fatalf("rootHasLiveSubtreePause = %v, %v after resume; want false", frozen, err)
+	}
+}
+
+// TASK-754: a nested subtree-pause root owns its own subtree; an outer resume
+// leaves it, and everything under it, paused.
+func TestResumeCascadeSkipsANestedSubtreeRoot(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	root, mid, leaf := threeLevel(t, s)
+	markPaused(t, s, root.ID, "subtree", true)
+	midOld := markPaused(t, s, mid.ID, "subtree", true)
+	leafOld := markPaused(t, s, leaf.ID, "subtree", false)
+
+	if _, err := s.Resume(ctx, root.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		a   Agent
+		old Session
+	}{{mid, midOld}, {leaf, leafOld}} {
+		ses, _ := s.LatestSession(ctx, c.a.ID)
+		if ses.ID != c.old.ID || ses.State != Paused {
+			t.Fatalf("%s resumed by the outer cascade (session %s state %s)", c.a.Name, ses.ID, ses.State)
+		}
+	}
+}
+
+// TASK-754: a child paused on its own (session scope) stays paused.
+func TestResumeCascadeSkipsASessionScopedChild(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	markPaused(t, s, orch.ID, "subtree", true)
+	old := markPaused(t, s, w.ID, "session", false)
+
+	if _, err := s.Resume(ctx, orch.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.ID != old.ID || ses.State != Paused {
+		t.Fatalf("session-scoped child resumed (session %s state %s)", ses.ID, ses.State)
+	}
+}
+
+// TASK-754: a child with no free slot queues for one; the orchestrator's own
+// resume still succeeds.
+func TestResumeCascadeQueuesAChildWhenThePoolIsFull(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	markPaused(t, s, orch.ID, "subtree", true)
+	old := markPaused(t, s, w.ID, "subtree", false)
+	setLimits(t, s, 1) // the resumed orchestrator takes the only slot
+
+	if _, err := s.Resume(ctx, orch.Name, "", ""); err != nil {
+		t.Fatalf("orchestrator resume failed: %v", err)
+	}
+	if ses, _ := s.LatestSession(ctx, orch.ID); !ses.State.Live() {
+		t.Fatalf("orchestrator state = %s, want live", ses.State)
+	}
+	var phase string
+	if err := s.DB.QueryRow(`SELECT phase FROM agent_operations WHERE request_key = ?`,
+		"resume:"+old.ID).Scan(&phase); err != nil {
+		t.Fatalf("child resume not queued: %v", err)
+	}
+	if phase != "queued" {
+		t.Fatalf("child resume op phase = %s, want queued", phase)
+	}
+}
+
+// TASK-755: with the pool full, resuming a subtree-pause root queues it and
+// queues each child its pause paused, the orchestrator's op first; freed
+// slots then start the orchestrator before its children.
+func TestQueuedResumeCascadesToSubtreePausedChildren(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w1, _ := worker(t, s)
+	w2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "second"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A live sibling holds the only slot.
+	if _, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "holder"}}); err != nil {
+		t.Fatal(err)
+	}
+	orchOld := markPaused(t, s, orch.ID, "subtree", true)
+	old1 := markPaused(t, s, w1.ID, "subtree", false)
+	old2 := markPaused(t, s, w2.ID, "subtree", false)
+	setLimits(t, s, 1)
+
+	if _, err := s.Resume(ctx, orch.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	opRow := func(sesID string) int64 {
+		t.Helper()
+		var phase string
+		var row int64
+		if err := s.DB.QueryRow(`SELECT phase, rowid FROM agent_operations WHERE request_key = ?`,
+			"resume:"+sesID).Scan(&phase, &row); err != nil {
+			t.Fatalf("resume of session %s not queued: %v", sesID, err)
+		}
+		if phase != "queued" {
+			t.Fatalf("resume op for session %s phase = %s, want queued", sesID, phase)
+		}
+		return row
+	}
+	orchOp := opRow(orchOld.ID)
+	for _, old := range []Session{old1, old2} {
+		if row := opRow(old.ID); row < orchOp {
+			t.Fatalf("child op for session %s queued before the orchestrator's", old.ID)
+		}
+	}
+
+	setLimits(t, s, 4)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	orchRow := sessionRowid(t, s, orch.ID)
+	if ses, _ := s.LatestSession(ctx, orch.ID); ses.ID == orchOld.ID || !ses.State.Live() {
+		t.Fatalf("orchestrator not resumed: session %s state %s", ses.ID, ses.State)
+	}
+	for _, c := range []struct {
+		a   Agent
+		old Session
+	}{{w1, old1}, {w2, old2}} {
+		ses, err := s.LatestSession(ctx, c.a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ses.ID == c.old.ID || !ses.State.Live() {
+			t.Fatalf("%s not resumed: session %s state %s", c.a.Name, ses.ID, ses.State)
+		}
+		if row := sessionRowid(t, s, c.a.ID); row < orchRow {
+			t.Fatalf("%s resumed before the orchestrator", c.a.Name)
+		}
+	}
+}

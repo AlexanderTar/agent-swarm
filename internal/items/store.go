@@ -40,6 +40,10 @@ type Store struct {
 	// rootID is that item's id; the hook finishes every agent still on the
 	// root. nil does nothing, same as the other hooks.
 	RootDone func(ctx context.Context, tx *sql.Tx, rootID string) error
+	// CheckLanded refuses a resolved-by close of root when its newest integrated
+	// checkpoint's git refs (git_json) never reached the repo's default branch.
+	// nil allows every close.
+	CheckLanded func(ctx context.Context, tx *sql.Tx, root Item, gitJSON []byte) error
 	// StoryReadyForReview fires when every child task of a story is Done and the
 	// story has an after_tasks workflow. It relays story_ready_for_review to the
 	// orchestrator.
@@ -84,7 +88,9 @@ type Patch struct {
 	Status     *Status
 	// ResolvedBy (a Done root's key) closes a Draft/Ready root as Done; needs Status Done.
 	ResolvedBy *string
-	Waive      []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
+	// AbandonUnmerged acknowledges closing a ResolvedBy root whose integrated code never landed.
+	AbandonUnmerged bool
+	Waive           []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
 	// OverrideReason forces Status past the normal rules (orchestrator only); a
 	// Status the normal check allows still moves plainly, with no override recorded.
 	OverrideReason string

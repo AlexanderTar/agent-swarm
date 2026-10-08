@@ -166,7 +166,7 @@ func itemsTool(s *Server) ToolDef {
 			"solo":{"type":"string"},"verify":{"type":"array"},"intent":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
 			"blocked_by":{"type":"string"},"request_id":{"type":"string"},
-			"override_reason":{"type":"string"},"resolved_by":{"type":"string"},
+			"override_reason":{"type":"string"},"resolved_by":{"type":"string"},"abandon_unmerged":{"type":"boolean"},
 			"waive":{"type":"array","items":{"type":"object","properties":{"gate":{"type":"string"},"reason":{"type":"string"}}}}`,
 			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -200,7 +200,9 @@ func itemsTool(s *Server) ToolDef {
 				OverrideReason string `json:"override_reason"`
 				// ResolvedBy closes a Draft/Ready root as Done, resolved by this Done root (needs status done).
 				ResolvedBy string `json:"resolved_by"`
-				Waive      []struct {
+				// AbandonUnmerged acknowledges a resolved_by close whose integrated code never landed.
+				AbandonUnmerged bool `json:"abandon_unmerged"`
+				Waive           []struct {
 					Gate   string `json:"gate"`
 					Reason string `json:"reason"`
 				} `json:"waive"`
@@ -314,6 +316,7 @@ func itemsTool(s *Server) ToolDef {
 							Message: "Only a top-level orchestrator can close an item as resolved. Relay it to your parent."}
 					}
 					p.ResolvedBy = &in.ResolvedBy
+					p.AbandonUnmerged = in.AbandonUnmerged
 				}
 				for _, w := range in.Waive {
 					p.Waive = append(p.Waive, items.WaiveInput{Gate: w.Gate, Reason: w.Reason})
