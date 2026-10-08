@@ -292,6 +292,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	it.DepUnblocked = rt.OnDepUnblocked               // wake whatever was blocked_by an item that just finished
 	it.StoryReadyForReview = rt.OnStoryReadyForReview // relay story_ready_for_review when all tasks finish
 	it.RootDone = rt.OnRootDone                       // finish every agent on a root that just reached Done
+	it.CheckLanded = rt.CheckLanded                   // refuse a resolved-by close whose integrated sha never reached the default branch
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
 	// which only the installed launchd plist sets. Every other daemon — a
 	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no

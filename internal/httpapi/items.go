@@ -347,13 +347,14 @@ func (s *Server) getItem(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) patchItem(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title      *string       `json:"title"`
-		Brief      *string       `json:"brief"`
-		Acceptance *[]string     `json:"acceptance"`
-		Priority   *int          `json:"priority"`
-		Status     *items.Status `json:"status"`
-		ResolvedBy *string       `json:"resolved_by"`
-		Revision   *int          `json:"revision"`
+		Title           *string       `json:"title"`
+		Brief           *string       `json:"brief"`
+		Acceptance      *[]string     `json:"acceptance"`
+		Priority        *int          `json:"priority"`
+		Status          *items.Status `json:"status"`
+		ResolvedBy      *string       `json:"resolved_by"`
+		AbandonUnmerged bool          `json:"abandon_unmerged"`
+		Revision        *int          `json:"revision"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		s.writeErr(w, err)
@@ -364,7 +365,7 @@ func (s *Server) patchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	it, err := s.Items.Update(r.Context(), r.PathValue("key"), items.Patch{Title: body.Title, Brief: body.Brief,
-		Acceptance: body.Acceptance, Priority: body.Priority, Status: body.Status, ResolvedBy: body.ResolvedBy, Revision: *body.Revision}, items.User(via(r)))
+		Acceptance: body.Acceptance, Priority: body.Priority, Status: body.Status, ResolvedBy: body.ResolvedBy, AbandonUnmerged: body.AbandonUnmerged, Revision: *body.Revision}, items.User(via(r)))
 	if err != nil {
 		s.writeErr(w, err)
 		return

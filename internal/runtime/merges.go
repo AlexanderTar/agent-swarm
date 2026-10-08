@@ -771,3 +771,40 @@ func (s *Store) WatchMergesLoop(ctx context.Context, every time.Duration) {
 		}
 	}
 }
+
+// CheckLanded is items.Store.CheckLanded: it refuses a resolved-by close of root unless every
+// integrated sha is an ancestor of its repo's default branch (local or origin/). A repo missing from
+// the catalog can't be checked and is let through.
+func (s *Store) CheckLanded(ctx context.Context, tx *sql.Tx, root items.Item, gitJSON []byte) error {
+	var refs []GitRef
+	if err := json.Unmarshal(gitJSON, &refs); err != nil {
+		return nil
+	}
+	repos, err := s.finishReposTx(ctx, tx, root.ID, refs)
+	if err != nil {
+		return err
+	}
+	run := s.runner()
+	for _, r := range repos {
+		if r.RepoID == "" || r.Base == "" {
+			continue
+		}
+		landed := false
+		for _, branch := range []string{r.Base, "origin/" + r.Base} {
+			if _, err := run(ctx, "git", "-C", r.Path, "merge-base", "--is-ancestor", r.Ref.SHA, branch); err == nil {
+				landed = true
+				break
+			}
+		}
+		if !landed {
+			short := r.Ref.SHA
+			if len(short) > 7 {
+				short = short[:7]
+			}
+			return badRequest("%s can't be resolved: %s's %s (branch %s) is not on %s, so its integrated code never landed. "+
+				"Merge it, or close anyway with abandon_unmerged (swarm resolve --abandon-unmerged).",
+				root.Key, r.Ref.Repo, short, r.Ref.Branch, r.Base)
+		}
+	}
+	return nil
+}
