@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -60,6 +61,7 @@ type WorkflowRunView struct {
 	Round             int                `json:"round"`
 	AutoRetries       int                `json:"auto_retries,omitempty"`
 	Findings          []workflow.Finding `json:"findings"`
+	Error             string             `json:"error,omitempty"`
 }
 
 // WorkflowState is swarm_workflow's result shape (spec B7): the workflow's
@@ -80,7 +82,8 @@ type wfRow struct {
 // wfRunRow is one workflow_runs table row.
 type wfRunRow struct {
 	ID, WorkflowID, StepID, Role, AgentID, State, Verdict, SHA, ReviewWorktreeID string
-	FindingsJSON                                                                 string
+	FindingsJSON, Error                                                          string
+	ErrorFatal                                                                   bool
 	Round, AutoRetries                                                           int
 	CreatedAt                                                                    time.Time
 	EndedAt                                                                      *time.Time
@@ -94,7 +97,7 @@ func (r wfRunRow) findings() []workflow.Finding {
 
 func (r wfRunRow) toRun() workflow.Run {
 	return workflow.Run{StepID: r.StepID, Round: r.Round, Role: r.Role, State: workflow.RunState(r.State),
-		Verdict: workflow.Verdict(r.Verdict), Findings: r.findings(), SHA: r.SHA, AutoRetries: r.AutoRetries}
+		Verdict: workflow.Verdict(r.Verdict), Findings: r.findings(), SHA: r.SHA, AutoRetries: r.AutoRetries, Error: r.Error, Fatal: r.ErrorFatal}
 }
 
 func (r wfRunRow) toView() WorkflowRunView {
@@ -103,7 +106,7 @@ func (r wfRunRow) toView() WorkflowRunView {
 		f = []workflow.Finding{}
 	}
 	return WorkflowRunView{ID: r.ID, StepID: r.StepID, Role: r.Role, AgentID: r.AgentID, State: r.State,
-		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: f}
+		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: f, Error: r.Error}
 }
 
 // workflowLocks is the per-workflow mutex the engine holds across a whole
@@ -197,6 +200,40 @@ func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, 
 	return false, nil
 }
 
+// preflightBriefs renders the brief of every step the first advance would
+// spawn, so an over-long one is refused at Start (BUG-55) rather than
+// failing the run after the workflows row is committed.
+func (s *Store) preflightBriefs(ctx context.Context, orch Agent, it items.Item, wf wfRow) error {
+	action := workflow.Next(*it.Workflow, nil, 1, 0)
+	if action.Kind != workflow.ActionSpawn {
+		return nil
+	}
+	step, ok := stepFor(it.Workflow, action.StepID)
+	if !ok {
+		return nil
+	}
+	roles := action.Roles
+	if step.Run != "" {
+		roles = []string{step.Run}
+	}
+	for _, role := range roles {
+		brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: action.StepID, Role: role, Round: action.Round})
+		if err != nil {
+			return err
+		}
+		name, err := defaultName(Role(role), it.Title)
+		if err != nil {
+			return err
+		}
+		brief.Key, brief.Title, brief.Name, brief.Role = it.Key, it.Title, name, Role(role)
+		brief.RootKey, brief.ParentName = it.RootKey, orch.Name
+		if _, err := RenderBrief(brief); err != nil {
+			return &items.Error{Code: items.CodeBadRequest, Message: it.Key + ": " + err.Error()}
+		}
+	}
+	return nil
+}
+
 // StartWorkflow is swarm_workflow op:"start" (spec B4/B7): validates, inserts
 // the workflows row (round 1, running) and calls advance.
 func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error) {
@@ -255,8 +292,6 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 		}
 	}
 
-	wfID := ids.New("wf")
-	now := s.now()
 	wtJSON, err := json.Marshal(in.Worktrees)
 	if err != nil {
 		return WorkflowState{}, err
@@ -265,6 +300,12 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err != nil {
 		return WorkflowState{}, err
 	}
+	if err := s.preflightBriefs(ctx, orch, it, wfRow{ContextJSON: string(ctxJSON), WorktreesJSON: string(wtJSON)}); err != nil {
+		return WorkflowState{}, err
+	}
+
+	wfID := ids.New("wf")
+	now := s.now()
 	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO workflows
 			(id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds, context_json, worktrees_json, created_at, updated_at)
@@ -436,7 +477,7 @@ func (r wfRow) contextLines() []string {
 func (s *Store) loadWorkflowRuns(ctx context.Context, workflowID string) ([]wfRunRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id, step_id, round, role, COALESCE(agent_id, ''), state,
 		COALESCE(verdict, ''), COALESCE(findings_json, '[]'), COALESCE(review_worktree_id, ''), COALESCE(sha, ''),
-		auto_retries, created_at, ended_at
+		auto_retries, created_at, ended_at, COALESCE(error, ''), error_fatal
 		FROM workflow_runs WHERE workflow_id = ? ORDER BY round, step_id, role`, workflowID)
 	if err != nil {
 		return nil, err
@@ -448,7 +489,7 @@ func (s *Store) loadWorkflowRuns(ctx context.Context, workflowID string) ([]wfRu
 		var created int64
 		var ended sql.NullInt64
 		if err := rows.Scan(&r.ID, &r.StepID, &r.Round, &r.Role, &r.AgentID, &r.State, &r.Verdict, &r.FindingsJSON,
-			&r.ReviewWorktreeID, &r.SHA, &r.AutoRetries, &created, &ended); err != nil {
+			&r.ReviewWorktreeID, &r.SHA, &r.AutoRetries, &created, &ended, &r.Error, &r.ErrorFatal); err != nil {
 			return nil, err
 		}
 		r.WorkflowID = workflowID
@@ -575,7 +616,21 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 		// waiting/active. Fall through to the waiting-run fill pass below
 		// anyway -- it may be exactly what Wait is waiting on.
 	}
-	return s.fillWaitingRuns(ctx, wf.ID)
+	if err := s.fillWaitingRuns(ctx, wf.ID); err != nil {
+		return err
+	}
+	// A deterministic spawn refusal escalates on this same advance, not on
+	// the next trigger (BUG-55): Next turns a fatal failed run into Escalate.
+	runs, err = s.loadWorkflowRuns(ctx, wf.ID)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(runs, func(r wfRunRow) bool { return r.State == string(workflow.RunStateFailed) && r.ErrorFatal }) {
+		if a := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds); a.Kind == workflow.ActionEscalate {
+			return s.applyEscalate(ctx, wf, it, a, runs)
+		}
+	}
+	return nil
 }
 
 // healStrandedActiveRuns marks an 'active' run 'failed' or 'cancelled' when
@@ -831,6 +886,13 @@ func (s *Store) oldestWaitingRun(ctx context.Context, workflowID string) (wfRunR
 	return *best, true, nil
 }
 
+// isSpawnRefusal reports a deterministic Spawn validation refusal (an over-long
+// brief, or any other bad_request): retrying the same spawn cannot succeed.
+func isSpawnRefusal(err error) bool {
+	var ie *items.Error
+	return err.Error() == ErrBriefTooLong || (errors.As(err, &ie) && ie.Code == items.CodeBadRequest)
+}
+
 // fillWaitingRuns spawns every one of workflowID's waiting runs, oldest
 // first. There is no per-owner budget: a spawned agent the global
 // max_concurrent_agents pool can't fit yet waits in the global queue
@@ -918,6 +980,56 @@ func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *
 	return []string{"Previous round's review findings:\n" + renderFindings(findings)}, nil
 }
 
+// stepBrief builds the brief spawnRunAgent hands Spawn for run (identity
+// fields are Spawn's), plus the rw worktrees a build step shares. StartWorkflow's
+// preflight calls it too, so the two can't drift.
+func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (BriefInput, []WorkflowWorktree, error) {
+	step, ok := stepFor(it.Workflow, run.StepID)
+	if !ok {
+		return BriefInput{}, nil, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
+	}
+	artifactLines, err := s.artifactContextLines(ctx, it.ID)
+	if err != nil {
+		return BriefInput{}, nil, err
+	}
+	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
+	if step.Run != "" && run.Round > 1 {
+		findingLines, err := s.roundFindingLines(ctx, wf.ID, it.Workflow, run.StepID, run.Round)
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		ctxLines = append(ctxLines, findingLines...)
+	}
+	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
+
+	var shareRW []WorkflowWorktree
+	if step.Run != "" {
+		for _, w := range wf.worktrees() {
+			if w.Mode == "rw" {
+				shareRW = append(shareRW, w)
+			}
+		}
+		wts, err := s.BriefWorktrees(ctx, shareRW)
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		brief.Worktrees = wts
+	} else if run.ReviewWorktreeID != "" {
+		wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		brief.Worktrees = wts
+	} else if it.Type == items.Story {
+		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
+		if err != nil {
+			return BriefInput{}, nil, err
+		}
+		brief.Worktrees = wts
+	}
+	return brief, shareRW, nil
+}
+
 func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (bool, error) {
 	step, ok := stepFor(it.Workflow, run.StepID)
 	if !ok {
@@ -935,44 +1047,9 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		}
 		run.ReviewWorktreeID = wtID
 	}
-	artifactLines, err := s.artifactContextLines(ctx, it.ID)
+	brief, shareRW, err := s.stepBrief(ctx, wf, it, run)
 	if err != nil {
 		return false, err
-	}
-	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
-	if step.Run != "" && run.Round > 1 {
-		findingLines, err := s.roundFindingLines(ctx, wf.ID, it.Workflow, run.StepID, run.Round)
-		if err != nil {
-			return false, err
-		}
-		ctxLines = append(ctxLines, findingLines...)
-	}
-	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
-
-	var shareRW []WorkflowWorktree
-	if step.Run != "" {
-		for _, w := range wf.worktrees() {
-			if w.Mode == "rw" {
-				shareRW = append(shareRW, w)
-			}
-		}
-		wts, err := s.BriefWorktrees(ctx, shareRW)
-		if err != nil {
-			return false, err
-		}
-		brief.Worktrees = wts
-	} else if run.ReviewWorktreeID != "" {
-		wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
-		if err != nil {
-			return false, err
-		}
-		brief.Worktrees = wts
-	} else if it.Type == items.Story {
-		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
-		if err != nil {
-			return false, err
-		}
-		brief.Worktrees = wts
 	}
 
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: it.Key, Role: Role(run.Role), ParentAgentID: wf.OwnerAgentID,
@@ -994,8 +1071,8 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		// row is handled, and a sibling waiting row (a parallel reviewer)
 		// must still get its own spawn attempt.
 		s.logf("advance: spawn %s/%s round %d: %v", run.StepID, run.Role, run.Round, err)
-		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
-			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), run.ID)
+		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?, error = ?, error_fatal = ?
+			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), err.Error(), isSpawnRefusal(err), run.ID)
 		if uerr != nil {
 			return false, uerr
 		}
@@ -1283,7 +1360,7 @@ func (s *Store) applyAutoRetry(ctx context.Context, wf wfRow, action workflow.Ac
 		return nil
 	}
 	if row.AgentID == "" {
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'waiting', auto_retries = auto_retries + 1
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'waiting', auto_retries = auto_retries + 1, error = NULL, error_fatal = 0
 			WHERE id = ? AND state = 'failed'`, row.ID)
 		if err != nil {
 			return err
