@@ -156,6 +156,13 @@ type ModelObserver interface {
 	ObserveModel(transcriptPath, providerSessionID string) (model, effort string, ok bool)
 }
 
+// SessionRenamer is an optional Adapter capability: kinds with no launch flag
+// or hook field for the session title expose the slash command that sets it,
+// pasted into the idle pane. Claude does not implement it (hook sessionTitle).
+type SessionRenamer interface {
+	RenameCommand(name string) (line string, ok bool)
+}
+
 // base carries what every adapter needs and supplies the shared Idle rule.
 type base struct {
 	d    Deps

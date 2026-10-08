@@ -252,3 +252,6 @@ func (c *Cursor) Wake(ctx context.Context, sess WakeTarget) (bool, error) {
 // DiscoverSession is a no-op: the hook path (ParseHook) already populates
 // ProviderSessionID for this kind.
 func (c *Cursor) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }
+
+// RenameCommand implements SessionRenamer.
+func (*Cursor) RenameCommand(name string) (string, bool) { return "/rename " + name, true }

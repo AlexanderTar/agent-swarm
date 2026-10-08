@@ -595,3 +595,6 @@ func (a *Agy) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
 	}
 	return strings.Join(texts, "\n"), true
 }
+
+// RenameCommand implements SessionRenamer.
+func (*Agy) RenameCommand(name string) (string, bool) { return "/rename " + name, true }

@@ -151,3 +151,6 @@ func (f *Fake) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolResponse:   raw.ToolResponse,
 		IsSwarmTool:    strings.HasPrefix(raw.ToolName, "mcp__swarm__")}, nil
 }
+
+// RenameCommand implements SessionRenamer.
+func (*Fake) RenameCommand(name string) (string, bool) { return "/rename " + name, true }
