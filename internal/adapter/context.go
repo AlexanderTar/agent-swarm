@@ -90,12 +90,15 @@ func tailLines(path string, max int64) ([][]byte, error) {
 
 func claudeContextLine(line []byte) (ContextSample, bool) {
 	var l struct {
-		Type    string `json:"type"`
-		Message struct {
+		Type        string `json:"type"`
+		IsSidechain bool   `json:"isSidechain"`
+		Message     struct {
+			Model    string          `json:"model"`
 			RawUsage json.RawMessage `json:"usage"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(line, &l) != nil || l.Type != "assistant" || len(l.Message.RawUsage) == 0 {
+	// Subagent turns and hook-error "<synthetic>" lines say nothing about the main context.
+	if json.Unmarshal(line, &l) != nil || l.Type != "assistant" || l.IsSidechain || l.Message.Model == "<synthetic>" || len(l.Message.RawUsage) == 0 {
 		return ContextSample{}, false
 	}
 	var u struct {
