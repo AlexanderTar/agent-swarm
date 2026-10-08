@@ -494,3 +494,38 @@ func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round, extra
 		Workflow:   workflow.Render(spec, stepID, round, extraRounds),
 	}
 }
+
+// LowTokenBlock is the guidance appended to a kickoff (or sent as a note) while
+// low-token mode is on: LowTokenOrchestrator for orchestrators, else
+// LowTokenWorker. Muse gets no mid-turn notices, so it carries one more sentence.
+func LowTokenBlock(role Role, kind string) string {
+	b := LowTokenWorker
+	if role == RoleOrchestrator {
+		b = LowTokenOrchestrator
+	}
+	sync := ""
+	if kind == "muse" {
+		sync = " You get no mid-turn notices, so also call it before any long stretch of work."
+	}
+	return strings.Replace(b, "{muse_sync}", sync, 1)
+}
+
+// LowTokenOrchestrator and LowTokenWorker are the spec's kickoff blocks;
+// {muse_sync} is filled by LowTokenBlock.
+const LowTokenOrchestrator = `## Low-token mode is on
+Your user turned on low-token mode for this orchestrator. These rules override the skill steps they name:
+- Do small work yourself: at most one research question, config or doc edits touching three files or fewer, and your own plan check instead of spawning a completeness critic.
+- Spikes: at most two researchers and no extra research round.
+- Advisor: consult only before plan approval and before irreversible steps.
+- Batch work into fewer, larger packages (four to five units).
+- Keep messages and checkpoint summaries to three sentences. Don't send a finding when your checkpoint already says it.
+- Read the lines you need, not whole files. Query graphify if it is built; don't build it for small tasks.
+- Call swarm_sync when a notice arrives and before you complete, not on a timer.{muse_sync}
+- The daemon caps review loops at two rounds, one reviewer per step, and no automatic retries.`
+
+const LowTokenWorker = `## Low-token mode is on
+Your orchestrator runs in low-token mode. These rules override the skill steps they name:
+- Keep messages and checkpoint summaries to three sentences.
+- Read the lines you need, not whole files. Query graphify if it is built; don't build it for small tasks.
+- Call swarm_sync when a notice arrives and before you complete, not on a timer.{muse_sync}
+- Researchers: answer in eight tool calls or fewer.`

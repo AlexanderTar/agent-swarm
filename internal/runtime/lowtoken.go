@@ -41,7 +41,7 @@ const LowTokenOffNote = "Low-token mode is now off. Follow your skills as writte
 // LowTokenOnNote is the live note sent when low-token mode turns on, for an
 // agent of the given role and kind.
 func LowTokenOnNote(role Role, kind string) string {
-	return "Low-token mode is now on for your orchestrator."
+	return "Low-token mode is now on for your orchestrator.\n\n" + LowTokenBlock(role, kind)
 }
 
 func liveAgent(a Agent) bool { return a.State == AgentActive || a.State == AgentQueued }
@@ -169,4 +169,18 @@ func (s *Store) reloadAgents(ctx context.Context, as []Agent) []Agent {
 		out = append(out, a)
 	}
 	return out
+}
+
+// noteLowTokenOn enqueues the on-note for a, for a start path that has no
+// kickoff to carry the guidance block (muse resume).
+func (s *Store) noteLowTokenOn(ctx context.Context, a Agent) error {
+	payload, err := json.Marshal(map[string]string{"note": LowTokenOnNote(a.Role, string(a.Kind))})
+	if err != nil {
+		return err
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		_, err := s.enqueue(ctx, tx, Message{Kind: "assignment_update", Origin: "daemon",
+			ToAgentID: a.ID, RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
+		return err
+	})
 }
