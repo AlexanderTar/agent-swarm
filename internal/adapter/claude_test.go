@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -1423,6 +1424,57 @@ func TestClaudeOrchestratorEnablesRemoteControlOnLaunchAndResume(t *testing.T) {
 		rc = remoteControlSetting(t, l)
 		if tc.want != (rc != nil && *rc) {
 			t.Errorf("Resume role %q: remoteControlAtStartup = %v, want enabled=%v", tc.role, rc, tc.want)
+		}
+	}
+}
+
+// TASK-777: a child's cwd is ~/.swarm/work/<name>, so Claude Code's
+// ancestor CLAUDE.md walk reaches $HOME and loads $HOME/.claude/CLAUDE.md as
+// *Project* memory -- --setting-sources project,local never excluded it. The
+// per-launch settings must list the user's memory files in claudeMdExcludes
+// (absolute paths/globs, honoured for User, Project and Local memory) on both
+// Launch and Resume.
+func TestClaudeSettingsExcludeUserMemory(t *testing.T) {
+	d := testDeps(t)
+	c := newClaude(d)
+	s := claudeSpec(t, d)
+	s.Cwd = filepath.Join(d.UserHome, ".swarm", "work", "login-form-coder")
+	if err := os.MkdirAll(s.Cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(d.UserHome, ".claude", "CLAUDE.md"),
+		filepath.Join(d.UserHome, ".claude", "rules", "**"),
+	}
+	l, err := c.Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SessionID = "ses_02"
+	s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
+	r, err := c.Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, launch := range map[string]Launch{"Launch": l, "Resume": r} {
+		var path string
+		for i, v := range launch.Argv {
+			if v == "--settings" {
+				path = launch.Argv[i+1]
+			}
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			ClaudeMdExcludes []string `json:"claudeMdExcludes"`
+		}
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Fatalf("settings JSON does not parse: %v\n%s", err, b)
+		}
+		if !reflect.DeepEqual(cfg.ClaudeMdExcludes, want) {
+			t.Errorf("%s: claudeMdExcludes = %q, want %q", name, cfg.ClaudeMdExcludes, want)
 		}
 	}
 }
