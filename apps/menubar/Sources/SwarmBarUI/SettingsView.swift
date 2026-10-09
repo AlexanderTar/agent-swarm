@@ -129,6 +129,15 @@ struct DefaultsTab: View {
                 }
             }
             ForEach(model.staleNotes, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
+            Divider()
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle(Copy.lowTokenMode, isOn: Binding(get: { model.settings.lowTokenMode },
+                                                        set: { on in Task { await model.setLowTokenMode(on) } }))
+                    .toggleStyle(.checkbox)
+                    .disabled(!model.connected || model.lowTokenPending)
+                Text(Copy.lowTokenSettingsCaption).font(.caption).foregroundStyle(.secondary)
+                    .padding(.leading, 20).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 if let line = model.catalogLine { Text(line).font(.caption).foregroundStyle(.secondary) }
                 Spacer()

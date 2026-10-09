@@ -80,6 +80,10 @@ public final class AppModel {
     public private(set) var catalog: [AgentCatalogEntry] = []
     public var usageAgent: AgentKind?
     public private(set) var pauseAllPending = false
+    /// Header leaf toggle: the requested default while its request is in flight (nil = none), and the
+    /// orchestrators whose own low-token request is in flight.
+    private var lowTokenAllRequested: Bool?
+    public private(set) var lowTokenPending: Set<String> = []
     public private(set) var allNotifications: [SwarmNotification]?
     public private(set) var tmuxSessions: [String: Bool] = [:]
     public private(set) var actionError: String?
@@ -483,6 +487,39 @@ public final class AppModel {
         } catch {
             pauseAllPending = false
         }
+        await refresh()
+    }
+
+    public var lowTokenAllPending: Bool { lowTokenAllRequested != nil }
+    /// The default shown by the header toggle: the optimistic request while in flight, else the daemon's.
+    public var lowTokenDefault: Bool { lowTokenAllRequested ?? state.settings.lowTokenMode }
+    public var lowTokenAllDisabled: Bool { !connected || lowTokenAllPending }
+
+    public func setLowTokenAll(_ on: Bool) async {
+        guard !lowTokenAllDisabled else { return }
+        lowTokenAllRequested = on
+        defer { lowTokenAllRequested = nil }
+        do {
+            _ = try await client.setLowTokenAll(on: on)
+            actionError = nil
+        } catch let e as DaemonError {
+            actionError = Copy.lowTokenFailed(e.message)
+        } catch {}
+        await refresh()
+    }
+
+    public func lowTokenDisabled(for agent: AgentNode) -> Bool { !connected || lowTokenPending.contains(agent.name) }
+
+    public func setLowToken(_ on: Bool, for agent: AgentNode) async {
+        guard !lowTokenDisabled(for: agent) else { return }
+        lowTokenPending.insert(agent.name)
+        defer { lowTokenPending.remove(agent.name) }
+        do {
+            _ = try await client.setLowToken(agent: agent.name, on: on)
+            actionError = nil
+        } catch let e as DaemonError {
+            actionError = Copy.lowTokenFailed(e.message)
+        } catch {}
         await refresh()
     }
 

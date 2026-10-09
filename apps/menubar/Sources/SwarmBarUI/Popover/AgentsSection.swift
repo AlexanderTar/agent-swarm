@@ -10,8 +10,15 @@ struct AgentsSection: View {
         VStack(alignment: .leading, spacing: 2) {
             SectionHeader(Copy.agents, open: model.isOpen(.agents),
                           toggle: { model.setSection(.agents, open: !model.isOpen(.agents)) }) {
-                Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
-                    .disabled(model.pauseAllDisabled)
+                HStack(spacing: 4) {
+                    let on = model.lowTokenDefault
+                    IconButton(on ? "leaf.fill" : "leaf", help: on ? Copy.lowTokenTurnOffAll : Copy.lowTokenTurnOnAll,
+                               disabled: model.lowTokenAllDisabled, tint: on ? .green : nil, toggleValue: on) {
+                        Task { await model.setLowTokenAll(!on) }
+                    }
+                    Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
+                        .disabled(model.pauseAllDisabled)
+                }
             }
             if let error = model.actionError {
                 Text(error).font(.caption).foregroundStyle(.red)
@@ -88,7 +95,10 @@ struct AgentRowView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(agent.name).lineLimit(1).truncationMode(.middle)
-                        StateDot(state.tone)
+                        HStack(spacing: 4) {
+                            StateDot(state.tone)
+                            if AgentTree.showsLowTokenLeaf(agent) { EcoLeaf() }
+                        }
                     }
                     Text(AgentTree.subtitle(agent)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -117,6 +127,13 @@ struct AgentRowView: View {
                     Button(Copy.handOffTo) { openBoardHandoff(agent.name) }
                 }
             }
+            if AgentTree.offersLowToken(agent) {
+                Divider()
+                Toggle(Copy.lowTokenMode, isOn: Binding(
+                    get: { agent.lowTokenEffective == true },
+                    set: { on in Task { await model.setLowToken(on, for: agent) } }))
+                    .disabled(model.lowTokenDisabled(for: agent))
+            }
         }
         .confirmationDialog(confirming?.confirm ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
             Button(Copy.cancel, role: .destructive) {
@@ -125,7 +142,7 @@ struct AgentRowView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(agent.name), \(state.label ?? Copy.runningLabel)")
+        .accessibilityLabel(AgentTree.rowLabel(agent))
     }
 
     private func run(_ a: AgentAction) {

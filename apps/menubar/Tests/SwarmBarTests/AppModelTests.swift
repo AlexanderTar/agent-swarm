@@ -586,6 +586,59 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(fresh.pauseAllPending)
     }
 
+    func testLowTokenAllStates() async throws {
+        let m = make()
+        XCTAssertTrue(m.lowTokenAllDisabled, "disconnected")
+        await m.setLowTokenAll(false)
+        XCTAssertTrue(client.calls.filter { $0.hasPrefix("low-token") }.isEmpty)
+
+        await m.refresh()
+        XCTAssertTrue(m.lowTokenDefault)
+        XCTAssertFalse(m.lowTokenAllDisabled)
+
+        var off: StateResponse = try Fixture.decode("state.json")
+        off.settings.lowTokenMode = false
+        client.stateResult = .success(off)
+        client.holdAgent = true
+        let task = Task { await m.setLowTokenAll(false) }
+        for _ in 0..<200 where !m.lowTokenAllPending { await Task.yield() }
+        XCTAssertFalse(m.lowTokenDefault, "optimistic")
+        XCTAssertTrue(m.lowTokenAllDisabled, "pending")
+        client.releaseAgent()
+        await task.value
+        XCTAssertFalse(m.lowTokenAllPending)
+        XCTAssertFalse(m.lowTokenDefault)
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("low-token") }, ["low-token-all:off"])
+
+        client.holdAgent = false
+        client.failNext = .unreachable
+        await m.setLowTokenAll(true)
+        XCTAssertFalse(m.lowTokenDefault, "reverts to the daemon's default")
+        XCTAssertFalse(m.lowTokenAllPending)
+        XCTAssertEqual(m.actionError, "Couldn't change low-token mode: Daemon unavailable.")
+    }
+
+    func testLowTokenPerOrchestrator() async throws {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        client.holdAgent = true
+        let task = Task { await m.setLowToken(false, for: orch) }
+        for _ in 0..<200 where m.lowTokenPending.isEmpty { await Task.yield() }
+        XCTAssertEqual(m.lowTokenPending, [orch.name])
+        await m.setLowToken(true, for: orch)
+        client.releaseAgent()
+        await task.value
+        XCTAssertTrue(m.lowTokenPending.isEmpty)
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("low-token") }, ["low-token:auth-epic-orchestrator:off"], "second tap while pending is ignored")
+
+        client.holdAgent = false
+        client.failNext = .api(status: 409, code: "conflict", message: "Orchestrator is finished.")
+        await m.setLowToken(true, for: orch)
+        XCTAssertEqual(m.actionError, "Couldn't change low-token mode: Orchestrator is finished.")
+        XCTAssertTrue(m.lowTokenPending.isEmpty)
+    }
+
     func testUsageSettingsAndCatalogEventsRefetchInsteadOfPatching() async throws {
         let m = make()
         await m.refresh()

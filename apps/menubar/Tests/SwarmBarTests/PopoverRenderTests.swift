@@ -96,6 +96,40 @@ final class PopoverRenderTests: XCTestCase {
         XCTAssertGreaterThan(renderedSize(DaemonBanner(text: m.banner ?? "", retry: {}).frame(width: 336)).height, 0)
     }
 
+    func testLowTokenControlsRenderInEveryState() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let m = makeAppModel(client)
+        await m.refresh()
+        XCTAssertGreaterThan(renderedSize(EcoLeaf()).width, 0)
+        for on in [true, false] {
+            XCTAssertGreaterThan(renderedSize(IconButton(on ? "leaf.fill" : "leaf", help: Copy.lowTokenTurnOnAll,
+                                                         tint: on ? .green : nil, toggleValue: on) {}).width, 0)
+        }
+        XCTAssertGreaterThan(renderedSize(AgentsSection(model: m, cap: 400).frame(width: 360)).height, 100, "header toggle on")
+        var off: StateResponse = try Fixture.decode("state.json")
+        off.settings.lowTokenMode = false
+        client.stateResult = .success(off)
+        await m.refresh()
+        XCTAssertGreaterThan(renderedSize(AgentsSection(model: m, cap: 400).frame(width: 360)).height, 100, "header toggle off")
+        client.stateResult = .failure(.unreachable)
+        await m.refresh()
+        XCTAssertTrue(m.lowTokenAllDisabled)
+        XCTAssertGreaterThan(renderedSize(AgentsSection(model: m, cap: 400).frame(width: 360)).height, 100, "disconnected")
+    }
+
+    func testDefaultsTabShowsLowTokenCheckboxAndCaption() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let m = makeAppModel(client)
+        await m.refresh()
+        let settings = m.makeSettings()
+        await settings.load()
+        let host = NSHostingView(rootView: DefaultsTab(model: settings).frame(width: 740))
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        let text = try ocrText(host)
+        XCTAssertTrue(text.contains("Low-token mode"), text)
+        XCTAssertTrue(text.contains("fewer tokens"), text)
+    }
+
     func testNeedsYouSectionRendersMixedKindsWithoutCrashing() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let m = makeAppModel(client)
