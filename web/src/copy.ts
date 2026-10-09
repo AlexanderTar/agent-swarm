@@ -60,6 +60,7 @@ export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale"
 };
 
 export const C = {
+  lowTokenOn: "Low-token mode is on",
   approveComment: "Comment (optional)",
   waiversInTree: (n: number, m: number) =>
     `${n} ${n === 1 ? "waiver" : "waivers"}, ${m} ${m === 1 ? "override" : "overrides"} in this tree`,
