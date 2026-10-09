@@ -30,6 +30,10 @@ func TestHookSubcommandNeedsBothArguments(t *testing.T) {
 
 // swarm mcp with no session and no daemon token file fails clearly.
 func TestMCPSubcommandNeedsATokenSource(t *testing.T) {
+	// Run inside a Swarm agent session, these point the shim at a real token.
+	for _, k := range []string{"SWARM_SESSION", "SWARM_TOKEN_FILE", "SWARM_AGENT_KIND", "SWARM_URL", "SWARM_HOME"} {
+		t.Setenv(k, "")
+	}
 	home := t.TempDir()
 	var out, errOut bytes.Buffer
 	code := runWithStdin([]string{"mcp", "--home", home}, strings.NewReader(""), &out, &errOut)
