@@ -125,8 +125,7 @@ public enum CatalogRules {
 
     /// The pane preview's effort: the stored level, else the level the model runs at by default ('' =
     /// CLI default), humanized alike ("High", never "Default"), falling back like `defaultEffortLabel`.
-    /// nil means the actual level is unknown (Cursor's bare level)
-    /// or the model has no effort control.
+    /// nil means the actual level is unknown (Cursor's bare level) or the model has no effort control.
     public static func previewEffortLabel(_ entry: AgentCatalogEntry?, _ model: String, _ effort: String?) -> String? {
         if let effort, !effort.isEmpty { return effort == bareLevel ? nil : Copy.humanEffort(effort) }
         guard let m = resolve(entry, model) else { return nil }
