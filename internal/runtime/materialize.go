@@ -111,23 +111,16 @@ func (s *Store) approvedTree(ctx context.Context, tx *sql.Tx, artifactID string)
 // key, then adds every dep edge with AddDepTx (never AddDep, which would open a
 // second transaction inside this one and deadlock against itself — R6).
 func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tree Tree, rootType items.Type) (MaterializeResult, error) {
-	resolveRepos := func(names []string) ([]string, error) {
+	resolveRepos := func(refs []string) ([]string, error) {
 		var out []string
-		for _, n := range names {
-			var id string
-			err := tx.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = ?`, n).Scan(&id)
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("tree_invalid: repository %q is not registered; register its local Git path with swarm_repo_register", n)
+		for _, r := range refs {
+			id, err := items.ResolveRepoRefTx(ctx, tx, r)
+			var ie *items.Error
+			if errors.As(err, &ie) {
+				return nil, fmt.Errorf("tree_invalid: %s", ie.Message)
 			}
 			if err != nil {
 				return nil, err
-			}
-			var count int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM repos WHERE name = ?`, n).Scan(&count); err != nil {
-				return nil, err
-			}
-			if count != 1 {
-				return nil, fmt.Errorf("tree_invalid: repository name %q is ambiguous; use unique catalog names", n)
 			}
 			out = append(out, id)
 		}

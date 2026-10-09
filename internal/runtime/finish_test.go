@@ -286,6 +286,7 @@ func TestCancelOnADoneRootRecordsCompleted(t *testing.T) {
 // Spec R3.
 func TestHandoffRefusedOnceTheRootIsDone(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	orch, _, _ := worker(t, s)
 	ses := mustSessionID(t, s, orch.ID)

@@ -480,17 +480,11 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 			}
 			in.Status = Draft
 			if len(in.Repos) > 0 {
-				for _, r := range in.Repos {
-					var exists int
-					err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE id = ?`, r).Scan(&exists)
-					if errors.Is(err, sql.ErrNoRows) {
-						return Item{}, errf(CodeBadRequest, "Unknown repository %q. Pass a repository id from swarm_read {repos:{q:%q}}.", r, r)
-					}
-					if err != nil {
-						return Item{}, err
-					}
+				repos, err := resolveRepoRefs(ctx, tx, in.Repos)
+				if err != nil {
+					return Item{}, err
 				}
-				in.SuggestedRepos = append(append([]string{}, in.SuggestedRepos...), in.Repos...)
+				in.SuggestedRepos = append(append([]string{}, in.SuggestedRepos...), repos...)
 				in.Repos = nil
 			}
 			if in.OriginSpikeID == "" {
@@ -511,15 +505,8 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 		}
 		rootID, parentID = parent.RootID, sql.NullString{String: parent.ID, Valid: true}
 		if len(in.Repos) > 0 && by.Kind != ActorDaemon {
-			for _, r := range in.Repos {
-				var exists int
-				err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE id = ?`, r).Scan(&exists)
-				if errors.Is(err, sql.ErrNoRows) {
-					return Item{}, errf(CodeBadRequest, "Unknown repository %q. Register its local Git path with swarm_repo_register.", r)
-				}
-				if err != nil {
-					return Item{}, err
-				}
+			if in.Repos, err = resolveRepoRefs(ctx, tx, in.Repos); err != nil {
+				return Item{}, err
 			}
 		}
 	}

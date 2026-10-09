@@ -128,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         watcher = StatusItemWatcher { [weak self] visible in self?.model.labelVisible(visible) }
         watcher?.start()
+        updateTooltips()
         previewWindow = PanePreviewWindow(
             preview: model.preview,
             lookup: { [weak model] name in
@@ -146,7 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func updateTooltips() { watcher?.setTooltips(model.label) }
+    func updateTooltips() {
+        watcher?.setTooltips(model.label)
+        watcher?.setBadge(model.label.badge)
+    }
 }
 
 @main

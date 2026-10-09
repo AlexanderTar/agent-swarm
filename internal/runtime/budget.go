@@ -134,6 +134,7 @@ func (s *Store) EnforceContextBudget(ctx context.Context) error {
 
 // SampleTranscript reads the session's transcript for its kind and records
 // the sample, filling the window from ContextWindowTokens when the source has none.
+// The window is sized from both the configured and the transcript's model.
 func (s *Store) SampleTranscript(ctx context.Context, sessionID string, kind AgentKind, path string) error {
 	smp, ok := adapter.ReadContext(kind, path)
 	if !ok {
@@ -149,8 +150,12 @@ func (s *Store) recordRead(ctx context.Context, sessionID string, kind AgentKind
 			`SELECT a.model FROM sessions ses JOIN agents a ON a.id = ses.agent_id WHERE ses.id = ?`, sessionID).Scan(&model); err != nil {
 			return err
 		}
-		if w, ok := adapter.ContextWindowTokens(kind, model); ok {
-			smp.Window = &w
+		// the configured model may be an alias ("opus") the table can't size,
+		// and only it carries a [1m] suffix: take the larger of the two.
+		for _, m := range []string{model, smp.Model} {
+			if w, ok := adapter.ContextWindowTokens(kind, m); ok && (smp.Window == nil || w > *smp.Window) {
+				smp.Window = &w
+			}
 		}
 	}
 	return s.RecordContextSample(ctx, sessionID, smp.Tokens, smp.Window)
