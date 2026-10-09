@@ -53,7 +53,7 @@ func registerRepoTool(s *Server) ToolDef {
 func reposTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_repos",
-		Description: "Optionally update the repository hints on your root item. Pass the current repos_version from swarm_read; active worktrees prevent dropping a hint.",
+		Description: "Optionally update the repository hints on your root item (catalog ids or unique names; ids are stored). Pass the current repos_version from swarm_read; active worktrees prevent dropping a hint.",
 		Roles:       orchestratorRole,
 		Schema:      objSchemaRequired(`"repos":{"type":"array","items":{"type":"string"}},"repos_version":{"type":"integer"}`, []string{"repos", "repos_version"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -71,6 +71,11 @@ func reposTool(s *Server) ToolDef {
 			key, err := rootKeyFor(ctx, s, a.RootItemID)
 			if err != nil {
 				return nil, err
+			}
+			for i, ref := range in.Repos {
+				if in.Repos[i], err = items.ResolveRepoRefTx(ctx, s.RT.DB, ref); err != nil {
+					return nil, err
+				}
 			}
 			if err := s.RT.SetItemRepos(ctx, key, in.Repos, in.ReposVersion); err != nil {
 				return nil, err

@@ -147,3 +147,37 @@ func TestWorktreeCreateAndReviewAcceptRepoName(t *testing.T) {
 		t.Fatalf("unknown name err = %v", err)
 	}
 }
+
+// BUG-73: swarm_repos accepts a unique catalog name and stores its id.
+func TestReposAcceptsRepoNameAndStoresID(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	named := seedRepoIn(t, s, "bug73-hint-repo")
+	seedRepoIn(t, s, "bug73-hint-twin")
+	seedRepoIn(t, s, "bug73-hint-twin")
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := func(ref string) error {
+		_, err := s.call(ctx, seed.Caller, "swarm_repos",
+			fmt.Sprintf(`{"repos":[%q,%q],"repos_version":%d}`, seed.RepoID, ref, root.ReposVersion))
+		return err
+	}
+	if err := set("bug73-hint-twin"); err == nil || !strings.Contains(err.Error(), `Repository name "bug73-hint-twin" is ambiguous`) {
+		t.Fatalf("ambiguous name err = %v", err)
+	}
+	if err := set("bug73-hint-nope"); err == nil || !strings.Contains(err.Error(), `Unknown repository "bug73-hint-nope"`) {
+		t.Fatalf("unknown name err = %v", err)
+	}
+	if err := set("bug73-hint-repo"); err != nil {
+		t.Fatalf("set by name: %v", err)
+	}
+	got, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Repos, ",") != seed.RepoID+","+named {
+		t.Fatalf("stored repos = %v, want ids [%s %s]", got.Repos, seed.RepoID, named)
+	}
+}
