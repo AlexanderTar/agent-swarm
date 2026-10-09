@@ -55,18 +55,25 @@ const pendingCapacitySQL = `SELECT COUNT(*) FROM agents WHERE state = 'active' A
 // one is not retried); no open request; no unanswered question it asked
 // (the same answer test as notifyUnansweredQuestions, reconcile.go, minus
 // its age cutoff). Workers first, then newest first.
-const capacityCandidatesSQL = `SELECT agents.id, ls.id FROM agents
+const capacityCandidatesSQL = candidatesHeadSQL + `'capacity:'` + candidatesSafePointSQL + `
+	ORDER BY agents.role = 'orchestrator', agents.created_at DESC, agents.id DESC`
+
+// candidatesHeadSQL and candidatesSafePointSQL are the shared pieces of the
+// capacity and budget candidate queries; the request-key prefix literal goes
+// between them.
+const candidatesHeadSQL = `SELECT agents.id, ls.id FROM agents
 	JOIN sessions ls ON ls.id = (SELECT id FROM sessions WHERE agent_id = agents.id
 		ORDER BY generation DESC, attempt DESC LIMIT 1)
 	WHERE agents.state = 'active' AND ` + NotAZombieSlot + ` AND ls.state = 'running'
 		AND NOT EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = agents.id
-			AND (o.phase IN ` + inFlightPhasesSQL + ` OR o.request_key = 'capacity:' || ls.id))
+			AND (o.phase IN ` + inFlightPhasesSQL + ` OR o.request_key = `
+
+const candidatesSafePointSQL = ` || ls.id))
 		AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.agent_id = agents.id AND r.state = 'open')
 		AND NOT EXISTS (SELECT 1 FROM messages q WHERE q.kind = 'question' AND q.origin = 'agent'
 			AND q.state = 'acked' AND q.from_agent_id = agents.id
 			AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.kind IN ('answer', 'approval_result', 'relay')
-				AND (a.reply_to = q.id OR (a.kind = 'answer' AND a.correlation_id = q.id))))
-	ORDER BY agents.role = 'orchestrator', agents.created_at DESC, agents.id DESC`
+				AND (a.reply_to = q.id OR (a.kind = 'answer' AND a.correlation_id = q.id))))`
 
 // EnforceCapacity hands off the newest eligible slot-holders while more
 // agents hold a slot than max_concurrent_agents allows (spec decisions

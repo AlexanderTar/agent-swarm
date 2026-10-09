@@ -249,6 +249,10 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.EnforceCapacity(ctx); err != nil {
 		return err
 	}
+	// Hand off low-token orchestrators that stayed over their context backstop.
+	if err := s.EnforceContextBudget(ctx); err != nil {
+		return err
+	}
 	// Continuity: advance replacement operations from their durable phase.
 	// A restart between the intent commit and the successor launch resumes
 	// here instead of wedging the agent behind the partial unique index.

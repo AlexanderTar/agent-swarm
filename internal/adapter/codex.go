@@ -140,6 +140,9 @@ func (c *Codex) flags(s Spec) ([]string, error) {
 	if s.Effort != "" {
 		a = append(a, "-c", `model_reasoning_effort="`+s.Effort+`"`)
 	}
+	if s.LowTokenCap > 0 {
+		a = append(a, "-c", fmt.Sprintf("model_auto_compact_token_limit=%d", s.LowTokenCap))
+	}
 	if s.Instructions != "" {
 		instrPath, err := c.d.writeLaunchFile(s.SessionID, "codex-instructions.md", []byte(s.Instructions))
 		if err != nil {

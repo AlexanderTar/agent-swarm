@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -90,6 +91,8 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 //     (CLAUDE.md is kept out by claudeMdExcludes, see settingsJSON) --
 //     writeProjectSwarmConfig re-admits the swarm skill and MCP config at
 //     project scope instead (see its own comment for why).
+//   - --autocompact <tokens>: a low-token orchestrator's native compaction cap
+//     (Spec.LowTokenCap), omitted otherwise.
 //   - --plugin-dir <dir> (repeated): every user-scope superpowers-marketplace
 //     plugin dir supported by all agent kinds from install.ClaudePluginDirs
 //     (plus any Spec.PluginDirs), so superpowers:* skills load despite the
@@ -139,6 +142,9 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 		"--mcp-config", mcpPath,
 		"--settings", setPath,
 		"--setting-sources", "project,local")
+	if s.LowTokenCap > 0 {
+		a = append(a, "--autocompact", strconv.Itoa(s.LowTokenCap))
+	}
 	seen := map[string]bool{}
 	for _, p := range s.PluginDirs {
 		if p == "" || seen[p] {

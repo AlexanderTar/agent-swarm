@@ -34,6 +34,7 @@ type Spec struct {
 	AdvisorModel                                    string
 	Instructions                                    string
 	Env                                             map[string]string
+	LowTokenCap                                     int // native context cap in tokens for a low-token orchestrator; 0 = none
 }
 
 // Launch is what the caller feeds to the spawner.

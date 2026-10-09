@@ -1521,6 +1521,17 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	if advisorAllowed(a.Role) && a.AdvisorMode == "native" {
 		spec.AdvisorModel = a.AdvisorModel
 	}
+	if a.Role == RoleOrchestrator {
+		if on, err := s.LowTokenFor(ctx, cur); err == nil && on {
+			spec.LowTokenCap = NativeCapTokens(string(a.Kind))
+			if spec.LowTokenCap > 0 && a.Kind == Muse {
+				// Muse reports no window of its own; this is Swarm's launch limit.
+				if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET context_window = ? WHERE id = ?`, spec.LowTokenCap, ses.ID); err != nil {
+					s.logf("start session %s: muse window: %v", a.Name, err)
+				}
+			}
+		}
+	}
 
 	var l adapter.Launch
 	if resume {

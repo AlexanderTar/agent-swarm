@@ -85,8 +85,13 @@ func museEffort(effort string) string {
 // user_input_prompt_settled events (see muse_wake_probe_test.go's
 // TestMuseWakeProbe comment).
 func (m *Muse) argv(s Spec) []string {
-	return []string{"muse", "--model", s.Model,
-		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace", s.Kickoff}
+	a := []string{"muse", "--model", s.Model,
+		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace"}
+	if s.LowTokenCap > 0 {
+		a = append(a, "-c", fmt.Sprintf(
+			`context_compaction={"provider_context_limit_tokens":%d,"soft_threshold":0.9,"hard_threshold":0.98}`, s.LowTokenCap))
+	}
+	return append(a, s.Kickoff)
 }
 
 // museMCPEnv is the literal env block the isolated settings.json's swarm
