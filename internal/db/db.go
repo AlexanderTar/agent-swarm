@@ -3,8 +3,10 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -55,6 +57,26 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+// MigrationsHash is a hex digest of the embedded migration files' names and
+// contents. Test helpers key cached migrated databases on it so a migration
+// edit never reuses a stale schema.
+func MigrationsHash() string {
+	files, err := migrationFiles()
+	if err != nil {
+		panic(err)
+	}
+	h := sha256.New()
+	for _, f := range files {
+		body, err := schemaFS.ReadFile(f)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", f, len(body))
+		h.Write(body)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func (d *DB) migrate(ctx context.Context) error {
