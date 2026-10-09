@@ -324,3 +324,42 @@ func TestReconcileRunsTheBudgetPass(t *testing.T) {
 		t.Fatalf("budget ops after Reconcile = %v, want one", ops)
 	}
 }
+
+func TestBudgetHandoffGivesTheSuccessorTheBudgetNote(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	mustExec(t, s.DB, `UPDATE agents SET low_token = 1 WHERE id = ?`, orch.ID)
+	mustExec(t, s.DB, `UPDATE sessions SET state = 'running' WHERE agent_id = ?`, orch.ID)
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panes(tm)
+	for i := 0; i < 2; i++ {
+		if err := s.RecordContextSample(ctx, ses.ID, 312400, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.EnforceContextBudget(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const want = "Your predecessor was handed off because its context passed 312k tokens (low-token budget 300k). " +
+		"Recover from checkpoints and artifacts; don't re-read what they already cover."
+	var note string
+	if err := s.DB.QueryRowContext(ctx, `SELECT note FROM agent_operations WHERE request_key = ?`, "budget:"+ses.ID).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if note != want {
+		t.Fatalf("op note = %q, want %q", note, want)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update' AND payload_json LIKE ?`,
+		orch.ID, "%passed 312k tokens (low-token budget 300k)%").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("successor notes = %d err=%v, want 1", n, err)
+	}
+	got, err := s.AgentByID(ctx, orch.ID)
+	if err != nil || got.LowToken == nil || !*got.LowToken {
+		t.Fatalf("low_token override lost: %v %v", got.LowToken, err)
+	}
+}

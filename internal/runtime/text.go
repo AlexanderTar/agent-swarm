@@ -495,6 +495,12 @@ func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round, extra
 	}
 }
 
+// BudgetHandoffNote is the op note a budget handoff leaves for the successor.
+func BudgetHandoffNote(tokens, budget int) string {
+	return fmt.Sprintf("Your predecessor was handed off because its context passed %dk tokens (low-token budget %dk). "+
+		"Recover from checkpoints and artifacts; don't re-read what they already cover.", tokens/1000, budget/1000)
+}
+
 // LowTokenBlock is the guidance appended to a kickoff (or sent as a note) while
 // low-token mode is on: LowTokenOrchestrator for orchestrators, else
 // LowTokenWorker. Muse gets no mid-turn notices, so it carries one more sentence.

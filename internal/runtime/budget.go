@@ -120,7 +120,12 @@ func (s *Store) EnforceContextBudget(ctx context.Context) error {
 		if on, err := s.LowTokenFor(ctx, a); err != nil || !on {
 			continue
 		}
-		if _, err := s.RequestReplacement(ctx, c.agentID, ModeHandoff, budgetKeyPrefix+c.sessionID, ""); err != nil {
+		var tokens int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(context_tokens, 0) FROM sessions WHERE id = ?`, c.sessionID).Scan(&tokens); err != nil {
+			continue
+		}
+		if _, err := s.RequestReplacement(ctx, c.agentID, ModeHandoff, budgetKeyPrefix+c.sessionID,
+			BudgetHandoffNote(tokens, BackstopTokens(string(a.Kind)))); err != nil {
 			s.logf("budget: hand off %s: %v", c.agentID, err)
 		}
 	}
