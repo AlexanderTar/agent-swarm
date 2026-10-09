@@ -103,6 +103,20 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 	}
 }
 
+func TestSwarmSkillCarriesLowTokenRule(t *testing.T) {
+	const rule = "14. Low-token mode: when your kickoff or an assignment_update note says low-token mode is on, follow its rules; they override the skill steps they name. A note saying it is off restores the skills as written."
+	if !strings.Contains(string(install.SkillBody("swarm")), rule) {
+		t.Errorf("embedded swarm skill is missing rule 14")
+	}
+	canonical, err := os.ReadFile("../../skills/swarm/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), rule) {
+		t.Errorf("skills/swarm/SKILL.md is missing rule 14")
+	}
+}
+
 func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	spike := string(install.SkillBody("swarm-spike"))

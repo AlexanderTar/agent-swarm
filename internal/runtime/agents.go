@@ -1480,6 +1480,21 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 	kickoff += reminder
+	// Re-read a: the caller's copy may predate a low-token toggle.
+	cur, err := s.agentByID(ctx, a.ID)
+	if err != nil {
+		cur = a
+	}
+	if on, err := s.LowTokenFor(ctx, cur); err != nil {
+		s.logf("start session %s: low-token lookup: %v", a.Name, err)
+	} else if on && resume && a.Kind == Muse {
+		// Muse's resume drops the kickoff, so the guidance rides as a note.
+		if err := s.noteLowTokenOn(ctx, a); err != nil {
+			s.logf("start session %s: low-token note: %v", a.Name, err)
+		}
+	} else if on {
+		kickoff += "\n\n" + LowTokenBlock(a.Role, string(a.Kind))
+	}
 
 	// Settings read failure is unrelated to the spawn itself: fail open (same
 	// philosophy as resolveUsageFallback in fallback.go) rather than block a
