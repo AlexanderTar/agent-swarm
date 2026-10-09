@@ -1,0 +1,4 @@
+{"schema_version":1,"sequence":10,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","run_id":"r1","event":{"kind":"model_completed","usage":{"input_tokens":120000,"output_tokens":50,"cache_read_tokens":119000}}}}
+{"schema_version":1,"sequence":11,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","run_id":"r1","event":{"kind":"assistant_message_committed","text":"hi"}}}
+{"schema_version":1,"sequence":12,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","run_id":"r2","event":{"kind":"model_completed","usage":{"input_tokens":157990,"output_tokens":300,"cached_tokens":157553,"cache_write_tokens":0,"cache_read_tokens":157553,"reasoning_tokens":0},"duration_ms":4100}}}
+{"schema_version":1,"sequence":13,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","run_id":"r2","event":{"kind":"assistant_message_committed","text":"done"}}}

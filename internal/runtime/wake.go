@@ -149,6 +149,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 // undeliverable escalation): pinging a quota-dead session only feeds the
 // pileup the quota-reset flush then has to digest.
 func (s *Store) WakeDue(ctx context.Context) error {
+	s.sampleMuseContexts(ctx)
 	rows, err := s.wakeCandidates(ctx)
 	if err != nil {
 		return err

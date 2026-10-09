@@ -1,0 +1,1 @@
+{"conversation_id":"c1","hook_event_name":"preCompact","transcript_path":"/tmp/c1.jsonl","trigger":"auto","context_usage_percent":90,"context_tokens":180000,"context_window_size":200000,"message_count":42,"messages_to_compact":30,"is_first_compact":true,"model":"composer-2"}

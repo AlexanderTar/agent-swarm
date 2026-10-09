@@ -609,3 +609,35 @@ func TestSessionWireCarriesPausePending(t *testing.T) {
 		t.Fatalf("pause_pending = %v, want false once the root itself is pausing (state says so)", got)
 	}
 }
+
+// Sessions carry the last context sample: ints once sampled, null before.
+func TestSessionInfoCarriesContextSample(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	sessionOf := func() map[string]any {
+		rec := s.get(t, "/api/agents?state=all")
+		var nodes []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &nodes); err != nil {
+			t.Fatal(err)
+		}
+		ses, ok := nodes[0]["session"].(map[string]any)
+		if !ok {
+			t.Fatalf("session = %v", nodes[0]["session"])
+		}
+		return ses
+	}
+	before := sessionOf()
+	for _, k := range []string{"context_tokens", "context_window"} {
+		v, ok := before[k]
+		if !ok || v != nil {
+			t.Fatalf("%s before sampling = %v (present %v), want null", k, v, ok)
+		}
+	}
+	id := before["id"].(string)
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE sessions SET context_tokens = 120000, context_window = 1000000 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	after := sessionOf()
+	if after["context_tokens"] != float64(120000) || after["context_window"] != float64(1000000) {
+		t.Fatalf("context = %v/%v, want 120000/1000000", after["context_tokens"], after["context_window"])
+	}
+}
