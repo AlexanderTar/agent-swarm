@@ -216,6 +216,27 @@ final class PanePreviewContextRenderTests: XCTestCase {
         XCTAssertEqual(renderedSize(PanePreviewPanel(preview: m, lookup: { _ in none })), PanePreviewPanel.size)
     }
 
+    /// The bar fill must draw its tint (a ProgressView loses its accent in the never-key panel):
+    /// 70% is orange, 90% red, 12% neutral. Sampled from rendered pixels at the fill's left end.
+    func testContextBarFillDrawsItsTint() throws {
+        func fill(_ tokens: Int) throws -> [Int] {
+            let ctx = try XCTUnwrap(ContextReadout(tokens: tokens, window: 1_000_000))
+            let r = ImageRenderer(content: ContextBar(readout: ctx).environment(\.colorScheme, .dark))
+            r.scale = 4
+            let img = try XCTUnwrap(r.cgImage)
+            var buf = [UInt8](repeating: 0, count: img.width * img.height * 4)
+            let c = CGContext(data: &buf, width: img.width, height: img.height, bitsPerComponent: 8, bytesPerRow: img.width * 4,
+                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
+            let i = ((img.height / 2) * img.width + 6) * 4
+            return [Int(buf[i]), Int(buf[i + 1]), Int(buf[i + 2])]
+        }
+        let amber = try fill(700_000), hot = try fill(900_000), low = try fill(120_000)
+        XCTAssertTrue(amber[0] > 200 && amber[1] > 100 && amber[1] < 190 && amber[2] < 80, "70% fill is \(amber), expected orange")
+        XCTAssertTrue(hot[0] > 200 && hot[1] < 90 && hot[2] < 90, "90% fill is \(hot), expected red")
+        XCTAssertTrue(abs(low[0] - low[2]) < 40, "12% fill is \(low), expected a neutral grey")
+    }
+
     /// Evidence shots (light/dark, default and largest text, three tints) when SWARM_NATIVE_POLISH_EVIDENCE_DIR is set.
     func testCaptureContextHeaderEvidence() async throws {
         guard let dir = ProcessInfo.processInfo.environment["SWARM_NATIVE_POLISH_EVIDENCE_DIR"] else {
