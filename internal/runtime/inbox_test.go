@@ -1277,3 +1277,103 @@ func TestInboxNoticeTrailerOnlyOnTheFirstNoticePerSession(t *testing.T) {
 		t.Error("a new session starts with the trailer again")
 	}
 }
+
+// Top-level agents may message each other across roots, by agent name or by
+// the other root's item key; children stay inside their own root.
+func TestSendCrossRootBetweenTopLevelAgents(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, _ := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	oSes, _ := s.LatestSession(ctx, orch.ID)
+	_, other, _, err := s.StartSpike(ctx, SpikeInput{Name: "Other", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSes, _ := s.LatestSession(ctx, other.ID)
+	var otherKey string
+	s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, other.RootItemID).Scan(&otherKey)
+
+	for _, to := range []string{other.Name, otherKey} {
+		id, err := s.Send(ctx, oSes.ID, to, "question", "who owns the schema?", "", "")
+		if err != nil {
+			t.Fatalf("send to %q: %v", to, err)
+		}
+		res, err := s.Sync(ctx, otherSes.ID, []string{id}, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		for _, m := range res.Messages {
+			if m.MsgID != id {
+				continue
+			}
+			found = true
+			if m.RootItem != otherKey {
+				t.Fatalf("root_item = %q, want recipient root %q", m.RootItem, otherKey)
+			}
+			var p struct {
+				FromItem string `json:"from_item"`
+			}
+			json.Unmarshal(m.Payload, &p)
+			if p.FromItem != "EPIC-1" {
+				t.Fatalf("from_item = %q, want EPIC-1", p.FromItem)
+			}
+		}
+		if !found {
+			t.Fatalf("message to %q not returned by the recipient's sync", to)
+		}
+	}
+	// answer back across roots
+	qid, _ := s.Send(ctx, oSes.ID, otherKey, "question", "again?", "", "")
+	if _, err := s.Send(ctx, otherSes.ID, "EPIC-1", "answer", "me", qid, ""); err != nil {
+		t.Fatalf("cross-root answer: %v", err)
+	}
+}
+
+func TestSendCrossRootRefusals(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, _ := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	oSes, _ := s.LatestSession(ctx, orch.ID)
+	worker, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, _ := s.LatestSession(ctx, worker.ID)
+	ep2 := seedEpicWithTask(t, s)
+	other, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep2.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey := ep2.Key
+	var otherTask string
+	s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE root_id = ? AND type = 'task'`, ep2.ID).Scan(&otherTask)
+	otherChild, _, err := s.Spawn(ctx, SpawnInput{ItemKey: otherTask, Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: other.ID, Brief: BriefInput{Objective: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, from, to, want string
+	}{
+		{"child to other root by name", wSes.ID, other.Name, "parent"},
+		{"child to other root by key", wSes.ID, otherKey, "parent"},
+		{"top-level to other root's child", oSes.ID, otherChild.Name, "top-level"},
+		{"own root key", oSes.ID, "EPIC-1", "own"},
+		{"non-root key", oSes.ID, "TASK-1", "top-level"},
+		{"key with no orchestrator", oSes.ID, "EPIC-999", "no live orchestrator"},
+	}
+	for _, c := range cases {
+		_, err := s.Send(ctx, c.from, c.to, "finding", "hello", "", "")
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", c.name, err, c.want)
+		}
+	}
+	if _, err := s.SendApproval(ctx, oSes.ID, "ok?", ""); err == nil {
+		t.Error("approval must stay parent-only")
+	}
+}
