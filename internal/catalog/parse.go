@@ -125,9 +125,6 @@ func ClaudeAliasFallback() []CatalogModel {
 	for _, fam := range aliasOrder {
 		m := CatalogModel{ID: fam, Label: strings.ToUpper(fam[:1]) + fam[1:] + " (latest)", Aliases: []string{fam},
 			Efforts: slices.Clone(EffortLevels), EffortEncoding: "flag", AdvisorCapable: fam != "haiku"}
-		if fam == "haiku" {
-			m.Efforts = []string{} // --effort is silently ignored for Haiku
-		}
 		m.DefaultEffort = ClaudeDefaultEffort(m.Efforts)
 		out = append(out, m)
 	}

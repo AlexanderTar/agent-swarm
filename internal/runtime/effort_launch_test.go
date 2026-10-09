@@ -11,7 +11,8 @@ import (
 const claudeEffortCatalog = `[
 	{"id":"claude-sonnet-5-5","aliases":["sonnet"],"label":"Claude Sonnet 5.5","efforts":["low","medium","high","xhigh","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":true},
 	{"id":"claude-opus-4-5","aliases":["opus"],"label":"Claude Opus 4.5","efforts":["low","medium"],"default_effort":"","effort_encoding":"flag","advisor_capable":true},
-	{"id":"claude-haiku-4-5","aliases":["haiku"],"label":"Claude Haiku 4.5","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}
+	{"id":"claude-haiku-4-5","aliases":["haiku"],"label":"Claude Haiku 4.5","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false},
+	{"id":"claude-haiku-5-5","label":"Claude Haiku 5.5","efforts":["low","medium","high","xhigh","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":false}
 ]`
 
 func claudeEffortStore(t *testing.T) (*Store, *adapter.Fake) {
@@ -35,9 +36,10 @@ func rowEffort(t *testing.T, s *Store, id string) string {
 }
 
 var effortCases = []struct{ model, want string }{
-	{"sonnet", "high"}, // high is supported
-	{"opus", "medium"}, // high is not: the top supported level
-	{"haiku", ""},      // no efforts: never pass --effort
+	{"sonnet", "high"},           // high is supported
+	{"opus", "medium"},           // high is not: the top supported level
+	{"haiku", ""},                // haiku 4.5 lists no efforts: never pass --effort
+	{"claude-haiku-5-5", "high"}, // decided by the efforts list, not the family
 }
 
 // A Claude agent with no effort set must still launch with a concrete level,

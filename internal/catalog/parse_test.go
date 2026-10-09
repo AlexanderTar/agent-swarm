@@ -81,17 +81,34 @@ func TestParseClaudeModels(t *testing.T) {
 		t.Error("an empty list is an error")
 	}
 	fb := ClaudeAliasFallback()
-	if !slices.Equal(ids(fb), []string{"fable", "opus", "sonnet", "haiku"}) || len(byID(t, fb, "haiku").Efforts) != 0 ||
+	if !slices.Equal(ids(fb), []string{"fable", "opus", "sonnet", "haiku"}) || !slices.Equal(byID(t, fb, "haiku").Efforts, EffortLevels) ||
 		byID(t, fb, "opus").Label != "Opus (latest)" || !byID(t, fb, "opus").AdvisorCapable {
 		t.Errorf("fallback = %+v", fb)
 	}
-	for _, id := range []string{"fable", "opus", "sonnet"} {
+	// Decided by the efforts list, never the family: the latest haiku supports every level.
+	for _, id := range []string{"fable", "opus", "sonnet", "haiku"} {
 		if got := byID(t, fb, id).DefaultEffort; got != "high" {
 			t.Errorf("fallback %s default = %q", id, got)
 		}
 	}
-	if got := byID(t, fb, "haiku").DefaultEffort; got != "" {
-		t.Errorf("fallback haiku default = %q", got)
+}
+
+func TestParseClaudeHaikuEffortFollowsItsEffortsList(t *testing.T) {
+	level := `{"supported": true}`
+	page := `{"data":[
+		{"id":"claude-haiku-5-5","display_name":"Claude Haiku 5.5","created_at":"2026-09-01T00:00:00Z","capabilities":{"effort":{"supported":true,
+			"low":` + level + `,"medium":` + level + `,"high":` + level + `,"xhigh":` + level + `,"max":` + level + `}}},
+		{"id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5","created_at":"2025-10-01T00:00:00Z","capabilities":{"effort":{"supported":false}}}
+	],"has_more":false}`
+	ms, _, _, err := ParseClaudePage([]byte(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := byID(t, ms, "claude-haiku-5-5"); !slices.Equal(m.Efforts, EffortLevels) || m.DefaultEffort != "high" {
+		t.Errorf("haiku 5.5 = %+v", m)
+	}
+	if m := byID(t, ms, "claude-haiku-4-5-20251001"); len(m.Efforts) != 0 || m.DefaultEffort != "" {
+		t.Errorf("haiku 4.5 = %+v", m)
 	}
 }
 
