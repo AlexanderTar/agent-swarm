@@ -1312,6 +1312,9 @@ func TestSendCrossRootBetweenTopLevelAgents(t *testing.T) {
 			if m.RootItem != otherKey {
 				t.Fatalf("root_item = %q, want recipient root %q", m.RootItem, otherKey)
 			}
+			if m.Item != otherKey {
+				t.Fatalf("item = %q, want recipient item %q", m.Item, otherKey)
+			}
 			var p struct {
 				FromItem string `json:"from_item"`
 			}

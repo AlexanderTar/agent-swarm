@@ -733,11 +733,12 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			}
 			p["options"] = options
 		}
-		rootItemID := a.RootItemID
+		rootItemID, itemID := a.RootItemID, a.ItemID
 		if crossRoot {
-			// Filed under the recipient's root so it shows on their board; the
-			// sender's root key rides along so the reply knows where to go.
-			rootItemID = target.RootItemID
+			// Filed under the recipient's root and item so it shows on their
+			// board; the sender's root key rides along so the reply knows where
+			// to go.
+			rootItemID, itemID = target.RootItemID, target.ItemID
 			fromKey, err := s.itemKey(ctx, tx, a.RootItemID)
 			if err != nil {
 				return err
@@ -750,7 +751,7 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
-			RootItemID: rootItemID, ItemID: a.ItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
+			RootItemID: rootItemID, ItemID: itemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
 		id = m.ID
 		if err != nil || kind != "answer" {
 			return err
