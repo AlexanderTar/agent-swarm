@@ -33,6 +33,13 @@ final class FormatTests: XCTestCase {
                        "Updated 12 min ago")
     }
 
+    func testContextUsage() {
+        XCTAssertEqual(Format.contextUsage(120_000, 1_000_000), "120K / 1M")
+        XCTAssertEqual(Format.contextUsage(84_000, nil), "84K")
+        XCTAssertEqual(Format.contextUsage(1_234_567, nil), "1.2M")
+        XCTAssertEqual(Format.contextUsage(84_000, 258_400), "84K / 258K")
+    }
+
     func testPercent() {
         XCTAssertEqual(Format.percent(42.4), "42%")
         XCTAssertEqual(Format.percent(99.5), "100%")

@@ -47,6 +47,19 @@ public struct Format: Sendable {
         "\(Int(min(100, max(0, used)).rounded()))%"
     }
 
+    /// "120K / 1M", or "84K" when the window is unknown. K under 1M (nearest K), M above with one decimal.
+    public static func contextUsage(_ tokens: Int, _ window: Int?) -> String {
+        guard let window else { return tokenCount(tokens) }
+        return "\(tokenCount(tokens)) / \(tokenCount(window))"
+    }
+
+    private static func tokenCount(_ n: Int) -> String {
+        let k = Int((Double(n) / 1000).rounded())
+        if k < 1000 { return "\(k)K" }
+        let m = (Double(n) / 100_000).rounded() / 10
+        return m == m.rounded() ? "\(Int(m))M" : "\(m)M"
+    }
+
     /// Under 24 h: "Resets in 2h 10m" / "Resets in 45m". Under 7 days: "Resets Mon 09:00". Later: "Resets 1 Oct".
     public func resets(_ date: Date) -> String {
         let s = max(0, date.timeIntervalSince(now))
