@@ -623,6 +623,33 @@ func ResolveRepoIDTx(ctx context.Context, q interface {
 	return id, err
 }
 
+// ResolveRepoRefTx strictly resolves a caller's repo ref (a catalog id, an absolute path or a unique
+// name, in that order) to its catalog id; an unknown ref or a name shared by several repos is a CodeBadRequest.
+func ResolveRepoRefTx(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, ref string) (string, error) {
+	path := ref
+	if filepath.IsAbs(path) {
+		path = filepath.Clean(path)
+	}
+	var id string
+	var n int
+	err := q.QueryRowContext(ctx, `SELECT id FROM repos WHERE id = ? OR path = ? ORDER BY id = ? DESC LIMIT 1`, ref, path, ref).Scan(&id)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return id, err
+	}
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MIN(id), '') FROM repos WHERE name = ?`, ref).Scan(&n, &id); err != nil {
+		return "", err
+	}
+	switch {
+	case n == 0:
+		return "", errf(CodeBadRequest, "Unknown repository %q. Pass a repository id or name from swarm_read {repos:{q:%q}}, or register its local Git path with swarm_repo_register.", ref, ref)
+	case n > 1:
+		return "", errf(CodeBadRequest, "Repository name %q is ambiguous. Pass a repository id or a unique name from swarm_read {repos:{q:%q}}, or register its local Git path with swarm_repo_register.", ref, ref)
+	}
+	return id, nil
+}
+
 // IntegratedRepoIDsTx is the set of distinct repos in integrated git refs (git_json), keyed by
 // resolved catalog id; an unknown repo keeps its spelling.
 func IntegratedRepoIDsTx(ctx context.Context, q interface {
