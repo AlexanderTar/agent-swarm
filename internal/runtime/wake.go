@@ -150,6 +150,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 // pileup the quota-reset flush then has to digest.
 func (s *Store) WakeDue(ctx context.Context) error {
 	s.sampleMuseContexts(ctx)
+	s.pruneNoticeSeen(ctx)
 	rows, err := s.wakeCandidates(ctx)
 	if err != nil {
 		return err

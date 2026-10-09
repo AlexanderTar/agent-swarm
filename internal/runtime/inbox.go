@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -941,4 +942,36 @@ func (s *Store) MarkNoticeSeen(sessionID string) {
 		s.noticeSeen = map[string]bool{}
 	}
 	s.noticeSeen[sessionID] = true
+}
+
+// pruneNoticeSeen drops the entries of ended sessions. Session endings happen
+// on many paths, so the wake tick sweeps instead of hooking each one.
+func (s *Store) pruneNoticeSeen(ctx context.Context) {
+	s.bookkeepingMu.Lock()
+	ids := make([]any, 0, len(s.noticeSeen))
+	for id := range s.noticeSeen {
+		ids = append(ids, id)
+	}
+	s.bookkeepingMu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM sessions WHERE ended_at IS NOT NULL AND id IN (?`+
+		strings.Repeat(",?", len(ids)-1)+`)`, ids...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var ended []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ended = append(ended, id)
+		}
+	}
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	for _, id := range ended {
+		delete(s.noticeSeen, id)
+	}
 }

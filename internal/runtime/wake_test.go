@@ -1376,3 +1376,25 @@ func TestTrailerSpentOnceByASuccessfulWake(t *testing.T) {
 		t.Fatal("trailer must be spent after delivery")
 	}
 }
+
+// noticeSeen must not grow for the daemon's lifetime: an ended session's
+// entry is dropped.
+func TestNoticeSeenPrunedWhenSessionEnds(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "SeenPrune", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.MarkNoticeSeen(ses.ID)
+	if !s.noticeSent(ses.ID) {
+		t.Fatal("setup: entry should exist")
+	}
+	if err := s.SetSessionState(ctx, ses.ID, Completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.noticeSent(ses.ID) {
+		t.Fatal("noticeSeen entry survived the session's end")
+	}
+}
