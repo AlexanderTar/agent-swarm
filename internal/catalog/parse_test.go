@@ -51,7 +51,7 @@ func TestParseClaudeModels(t *testing.T) {
 		}
 	}
 	opus := byID(t, ms, "claude-opus-5")
-	if opus.Label != "Claude Opus 5" || !slices.Equal(opus.Efforts, EffortLevels) || opus.DefaultEffort != "" ||
+	if opus.Label != "Claude Opus 5" || !slices.Equal(opus.Efforts, EffortLevels) || opus.DefaultEffort != "high" ||
 		opus.EffortEncoding != "flag" || !opus.AdvisorCapable || !slices.Equal(opus.Aliases, []string{"opus"}) {
 		t.Errorf("opus = %+v", opus)
 	}
@@ -61,8 +61,11 @@ func TestParseClaudeModels(t *testing.T) {
 	if m := byID(t, ms, "claude-opus-4-5-20251101"); !slices.Equal(m.Efforts, []string{"low", "medium", "high"}) {
 		t.Errorf("opus 4.5 efforts = %v", m.Efforts)
 	}
+	if m := byID(t, ms, "claude-sonnet-4-6"); m.DefaultEffort != "high" {
+		t.Errorf("sonnet 4.6 default = %q", m.DefaultEffort)
+	}
 	haiku := byID(t, ms, "haiku")
-	if haiku.Efforts == nil || len(haiku.Efforts) != 0 || haiku.AdvisorCapable || haiku.SupportsEffort("low") {
+	if haiku.Efforts == nil || len(haiku.Efforts) != 0 || haiku.AdvisorCapable || haiku.SupportsEffort("low") || haiku.DefaultEffort != "" {
 		t.Errorf("haiku = %+v", haiku)
 	}
 	if byID(t, ms, "claude-fable-5").Aliases != nil {
@@ -81,6 +84,32 @@ func TestParseClaudeModels(t *testing.T) {
 	if !slices.Equal(ids(fb), []string{"fable", "opus", "sonnet", "haiku"}) || len(byID(t, fb, "haiku").Efforts) != 0 ||
 		byID(t, fb, "opus").Label != "Opus (latest)" || !byID(t, fb, "opus").AdvisorCapable {
 		t.Errorf("fallback = %+v", fb)
+	}
+	for _, id := range []string{"fable", "opus", "sonnet"} {
+		if got := byID(t, fb, id).DefaultEffort; got != "high" {
+			t.Errorf("fallback %s default = %q", id, got)
+		}
+	}
+	if got := byID(t, fb, "haiku").DefaultEffort; got != "" {
+		t.Errorf("fallback haiku default = %q", got)
+	}
+}
+
+func TestClaudeDefaultEffort(t *testing.T) {
+	for _, c := range []struct {
+		efforts []string
+		want    string
+	}{
+		{EffortLevels, "high"},
+		{[]string{"low", "medium", "high"}, "high"},
+		{[]string{"low", "medium"}, "medium"},
+		{[]string{"max"}, "max"},
+		{[]string{}, ""},
+		{nil, ""},
+	} {
+		if got := ClaudeDefaultEffort(c.efforts); got != c.want {
+			t.Errorf("ClaudeDefaultEffort(%v) = %q, want %q", c.efforts, got, c.want)
+		}
 	}
 }
 

@@ -61,6 +61,7 @@ func ParseClaudePage(body []byte) ([]CatalogModel, bool, string, error) {
 			family = f[1]
 		}
 		m.AdvisorCapable = family == "fable" || family == "opus" || family == "sonnet"
+		m.DefaultEffort = ClaudeDefaultEffort(m.Efforts)
 		all = append(all, dated{m, family, d.CreatedAt})
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].at.After(all[j].at) })
@@ -84,6 +85,31 @@ func ParseClaudePage(body []byte) ([]CatalogModel, bool, string, error) {
 	return append(head, tail...), p.HasMore, p.LastID, nil
 }
 
+// ClaudeDefaultEffort is the level a Claude model runs at when none is chosen.
+// It is "high" when supported, else the highest supported level; "" when the model has none.
+// The Models API reports no default, so the daemon decides, and passes it on every launch.
+func ClaudeDefaultEffort(efforts []string) string {
+	switch {
+	case slices.Contains(efforts, "high"):
+		return "high"
+	case len(efforts) == 0:
+		return ""
+	default:
+		return efforts[len(efforts)-1]
+	}
+}
+
+// FillClaudeDefaults sets DefaultEffort on models that lack one, so rows cached
+// before the field was filled still resolve.
+func FillClaudeDefaults(ms []CatalogModel) []CatalogModel {
+	for i := range ms {
+		if ms[i].DefaultEffort == "" {
+			ms[i].DefaultEffort = ClaudeDefaultEffort(ms[i].Efforts)
+		}
+	}
+	return ms
+}
+
 // ParseClaudeModels parses a single, complete page.
 func ParseClaudeModels(body []byte) ([]CatalogModel, error) {
 	ms, _, _, err := ParseClaudePage(body)
@@ -102,6 +128,7 @@ func ClaudeAliasFallback() []CatalogModel {
 		if fam == "haiku" {
 			m.Efforts = []string{} // --effort is silently ignored for Haiku
 		}
+		m.DefaultEffort = ClaudeDefaultEffort(m.Efforts)
 		out = append(out, m)
 	}
 	return out

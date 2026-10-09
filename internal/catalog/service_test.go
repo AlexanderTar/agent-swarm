@@ -144,6 +144,31 @@ func TestEntryJSON(t *testing.T) {
 	}
 }
 
+// Claude rows cached before default_effort existed hold "" and must be filled on read.
+func TestClaudeCachedRowsGetDefaultEffortOnRead(t *testing.T) {
+	old := []CatalogModel{
+		{ID: "opus", Aliases: []string{"opus"}, Efforts: slices.Clone(EffortLevels), EffortEncoding: "flag"},
+		{ID: "haiku", Efforts: []string{}, EffortEncoding: "flag"},
+	}
+	claude := &fakeFetcher{kind: kinds.Claude, version: "2.1.274", models: old}
+	s, _ := newCatalog(t, claude)
+	if _, err := s.Refresh(bg, false); err != nil {
+		t.Fatal(err)
+	}
+	// Stored with the field empty, as a pre-change daemon wrote it.
+	if _, err := s.DB.ExecContext(bg, `UPDATE model_catalog SET models_json = ? WHERE agent_kind = ?`, modelsJSON(old), kinds.Claude); err != nil {
+		t.Fatal(err)
+	}
+	ms, _, err := s.ModelsFor(bg, kinds.Claude)
+	if err != nil || byID(t, ms, "opus").DefaultEffort != "high" || byID(t, ms, "haiku").DefaultEffort != "" {
+		t.Errorf("ModelsFor = %+v %v", ms, err)
+	}
+	entries, _ := s.Entries(bg)
+	if got := byID(t, entries[0].Models, "opus").DefaultEffort; got != "high" {
+		t.Errorf("Entries opus default = %q", got)
+	}
+}
+
 func TestFallbacksAndNotInstalled(t *testing.T) {
 	claude := &fakeFetcher{kind: kinds.Claude, version: "2.1.274", err: errors.New("api.anthropic.com returned 401")}
 	agy := &fakeFetcher{kind: kinds.Agy, version: "1.2.5", err: errors.New("no models in output")}

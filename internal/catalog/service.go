@@ -152,6 +152,9 @@ func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 			if e.Models == nil {
 				e.Models = []CatalogModel{}
 			}
+			if f.Kind() == kinds.Claude {
+				FillClaudeDefaults(e.Models)
+			}
 			e.CatalogFetchedAt = db.FromMillis(r.fetched)
 			e.CatalogStale = e.CatalogError != "" || r.fetched == 0 || s.Now().Sub(e.CatalogFetchedAt) >= MaxAge
 			// A successful fetch could only have happened with working auth (the claude
@@ -236,6 +239,9 @@ func (s *Service) ModelsFor(ctx context.Context, kind kinds.AgentKind) ([]Catalo
 	if err := json.Unmarshal([]byte(r.models), &ms); err != nil {
 		s.logf("catalog: cached %s models are unreadable: %v", kind, err)
 		return nil, "", nil
+	}
+	if kind == kinds.Claude {
+		FillClaudeDefaults(ms)
 	}
 	return ms, r.def, nil
 }
