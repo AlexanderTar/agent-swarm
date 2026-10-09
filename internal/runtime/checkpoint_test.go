@@ -3095,3 +3095,100 @@ func TestTDDGateFixRoundAllMinorNeedsNoPair(t *testing.T) {
 		t.Fatalf("all minor/nit findings need no pair: %v", err)
 	}
 }
+
+// seedPriorWorkflow models a task reopened after an earlier workflow on it
+// ended in state: a distinct coder (agent A) ran a build step there and
+// recorded red/green for each of units on a progress checkpoint. Returns
+// nothing; the current workflow (buildOnly's) is untouched.
+func seedPriorWorkflow(t *testing.T, s *Store, state string, units ...int) {
+	t.Helper()
+	ctx := context.Background()
+	var orchID, rootID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id, root_item_id FROM workflows LIMIT 1`).Scan(&orchID, &rootID); err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orchID, Brief: BriefInput{Objective: "earlier build"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aSes, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// workflows_one_live forbids a second live row per item, so insert the
+	// finished one directly rather than via seedWorkflowRun.
+	now := db.Millis(s.Now())
+	wfID := ids.New("wf")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflows
+		(id, item_id, root_item_id, owner_agent_id, state, round, worktrees_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 1, '[]', ?, ?)`, wfID, it.ID, rootID, orchID, state, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 1, 'coder', ?, 'completed', ?)`, ids.New("wfr"), wfID, a.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	var vs []Verify
+	for _, u := range units {
+		vs = append(vs,
+			Verify{Cmd: "go test ./x", Phase: "red", OK: false, Unit: u},
+			Verify{Cmd: "go test ./x", Phase: "green", OK: true, Unit: u})
+	}
+	if _, err := s.WriteCheckpoint(ctx, aSes.ID, CheckpointInput{Kind: Progress, Summary: "earlier units", Verification: vs}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A reopened batched task: units 1-3 were proven by another coder in a
+// succeeded workflow, so the new coder only owes the appended unit 4.
+func TestTDDGateCarriesUnitsFromPriorSucceededWorkflow(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "one", "two", "three", "four")
+	seedPriorWorkflow(t, s, "succeeded", 1, 2, 3)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 4},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 4},
+		}}); err != nil {
+		t.Fatalf("units 1-3 carry from the succeeded workflow: %v", err)
+	}
+}
+
+// Evidence from a workflow that did not succeed never carries.
+func TestTDDGateDoesNotCarryFromFailedWorkflow(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "one", "two", "three", "four")
+	seedPriorWorkflow(t, s, "failed", 1, 2, 3)
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 4},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 4},
+		}})
+	want := `TDD evidence missing for unit(s) 1,2,3: record red then green with "unit": <n>.` + hintCopy
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// Every unit carried and the new coder records nothing tagged: the gate
+// passes rather than falling through to the untagged unit-0 check.
+func TestTDDGateAllUnitsCarriedPasses(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	seedPriorWorkflow(t, s, "succeeded", 1, 2)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err != nil {
+		t.Fatalf("every unit carried: %v", err)
+	}
+}
