@@ -367,6 +367,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	origKind := in.Kind
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
 	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
+	in.Effort = s.resolveLaunchEffort(ctx, in.Kind, in.Model, in.Effort)
 
 	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
 
@@ -600,6 +601,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, ferr
 	}
 	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
+	in.Effort = s.resolveLaunchEffort(ctx, in.Kind, in.Model, in.Effort)
 
 	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
 
@@ -1150,6 +1152,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, ferr
 	}
 	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
+	in.Effort = s.resolveLaunchEffort(ctx, in.Kind, in.Model, in.Effort)
 	if substituted {
 		kindReason = joinReason(kindReason, fallbackReason(origKind))
 	}
@@ -1370,6 +1373,25 @@ func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, e
 	return m.LaunchModel(effort)
 }
 
+// resolveLaunchEffort turns an empty Claude effort into the catalog model's
+// default_effort, so --effort is always passed and the label matches the launch
+// (Claude Code would otherwise run at its own default, medium). A model with no
+// efforts stays "". Other kinds are untouched: cursor's bare "default" slug level
+// is not an empty effort, and codex/agy resolve theirs elsewhere.
+func (s *Store) resolveLaunchEffort(ctx context.Context, kind AgentKind, model, effort string) string {
+	if effort != "" || kind != Claude || s.Catalog == nil {
+		return effort
+	}
+	models, _, err := s.Catalog.ModelsFor(ctx, kind)
+	if err != nil {
+		return effort
+	}
+	if m, ok := catalog.Find(models, model); ok {
+		return m.DefaultEffort
+	}
+	return effort
+}
+
 // pendingNameFor is the session name the wake tick must paste into a pane of
 // this kind, or nil when the kind sets its title another way (claude's hook
 // sessionTitle) and nothing is pending.
@@ -1522,7 +1544,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		TokenFile:         tokPath,
 		DaemonURL:         s.DaemonURL,
 		Model:             s.resolveLaunchModel(ctx, a.Kind, a.Model, a.Effort),
-		Effort:            a.Effort,
+		Effort:            s.resolveLaunchEffort(ctx, a.Kind, a.Model, a.Effort),
 		Cwd:               cwd,
 		ProviderSessionID: providerID,
 		Kickoff:           kickoff,
