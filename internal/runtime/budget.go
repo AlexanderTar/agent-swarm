@@ -157,8 +157,10 @@ func (s *Store) recordRead(ctx context.Context, sessionID string, kind AgentKind
 }
 
 // sampleMuseContexts records the context size of every live muse session from
-// its own session log (no hook carries it). Failures are logged: a bad log
-// must not stall the wake loop.
+// its own session log (no hook carries it). A sample counts only at end of
+// turn: the pane is idle and the log holds a completed turn newer than the one
+// last recorded, so repeated ticks and mid-turn model_completed events add no
+// strike. Failures are logged: a bad log must not stall the wake loop.
 func (s *Store) sampleMuseContexts(ctx context.Context) {
 	rd, ok := s.Adapters[Muse].(interface {
 		SessionContext(providerSessionID string) (adapter.ContextSample, bool)
@@ -166,27 +168,53 @@ func (s *Store) sampleMuseContexts(ctx context.Context) {
 	if !ok {
 		return
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.provider_session_id FROM sessions ses
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.provider_session_id, ses.tmux_name FROM sessions ses
 		JOIN agents a ON a.id = ses.agent_id
 		WHERE a.kind = 'muse' AND ses.state = 'running' AND COALESCE(ses.provider_session_id, '') != ''`)
 	if err != nil {
 		s.logf("context: list muse sessions: %v", err)
 		return
 	}
-	type live struct{ id, provider string }
+	type live struct{ id, provider, tmux string }
 	var sessions []live
 	for rows.Next() {
 		var l live
-		if err := rows.Scan(&l.id, &l.provider); err == nil {
+		if err := rows.Scan(&l.id, &l.provider, &l.tmux); err == nil {
 			sessions = append(sessions, l)
 		}
 	}
 	rows.Close()
 	for _, l := range sessions {
-		if smp, ok := rd.SessionContext(l.provider); ok {
-			if err := s.recordRead(ctx, l.id, Muse, smp); err != nil {
-				s.logf("context: record muse sample for %s: %v", l.id, err)
-			}
+		smp, ok := rd.SessionContext(l.provider)
+		if !ok || !s.museTurnEnded(ctx, l.id, l.tmux, smp.Seq) {
+			continue
+		}
+		if err := s.recordRead(ctx, l.id, Muse, smp); err != nil {
+			s.logf("context: record muse sample for %s: %v", l.id, err)
 		}
 	}
+}
+
+// museTurnEnded reports whether a muse session's reading is a new end-of-turn
+// sample, and remembers seq when it is. Like the other wake bookkeeping it is
+// in memory: a restart can cost one repeated sample, never a mid-turn one.
+func (s *Store) museTurnEnded(ctx context.Context, sessionID, tmuxName string, seq int64) bool {
+	ad, ok := s.Adapters[Muse]
+	if !ok {
+		return false
+	}
+	capture, err := s.Tmux.Capture(ctx, tmuxName, 15)
+	if err != nil || !ad.Idle(capture) {
+		return false
+	}
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if last, seen := s.museSeq[sessionID]; seen && last == seq {
+		return false
+	}
+	if s.museSeq == nil {
+		s.museSeq = map[string]int64{}
+	}
+	s.museSeq[sessionID] = seq
+	return true
 }

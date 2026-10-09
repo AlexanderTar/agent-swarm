@@ -23,6 +23,9 @@ const CursorBytesPerToken = 4
 type ContextSample struct {
 	Tokens int
 	Window *int
+	// Seq changes whenever a newer completed turn is read (muse: the byte
+	// offset of its model_completed line); 0 when the source has none.
+	Seq int64
 }
 
 // ReadContext reads the latest context sample from a kind's transcript.
@@ -50,28 +53,37 @@ func ReadContext(kind kinds.AgentKind, transcriptPath string) (ContextSample, bo
 	default:
 		return ContextSample{}, false
 	}
-	lines, err := tailLines(transcriptPath, contextTailBytes)
+	lines, off, err := tailLines(transcriptPath, contextTailBytes)
 	if err != nil {
 		return ContextSample{}, false
 	}
+	end := off
+	for _, l := range lines {
+		end += int64(len(l)) + 1
+	}
 	for i := len(lines) - 1; i >= 0; i-- {
+		end -= int64(len(lines[i])) + 1
 		if s, ok := parse(lines[i]); ok {
+			if kind == kinds.Muse {
+				s.Seq = end + int64(len(lines[i])) + 1
+			}
 			return s, true
 		}
 	}
 	return ContextSample{}, false
 }
 
-// tailLines returns the complete lines within the last max bytes of a file.
-func tailLines(path string, max int64) ([][]byte, error) {
+// tailLines returns the complete lines within the last max bytes of a file and
+// the file offset the first of them starts at.
+func tailLines(path string, max int64) ([][]byte, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	off := int64(0)
 	if st.Size() > max {
@@ -79,13 +91,14 @@ func tailLines(path string, max int64) ([][]byte, error) {
 	}
 	buf := make([]byte, st.Size()-off)
 	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
-		return nil, err
+		return nil, 0, err
 	}
 	lines := bytes.Split(buf, []byte("\n"))
 	if off > 0 && len(lines) > 0 {
+		off += int64(len(lines[0])) + 1
 		lines = lines[1:] // first line is cut mid-way
 	}
-	return lines, nil
+	return lines, off, nil
 }
 
 func claudeContextLine(line []byte) (ContextSample, bool) {

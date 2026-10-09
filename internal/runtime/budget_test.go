@@ -363,3 +363,78 @@ func TestBudgetHandoffGivesTheSuccessorTheBudgetNote(t *testing.T) {
 		t.Fatalf("low_token override lost: %v %v", got.LowToken, err)
 	}
 }
+
+// museBudgetFixture is a running low-token muse orchestrator whose session log
+// reader returns the fake's current sample.
+func museBudgetFixture(t *testing.T) (s *Store, tm *fakeTmux, fake *museContextFake, ses Session) {
+	t.Helper()
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 8)
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `UPDATE agents SET kind = 'muse', low_token = 1 WHERE id = ?`, orch.ID)
+	ses, err = s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `UPDATE sessions SET provider_session_id = 'prov-1', state = 'running' WHERE id = ?`, ses.ID)
+	fake = &museContextFake{Fake: fa, ok: true}
+	s.Adapters[kinds.Muse] = fake
+	panes(tm, Pane{Session: ses.TmuxName})
+	return s, tm, fake, ses
+}
+
+func TestMuseStrikesOnlyAtEndOfTurn(t *testing.T) {
+	s, tm, fake, ses := museBudgetFixture(t)
+	ctx := context.Background()
+	over := BackstopTokens("muse") + 1000
+	busy := "─────\n✻ Thinking… (3s)\n─────\n"
+	wake := func() {
+		t.Helper()
+		if err := s.WakeDue(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Mid-turn: the pane is busy, so a growing reading (a model_completed per
+	// tool step) records no sample and no strike.
+	tm.captures[ses.TmuxName] = []string{busy}
+	for i := int64(1); i <= 3; i++ {
+		fake.sample = adapter.ContextSample{Tokens: over + int(i), Seq: i}
+		wake()
+	}
+	if got := strikes(t, s, ses.ID); got != 0 {
+		t.Fatalf("mid-turn strikes = %d, want 0", got)
+	}
+
+	// Turn ends: idle with a new completion -> one strike. Repeated identical
+	// ticks add none.
+	tm.captures[ses.TmuxName] = nil
+	fake.sample = adapter.ContextSample{Tokens: over, Seq: 4}
+	for i := 0; i < 4; i++ {
+		wake()
+	}
+	if got := strikes(t, s, ses.ID); got != 1 {
+		t.Fatalf("after one idle turn + repeated ticks strikes = %d, want 1", got)
+	}
+	if keys := budgetOps(t, s); len(keys) != 0 {
+		t.Fatalf("handed off after one end-of-turn sample: %v", keys)
+	}
+
+	// A second end-of-turn sample over the backstop hands off.
+	fake.sample = adapter.ContextSample{Tokens: over, Seq: 5}
+	wake()
+	if got := strikes(t, s, ses.ID); got != 2 {
+		t.Fatalf("strikes = %d, want 2", got)
+	}
+	if err := s.EnforceContextBudget(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if keys := budgetOps(t, s); len(keys) != 1 || keys[0] != "budget:"+ses.ID {
+		t.Fatalf("budget ops = %v, want one budget:%s", keys, ses.ID)
+	}
+}

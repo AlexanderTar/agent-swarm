@@ -220,25 +220,29 @@ func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
 
 // SetLowTokenMode writes only the global low-token default.
 func (s *Store) SetLowTokenMode(ctx context.Context, on bool) error {
-	cur, err := s.Get(ctx)
-	if err != nil {
-		return err
-	}
-	cur.LowTokenMode = on
-	err = s.DB.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES ('low_token_mode', ?, ?)
-			ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
-			strconv.FormatBool(on), db.Millis(s.Now())); err != nil {
-			return err
-		}
-		_, err := s.Events.Append(ctx, tx, events.SettingsChanged, cur)
-		return err
-	})
+	err := s.DB.Tx(ctx, func(tx *sql.Tx) error { return s.SetLowTokenModeTx(ctx, tx, on) })
 	if err != nil {
 		return err
 	}
 	s.Events.Notify()
 	return nil
+}
+
+// SetLowTokenModeTx is SetLowTokenMode inside the caller's transaction; the
+// caller notifies subscribers after commit.
+func (s *Store) SetLowTokenModeTx(ctx context.Context, tx *sql.Tx, on bool) error {
+	cur, err := s.Get(ctx)
+	if err != nil {
+		return err
+	}
+	cur.LowTokenMode = on
+	if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES ('low_token_mode', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+		strconv.FormatBool(on), db.Millis(s.Now())); err != nil {
+		return err
+	}
+	_, err = s.Events.Append(ctx, tx, events.SettingsChanged, cur)
+	return err
 }
 
 // reassignDefault is I18's own per-default logic: what a RoleDefault (a
