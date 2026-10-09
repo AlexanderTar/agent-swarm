@@ -23,6 +23,8 @@ const CursorBytesPerToken = 4
 type ContextSample struct {
 	Tokens int
 	Window *int
+	// Model is the model id the source reported for this turn; empty when none.
+	Model string
 	// Seq changes whenever a newer completed turn is read (muse: the byte
 	// offset of its model_completed line); 0 when the source has none.
 	Seq int64
@@ -122,7 +124,7 @@ func claudeContextLine(line []byte) (ContextSample, bool) {
 	if json.Unmarshal(l.Message.RawUsage, &u) != nil {
 		return ContextSample{}, false
 	}
-	return ContextSample{Tokens: u.Input + u.Creation + u.Read}, true
+	return ContextSample{Tokens: u.Input + u.Creation + u.Read, Model: l.Message.Model}, true
 }
 
 func codexContextLine(line []byte) (ContextSample, bool) {
