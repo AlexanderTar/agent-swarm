@@ -602,6 +602,35 @@ func TestPreToolUseBlocksWorkflowTool(t *testing.T) {
 	}
 }
 
+// TestPreToolUseBlocksNativeAgentMessaging: native SendMessage/ListAgents see
+// unrelated local sessions, so Swarm sessions use swarm_send instead.
+func TestPreToolUseBlocksNativeAgentMessaging(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] Native agent messaging is disabled in Swarm sessions. Use swarm_send (to: an agent name, \"parent\", or another top-level item's key) and swarm_read to find peers."
+
+	for _, tool := range []string{"SendMessage", "ListAgents"} {
+		t.Run(tool, func(t *testing.T) {
+			stdin := []byte(fmt.Sprintf(`{"session_id":"p1","tool_name":"%s","tool_input":{}}`, tool))
+			out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, stdin)
+			if err != nil {
+				t.Fatalf("%s: %v", tool, err)
+			}
+			var m map[string]map[string]string
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("%s unmarshal: %v (%s)", tool, err, out)
+			}
+			if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+				t.Fatalf("%s: want deny, got %s", tool, out)
+			}
+			if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+				t.Fatalf("%s: reason = %q, want %q", tool, m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+			}
+		})
+	}
+}
+
 // TestWorkflowToolAllowedOutsideSwarm: a PreToolUse call for a session Swarm
 // doesn't manage (no row in sessions) is a no-op, same as any other tool --
 // the block only applies inside a Swarm session.

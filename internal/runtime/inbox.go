@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -573,8 +574,63 @@ func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, err
 const errAnswerNeedsReplyTo = "An answer needs reply_to: the msg_id of the question (or blocked relay) you are answering."
 const errAnswerBadReplyTo = "reply_to %s is not a question or blocked relay from %s addressed to you."
 
+// rootItemKeyRE matches an item key such as EPIC-23; agent names never do.
+var rootItemKeyRE = regexp.MustCompile(`^[A-Z]+-[0-9]+$`)
+
+// topLevelAgentByKeyTx resolves a top-level item key to that root's newest
+// reachable top-level (parentless) agent, for a cross-root swarm_send.
+func (s *Store) topLevelAgentByKeyTx(ctx context.Context, tx *sql.Tx, from Agent, key string) (Agent, error) {
+	noOrch := &items.Error{Code: items.CodeBadRequest,
+		Message: fmt.Sprintf("%s has no live orchestrator; the message was not sent.", key)}
+	var itemID string
+	var parentID sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT id, parent_id FROM items WHERE key = ?`, key).Scan(&itemID, &parentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agent{}, noOrch
+	}
+	if err != nil {
+		return Agent{}, err
+	}
+	if parentID.Valid {
+		return Agent{}, &items.Error{Code: items.CodeBadRequest,
+			Message: fmt.Sprintf("%s is not a top-level item; address another top-level item by its own key.", key)}
+	}
+	if itemID == from.RootItemID {
+		return Agent{}, &items.Error{Code: items.CodeBadRequest,
+			Message: fmt.Sprintf("%s is your own top-level item; message an agent by name instead.", key)}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM agents
+		WHERE root_item_id = ? AND parent_agent_id IS NULL ORDER BY created_at DESC, id DESC`, itemID)
+	if err != nil {
+		return Agent{}, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return Agent{}, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return Agent{}, err
+	}
+	for _, id := range ids {
+		ok, err := s.agentReachable(ctx, tx, id)
+		if err != nil {
+			return Agent{}, err
+		}
+		if ok {
+			return s.agentByIDTx(ctx, tx, id)
+		}
+	}
+	return Agent{}, noOrch
+}
+
 // Send is swarm_send (§8.1). "parent" resolves through agents.parent_agent_id; a
-// cross-root target or an unknown name is refused. origin is always 'agent'.
+// cross-root target is refused unless both ends are top-level agents (to may
+// then be a root item key); an unknown name is refused. origin is always 'agent'.
 // requestID is I11's idempotency key (empty means "no idempotency, just run
 // once"): a repeated (session, requestID) pair replays the first message's id
 // instead of enqueueing a second message. replyTo is stored in messages.reply_to
@@ -597,15 +653,24 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 				return &items.Error{Code: items.CodeBadRequest, Message: "This agent has no parent."}
 			}
 			target, err = s.agentByIDTx(ctx, tx, a.ParentAgentID)
+		} else if rootItemKeyRE.MatchString(to) {
+			target, err = s.topLevelAgentByKeyTx(ctx, tx, a, to)
 		} else {
 			target, err = s.agentByNameTx(ctx, tx, to)
 		}
 		if err != nil {
 			return err
 		}
-		if target.RootItemID != a.RootItemID {
-			return &items.Error{Code: items.CodeBadRequest,
-				Message: "A message can only go to an agent inside the same top-level item."}
+		crossRoot := target.RootItemID != a.RootItemID
+		if crossRoot {
+			if a.ParentAgentID != "" {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: "A message can only go to an agent inside your own top-level item. To reach another top-level item, ask your parent to message it."}
+			}
+			if target.ParentAgentID != "" {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf("%s is not a top-level agent. Across top-level items you can only message a top-level agent: use its item key or its name.", target.Name)}
+			}
 		}
 		// A target this message will never reach will never sync/ack: without
 		// this check the message just sits in `messages` as pending forever,
@@ -668,13 +733,25 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			}
 			p["options"] = options
 		}
+		rootItemID, itemID := a.RootItemID, a.ItemID
+		if crossRoot {
+			// Filed under the recipient's root and item so it shows on their
+			// board; the sender's root key rides along so the reply knows where
+			// to go.
+			rootItemID, itemID = target.RootItemID, target.ItemID
+			fromKey, err := s.itemKey(ctx, tx, a.RootItemID)
+			if err != nil {
+				return err
+			}
+			p["from_item"] = fromKey
+		}
 		payload, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
-			RootItemID: a.RootItemID, ItemID: a.ItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
+			RootItemID: rootItemID, ItemID: itemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
 		id = m.ID
 		if err != nil || kind != "answer" {
 			return err

@@ -403,13 +403,17 @@ func TestAskWithdrawRequestIDReplays(t *testing.T) {
 	}
 }
 
-// swarm_send refuses a target outside the caller's own top-level item.
+// swarm_send refuses a target outside the caller's own top-level item when the
+// caller is a child (only top-level agents may cross roots).
 func TestSendRefusesACrossRootTarget(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
 	otherID := seedOtherAgent(t, s)
 	var otherName string
 	if err := s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, otherID).Scan(&otherName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET parent_agent_id = ? WHERE id = ?`, otherID, seed.Caller.AgentID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_send", `{"to":"`+otherName+`","body":"hi"}`); err == nil {

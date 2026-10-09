@@ -336,8 +336,8 @@ func blockerTool(s *Server) ToolDef {
 func sendTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_send",
-		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
-		Schema: objSchemaRequired(`"to":{"type":"string","description":"Recipient agent name, or 'parent' for your orchestrator"},"kind":{"type":"string","enum":["question","answer","finding"],"description":"Message kind; omitted or relay stores as finding"},
+		Description: "Send a short message to another agent in the same top-level item, or to your parent. A top-level agent (no parent) can also message another top-level orchestrator by its item key (EPIC-23) or agent name; find peers with swarm_read filter {kind:\"item\", status:\"in_progress\"}. Children cannot cross items: ask your parent.",
+		Schema: objSchemaRequired(`"to":{"type":"string","description":"Recipient agent name, 'parent' for your orchestrator, or (top-level agents only) another top-level item's key such as EPIC-23"},"kind":{"type":"string","enum":["question","answer","finding"],"description":"Message kind; omitted or relay stores as finding"},
 			"body":{"type":"string"},"reply_to":{"type":"string","description":"Required for kind answer: the msg_id of the question it answers"},
 			"options":{"type":"array","items":{"type":"string"},"description":"Choices for kind question; at most 10, each at most 200 chars"},
 			"approval":{"type":"boolean","description":"kind question to parent only: request explicit Approve/Request changes"},

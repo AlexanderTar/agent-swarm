@@ -858,6 +858,15 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}, nil
 		}
 
+		// Native SendMessage/ListAgents address unrelated local sessions;
+		// swarm_send is the one channel between Swarm agents.
+		if in.ToolName == "SendMessage" || in.ToolName == "ListAgents" {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: "[swarm] Native agent messaging is disabled in Swarm sessions. Use swarm_send (to: an agent name, \"parent\", or another top-level item's key) and swarm_read to find peers.",
+			}, nil
+		}
+
 		isNativeFork := in.ToolName == "Agent" ||
 			in.ToolName == "Task" ||
 			in.ToolName == "Fork" ||
