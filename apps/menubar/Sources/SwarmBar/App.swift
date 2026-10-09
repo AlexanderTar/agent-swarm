@@ -132,7 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preview: model.preview,
             lookup: { [weak model] name in
                 guard let a = model.flatMap({ AgentTree.flatten($0.state.agents).first { $0.name == name } }) else { return nil }
-                return AgentHeader(kind: a.kind, model: a.model, effort: a.effort, itemKey: a.itemKey)
+                return AgentHeader(kind: a.kind, model: a.model, effort: a.effort, itemKey: a.itemKey,
+                                   contextTokens: a.session?.contextTokens, contextWindow: a.session?.contextWindow)
             },
             catalog: { [weak model] in model?.catalog ?? [] })
         Task {

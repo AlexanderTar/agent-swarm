@@ -348,3 +348,51 @@ final class PanePreviewGeometryTests: XCTestCase {
         XCTAssertEqual(f.origin.y, screen.maxY - size.height)
     }
 }
+
+// MARK: - context readout in the preview header
+
+final class PaneContextReadoutTests: XCTestCase {
+    func testHeaderAppendsContextSegment() {
+        let ctx = ContextReadout(tokens: 120_000, window: 1_000_000)
+        XCTAssertEqual(Copy.paneHeader("a", "T-1", "Claude", "Opus 5.5", "High", context: ctx),
+                       "a · T-1 · Claude · Opus 5.5 (High) · 120K / 1M")
+    }
+
+    func testNoSegmentWithoutASample() {
+        XCTAssertNil(ContextReadout(tokens: nil, window: 1_000_000))
+        XCTAssertEqual(Copy.paneHeader("a", "T-1", "Claude", "Opus 5.5", "High", context: nil),
+                       "a · T-1 · Claude · Opus 5.5 (High)")
+    }
+
+    func testNoBarWithoutAWindow() throws {
+        let r = try XCTUnwrap(ContextReadout(tokens: 96_000, window: nil))
+        XCTAssertNil(r.fraction)
+        XCTAssertEqual(r.text, "96K")
+        XCTAssertNil(ContextReadout(tokens: 96_000, window: 0)?.fraction, "a zero window is unknown, not a division")
+    }
+
+    func testBarTintByFraction() throws {
+        func tint(_ pct: Int) throws -> ContextReadout.Tint {
+            try XCTUnwrap(ContextReadout(tokens: pct * 10, window: 1000)).tint
+        }
+        XCTAssertEqual(try tint(50), .secondary)
+        XCTAssertEqual(try tint(59), .secondary)
+        XCTAssertEqual(try tint(60), .orange)
+        XCTAssertEqual(try tint(70), .orange)
+        XCTAssertEqual(try tint(85), .orange)
+        XCTAssertEqual(try tint(90), .red)
+        XCTAssertEqual(try ContextReadout(tokens: 2000, window: 1000)?.fraction, 1, "over-full clamps to 1")
+    }
+
+    func testAccessibilityLabelAppendsContext() throws {
+        XCTAssertEqual(try XCTUnwrap(ContextReadout(tokens: 120_000, window: 1_000_000)).a11y,
+                       "context 120 thousand of 1 million tokens")
+        XCTAssertEqual(try XCTUnwrap(ContextReadout(tokens: 84_000, window: nil)).a11y,
+                       "context 84 thousand tokens")
+        XCTAssertEqual(try XCTUnwrap(ContextReadout(tokens: 1_200_000, window: nil)).a11y,
+                       "context 1.2 million tokens")
+        XCTAssertEqual(Copy.paneHeaderA11y("a · T-1", ContextReadout(tokens: 120_000, window: 1_000_000)),
+                       "a · T-1, context 120 thousand of 1 million tokens")
+        XCTAssertEqual(Copy.paneHeaderA11y("a · T-1", nil), "a · T-1")
+    }
+}

@@ -49,15 +49,21 @@ public struct SessionInfo: Codable, Sendable, Equatable {
     /// Root of a subtree pause still waiting on its children: the session keeps
     /// running until they've all paused. Optional: older daemons omit the key.
     public var pausePending: Bool?
+    /// Last end-of-turn context sample and its model window. nil = never sampled / window unknown.
+    public var contextTokens: Int?
+    public var contextWindow: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, state, attempt, generation, waiting, stale
         case tmuxAlive = "tmux_alive", startedAt = "started_at", endedAt = "ended_at", pausePending = "pause_pending"
+        case contextTokens = "context_tokens", contextWindow = "context_window"
     }
 
     public init(id: String = "ses_1", state: SessionState, attempt: Int = 1, generation: Int = 1,
                 waiting: Bool = false, stale: Bool = false, tmuxAlive: Bool = true,
-                startedAt: Timestamp = Timestamp(ms: 0), endedAt: Timestamp? = nil) {
+                startedAt: Timestamp = Timestamp(ms: 0), endedAt: Timestamp? = nil,
+                contextTokens: Int? = nil, contextWindow: Int? = nil) {
+        self.contextTokens = contextTokens; self.contextWindow = contextWindow
         self.id = id; self.state = state; self.attempt = attempt; self.generation = generation
         self.waiting = waiting; self.stale = stale; self.tmuxAlive = tmuxAlive
         self.startedAt = startedAt; self.endedAt = endedAt
@@ -153,9 +159,13 @@ public struct AgentHeader: Sendable, Equatable {
     public var model: String
     public var effort: String?
     public var itemKey: String
+    public var contextTokens: Int?
+    public var contextWindow: Int?
 
-    public init(kind: AgentKind, model: String, effort: String? = nil, itemKey: String) {
+    public init(kind: AgentKind, model: String, effort: String? = nil, itemKey: String,
+                contextTokens: Int? = nil, contextWindow: Int? = nil) {
         self.kind = kind; self.model = model; self.effort = effort; self.itemKey = itemKey
+        self.contextTokens = contextTokens; self.contextWindow = contextWindow
     }
 }
 

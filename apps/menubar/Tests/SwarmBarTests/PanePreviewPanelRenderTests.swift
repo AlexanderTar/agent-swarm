@@ -190,3 +190,59 @@ final class BoundedSleep: @unchecked Sendable {
         if n >= stopAfter { throw CancellationError() }
     }
 }
+
+@MainActor
+final class PanePreviewContextRenderTests: XCTestCase {
+    private func loaded() async -> PanePreviewModel {
+        let client = MockDaemonClient()
+        client.paneResult = .success(PaneCapture(text: "$ swift test\nAll tests passed\n", tmuxAlive: true, lines: 40))
+        let rec = BoundedSleep(stopAfter: 2)
+        let m = PanePreviewModel(client: client, connected: { true }, sleep: rec.sleep)
+        m.hover("login-coder", anchor: .none)
+        await m.pollTask?.value
+        return m
+    }
+
+    /// The header text, bar and tint are asserted on `ContextReadout` and `Copy.paneHeader`; here the panel
+    /// must keep its fixed size with and without the segment and bar (OCR can't read 11 pt glass text).
+    func testContextHeaderKeepsTheSpecSize() async {
+        let m = await loaded()
+        for (tokens, window) in [(120_000, 1_000_000), (96_000, nil), (950_000, 1_000_000)] as [(Int, Int?)] {
+            let header = AgentHeader(kind: .claude, model: "opus", effort: "high", itemKey: "TASK-101",
+                                     contextTokens: tokens, contextWindow: window)
+            XCTAssertEqual(renderedSize(PanePreviewPanel(preview: m, lookup: { _ in header })), PanePreviewPanel.size)
+        }
+        let none = AgentHeader(kind: .claude, model: "opus", effort: "high", itemKey: "TASK-101")
+        XCTAssertEqual(renderedSize(PanePreviewPanel(preview: m, lookup: { _ in none })), PanePreviewPanel.size)
+    }
+
+    /// Evidence shots (light/dark, default and largest text, three tints) when SWARM_NATIVE_POLISH_EVIDENCE_DIR is set.
+    func testCaptureContextHeaderEvidence() async throws {
+        guard let dir = ProcessInfo.processInfo.environment["SWARM_NATIVE_POLISH_EVIDENCE_DIR"] else {
+            throw XCTSkip("set SWARM_NATIVE_POLISH_EVIDENCE_DIR to capture")
+        }
+        let m = await loaded()
+        let cases: [(String, Int, Int?)] = [("ok", 120_000, 1_000_000), ("amber", 700_000, 1_000_000),
+                                            ("red", 258_000, 258_400), ("nowindow", 96_000, nil)]
+        for dark in [false, true] {
+            for large in [false, true] {
+                for (name, tokens, window) in cases {
+                    let header = AgentHeader(kind: .claude, model: "opus", effort: "high", itemKey: "TASK-101",
+                                             contextTokens: tokens, contextWindow: window)
+                    let panel = PanePreviewPanel(preview: m, lookup: { _ in header })
+                        .dynamicTypeSize(large ? .accessibility5 : .large)
+                    let host = NSHostingView(rootView: panel)
+                    host.frame = NSRect(origin: .zero, size: PanePreviewPanel.size)
+                    host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                    // cacheDisplay (not screencapture): works headless, omits only the glass material behind the text.
+                    host.layoutSubtreeIfNeeded()
+                    let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+                    try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent(
+                        "pane-context-\(name)-\(dark ? "dark" : "light")-\(large ? "xxl" : "default").png"))
+                }
+            }
+        }
+    }
+}

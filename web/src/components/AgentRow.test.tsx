@@ -47,6 +47,20 @@ describe("AgentRow (§10.7 on the board)", () => {
     }
   });
 
+  it("marks a low-token orchestrator with a leaf after the status label, never a worker", () => {
+    const { unmount } = renderWithDaemon(<AgentRow agent={makeAgent({ name: "lt-orch", role: "orchestrator", session: ses("running"), low_token_effective: true })} />, { events: false });
+    const row = screen.getByTestId("agent-lt-orch");
+    const leaf = within(row).getByRole("img", { name: "Low-token mode is on" });
+    expect(leaf.closest("[title]")).toHaveAttribute("title", "Low-token mode is on");
+    expect(screen.getByText("Running").compareDocumentPosition(leaf) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+    renderWithDaemon(<>
+      <AgentRow agent={makeAgent({ name: "lt-worker", role: "coder", session: ses("running"), low_token_effective: true })} />
+      <AgentRow agent={makeAgent({ name: "off-orch", role: "orchestrator", session: ses("running"), low_token_effective: false })} />
+    </>, { events: false });
+    expect(screen.queryByRole("img", { name: "Low-token mode is on" })).toBeNull();
+  });
+
   it("says why the agent isn't on the user's role default", () => {
     const reason = "Role override set on support-chat-attachments-orchestrator-2";
     renderWithDaemon(<AgentRow agent={makeAgent({ name: "r", role: "ui_reviewer", kind_reason: reason, session: ses("running") })} />, { events: false });

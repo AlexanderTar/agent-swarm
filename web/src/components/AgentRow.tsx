@@ -1,4 +1,4 @@
-import { Check, LoaderCircle, Pause, Play, RotateCcw, SquareTerminal, X, type LucideIcon } from "lucide-react";
+import { Check, Leaf, LoaderCircle, Pause, Play, RotateCcw, SquareTerminal, X, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
@@ -63,7 +63,14 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         {agent.kind_reason && (
           <p className="truncate text-xs text-muted-foreground" title={agent.kind_reason}>{agent.kind_reason}</p>
         )}
-        <StateDot state={displayState(agent)} withLabel />
+        <span className="inline-flex items-center gap-1.5">
+          <StateDot state={displayState(agent)} withLabel />
+          {agent.role === "orchestrator" && agent.low_token_effective && (
+            <span title={C.lowTokenOn} className="inline-flex">
+              <Leaf role="img" aria-label={C.lowTokenOn} className="size-3 text-success" />
+            </span>
+          )}
+        </span>
       </div>
       <div className="flex shrink-0 gap-1">
         {agentActions(agent).map((a) => {
