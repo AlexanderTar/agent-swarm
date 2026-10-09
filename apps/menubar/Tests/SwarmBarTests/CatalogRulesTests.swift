@@ -52,8 +52,10 @@ final class CatalogRulesTests: XCTestCase {
     }
 
     func testDefaultEffortLabels() {
-        XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "high"])), "Default (high)")
-        XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "medium"])), "Default (Claude Code)")
+        // The daemon sets defaultEffort for Claude too (high when supported, else the top level); the label reads it.
+        XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "high"], defaultEffort: "high")), "Default (high)")
+        XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "medium"], defaultEffort: "medium")), "Default (medium)")
+        XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "medium"])), "Default (medium)")
         XCTAssertEqual(R.defaultEffortLabel(.codex, CatalogModel(id: "a", efforts: ["low", "medium"], defaultEffort: "medium")), "Default (medium)")
         XCTAssertEqual(R.defaultEffortLabel(.agy, CatalogModel(id: "a", efforts: ["low", "high"])), "Default (high)")
         XCTAssertEqual(R.defaultEffortLabel(.cursor, CatalogModel(id: "a", efforts: ["low", "medium"])), "Default (medium)")

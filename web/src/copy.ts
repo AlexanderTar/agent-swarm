@@ -171,7 +171,6 @@ export const C = {
   priority: "Priority",
   advisor: "Advisor",
   noAdvisor: "No advisor",
-  defaultClaudeCode: "Default (Claude Code)",
   notSupported: "Not supported",
   defaultsFromSettings: "Defaults from Settings",
   workerRoles: "Worker Roles",

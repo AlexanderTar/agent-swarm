@@ -109,8 +109,10 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
   });
 
   it("labels the default effort", () => {
-    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "high"] }))).toBe("Default (high)");
-    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "medium"] }))).toBe("Default (Claude Code)");
+    // The daemon sets default_effort for Claude too (high when supported, else the top level); the label reads it.
+    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "high"], default_effort: "high" }))).toBe("Default (high)");
+    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "medium"], default_effort: "medium" }))).toBe("Default (medium)");
+    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "medium"] }))).toBe("Default (medium)");
     expect(defaultEffortLabel("codex", m({ id: "model-8", efforts: ["low", "medium"], default_effort: "medium" }))).toBe("Default (medium)");
     expect(defaultEffortLabel("agy", m({ id: "model-8", efforts: ["low", "high"] }))).toBe("Default (high)");
   });

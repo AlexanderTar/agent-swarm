@@ -72,8 +72,7 @@ export function changeAdvisorAgent(value: AgentKind | "none", settings: Settings
 export function defaultEffortLabel(kind: AgentKind, model: CatalogModel): string {
   if (model.default_effort === DEFAULT_LEVEL) return T.defaultLevel(AGENT_LABEL[kind]);
   if (model.default_effort !== "") return T.defaultLevel(model.default_effort);
-  if (kind === "claude") return model.efforts.includes("high") ? T.defaultLevel("high") : C.defaultClaudeCode;
-  // Belt and braces: every Go parser sets default_effort for a non-Claude agent, so this is unreachable.
+  // Belt and braces: every Go parser sets default_effort for an agent with efforts, so this is unreachable.
   return T.defaultLevel(model.efforts.includes("high") ? "high" : (model.efforts.at(-1) ?? ""));
 }
 

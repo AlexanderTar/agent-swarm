@@ -110,7 +110,6 @@ public enum CatalogRules {
     public static func defaultEffortLabel(_ kind: AgentKind, _ model: CatalogModel) -> String {
         if model.defaultEffort == bareLevel { return Copy.defaultLevel(Copy.agentLabel(kind)) }
         if !model.defaultEffort.isEmpty { return Copy.defaultLevel(model.defaultEffort) }
-        if kind == .claude { return model.efforts.contains("high") ? Copy.defaultLevel("high") : Copy.defaultClaudeCode }
         return Copy.defaultLevel(model.efforts.contains("high") ? "high" : model.efforts.last ?? "")
     }
 
@@ -126,14 +125,14 @@ public enum CatalogRules {
 
     /// The pane preview's effort: the stored level, else the level the model runs at by default ('' =
     /// CLI default), humanized alike ("High", never "Default"), falling back like `defaultEffortLabel`.
-    /// nil means the actual level is unknown (Cursor's bare level, Claude with no default and no high)
+    /// nil means the actual level is unknown (Cursor's bare level)
     /// or the model has no effort control.
     public static func previewEffortLabel(_ entry: AgentCatalogEntry?, _ model: String, _ effort: String?) -> String? {
         if let effort, !effort.isEmpty { return effort == bareLevel ? nil : Copy.humanEffort(effort) }
         guard let m = resolve(entry, model) else { return nil }
         if !m.defaultEffort.isEmpty && m.defaultEffort != bareLevel { return Copy.humanEffort(m.defaultEffort) }
         if m.efforts.contains("high") { return Copy.humanEffort("high") }
-        guard m.defaultEffort.isEmpty, entry?.kind != .claude, let last = m.efforts.last else { return nil }
+        guard m.defaultEffort.isEmpty, let last = m.efforts.last else { return nil }
         return Copy.humanEffort(last)
     }
 

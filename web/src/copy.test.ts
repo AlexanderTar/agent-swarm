@@ -94,7 +94,6 @@ describe("copy (§17)", () => {
       featureCaption: "Creates a spike to explore this request and turn it into an epic.",
       debugCaption: "Creates a spike to find the root cause and turn it into a bug with a fix plan.",
       reposCaption: "The spike suggests repositories and asks you to confirm them.",
-      defaultClaudeCode: "Default (Claude Code)",
       notSupported: "Not supported",
       storiesCaption: "Stories within epics",
       unassignedLane: "Unassigned · Parent missing",

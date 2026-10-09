@@ -155,10 +155,10 @@ function catalog(): AgentCatalogEntry[] {
   const base = { installed: true, auth_ok: true, auth_error: "", superpowers: true, catalog_fetched_at: NOW - 180 * MIN, catalog_stale: false, catalog_error: "" };
   return [
     { ...base, kind: "claude", version: "2.1.274", default_model: "opus", catalog_source: "api.anthropic.com/v1/models", models: [
-      model({ id: "claude-fable-5-1", label: "Fable 5.1", aliases: ["fable"], efforts: ALL, advisor_capable: true }),
-      model({ id: "claude-opus-5", label: "Opus 5", aliases: ["opus"], efforts: ALL, advisor_capable: true }),
-      model({ id: "claude-sonnet-5", label: "Sonnet 5", aliases: ["sonnet"], efforts: ALL, advisor_capable: true }),
-      model({ id: "claude-sonnet-4-6", label: "Sonnet 4.6", efforts: ["low", "medium", "high", "max"], advisor_capable: true }),
+      model({ id: "claude-fable-5-1", label: "Fable 5.1", aliases: ["fable"], efforts: ALL, default_effort: "high", advisor_capable: true }),
+      model({ id: "claude-opus-5", label: "Opus 5", aliases: ["opus"], efforts: ALL, default_effort: "high", advisor_capable: true }),
+      model({ id: "claude-sonnet-5", label: "Sonnet 5", aliases: ["sonnet"], efforts: ALL, default_effort: "high", advisor_capable: true }),
+      model({ id: "claude-sonnet-4-6", label: "Sonnet 4.6", efforts: ["low", "medium", "high", "max"], default_effort: "high", advisor_capable: true }),
       model({ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", aliases: ["haiku"] }),
     ] },
     { ...base, kind: "codex", version: "0.154.0", default_model: "gpt-6-astra", catalog_source: "codex app-server model/list", models: [

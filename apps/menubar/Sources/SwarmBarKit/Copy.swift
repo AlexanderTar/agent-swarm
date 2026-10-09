@@ -64,7 +64,6 @@ public enum Copy {
     public static let advisor = "Advisor"
     public static let noAdvisor = "No advisor"
     public static func defaultLevel(_ level: String) -> String { "Default (\(level))" }
-    public static let defaultClaudeCode = "Default (Claude Code)"
     public static let refreshModels = "Refresh models"
     public static func modelListsUpdated(_ age: String) -> String { "Model lists updated \(age) ago" }
     public static let advisorCaption = "Claude agents use the built-in advisor. Other agents get a simulated one."

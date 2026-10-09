@@ -88,7 +88,7 @@ final class HandoffTests: XCTestCase {
         XCTAssertNil(label(entry, "bare", ""))
         XCTAssertNil(label(entry, "mystery-9", ""))
         XCTAssertNil(label(entry, "haiku", nil))
-        XCTAssertNil(label(entry, "lowmed", ""))
+        XCTAssertEqual(label(entry, "lowmed", ""), "Medium")
         XCTAssertEqual(label(codex, "clowmed", ""), "Medium")
         XCTAssertNil(label(entry, "bare", "default"))
         XCTAssertNil(label(entry, "opus", "default"))
