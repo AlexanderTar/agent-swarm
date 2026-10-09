@@ -237,6 +237,36 @@ final class PanePreviewContextRenderTests: XCTestCase {
         XCTAssertTrue(abs(low[0] - low[2]) < 40, "12% fill is \(low), expected a neutral grey")
     }
 
+    /// The tint must survive the real panel: glass wrapped around the content washed the fill to white.
+    /// Renders the full PanePreviewPanel through NSHostingView and counts tint-coloured pixels.
+    func testFullPanelContextBarKeepsItsTint() async throws {
+        let m = await loaded()
+        func count(_ tokens: Int, dark: Bool, _ match: (Int, Int, Int) -> Bool) throws -> Int {
+            let header = AgentHeader(kind: .claude, model: "opus", effort: "high", itemKey: "TASK-101",
+                                     contextTokens: tokens, contextWindow: 1_000_000)
+            let host = NSHostingView(rootView: PanePreviewPanel(preview: m, lookup: { _ in header }))
+            host.frame = NSRect(origin: .zero, size: PanePreviewPanel.size)
+            host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            host.layoutSubtreeIfNeeded()
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            var n = 0
+            for y in 0..<rep.pixelsHigh / 4 {          // the header is in the top quarter
+                for x in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                    if match(Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255)) { n += 1 }
+                }
+            }
+            return n
+        }
+        for dark in [true, false] {
+            let orange = try count(700_000, dark: dark) { $0 > 200 && $1 > 100 && $1 < 190 && $2 < 80 }
+            let red = try count(900_000, dark: dark) { $0 > 200 && $1 < 90 && $2 < 90 }
+            XCTAssertGreaterThan(orange, 20, "70% fill has no orange pixels in the full panel (dark: \(dark))")
+            XCTAssertGreaterThan(red, 20, "90% fill has no red pixels in the full panel (dark: \(dark))")
+        }
+    }
+
     /// Evidence shots (light/dark, default and largest text, three tints) when SWARM_NATIVE_POLISH_EVIDENCE_DIR is set.
     func testCaptureContextHeaderEvidence() async throws {
         guard let dir = ProcessInfo.processInfo.environment["SWARM_NATIVE_POLISH_EVIDENCE_DIR"] else {

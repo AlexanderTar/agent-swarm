@@ -116,7 +116,8 @@ public struct PanePreviewPanel: View {
 extension View {
     @ViewBuilder func glassPanel(cornerRadius: CGFloat) -> some View {
         if #available(macOS 26, *) {
-            glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            // Glass is a background layer: wrapping the content washes its colours to white.
+            background { Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius)) }
         } else {
             background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
         }
