@@ -55,8 +55,8 @@ func TestSettingsRoutes(t *testing.T) {
 		c.Roles[runtime.RoleCoder] = settings.RoleDefault{Agent: runtime.Claude, Model: "claude-9"}
 	}, "Choose a model available for this agent.")
 	bad(func(c *settings.Settings) {
-		c.Roles[runtime.RoleMechanical] = settings.RoleDefault{Agent: runtime.Claude, Model: "haiku", Effort: "low"}
-	}, "low isn't available for Haiku (latest).")
+		c.Roles[runtime.RoleMechanical] = settings.RoleDefault{Agent: runtime.Claude, Model: "haiku", Effort: "ultra"}
+	}, "ultra isn't available for Haiku (latest).")
 	bad(func(c *settings.Settings) { c.EnabledAgents = nil }, "At least one agent must stay enabled.")
 	status, body := e.api("PUT", "/api/settings", "nope")
 	wantErr(t, status, body, 400, "bad_request", "Invalid JSON body.")
