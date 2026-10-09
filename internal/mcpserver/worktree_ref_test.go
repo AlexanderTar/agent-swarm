@@ -93,3 +93,57 @@ func TestWorkflowStartAcceptsWorktreePathRef(t *testing.T) {
 		t.Fatalf("start with path ref: %v", err)
 	}
 }
+
+// BUG-73: swarm_worktree create/review accept a unique catalog name, as swarm_items does.
+func TestWorktreeCreateAndReviewAcceptRepoName(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	named := seedRepoIn(t, s, "bug73-named-repo")
+	repoOf := func(out any) string {
+		t.Helper()
+		var wt struct {
+			WorktreeID string `json:"worktree_id"`
+		}
+		if err := json.Unmarshal(mustJSON(out), &wt); err != nil {
+			t.Fatal(err)
+		}
+		var repoID string
+		if err := s.RT.DB.QueryRowContext(ctx, `SELECT repo_id FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&repoID); err != nil {
+			t.Fatal(err)
+		}
+		return repoID
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"bug73-named-repo","branch":"task/by-name"}`)
+	if err != nil {
+		t.Fatalf("create by name: %v", err)
+	}
+	if got := repoOf(out); got != named {
+		t.Fatalf("create by name repo_id = %q, want %q", got, named)
+	}
+	var path string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT path FROM repos WHERE id = ?`, named).Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	out, err = s.call(ctx, seed.Caller, "swarm_worktree",
+		fmt.Sprintf(`{"op":"review","repo":"bug73-named-repo","sha":%q}`, headSHA(t, path)))
+	if err != nil {
+		t.Fatalf("review by name: %v", err)
+	}
+	if got := repoOf(out); got != named {
+		t.Fatalf("review by name repo_id = %q, want %q", got, named)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/by-id"}`, seed.RepoID)); err != nil {
+		t.Fatalf("create by id: %v", err)
+	}
+	seedRepoIn(t, s, "bug73-twin")
+	seedRepoIn(t, s, "bug73-twin")
+	_, err = s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"bug73-twin","branch":"task/twin"}`)
+	if err == nil || !strings.Contains(err.Error(), `Repository name "bug73-twin" is ambiguous`) {
+		t.Fatalf("ambiguous name err = %v", err)
+	}
+	_, err = s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"bug73-nope","branch":"task/nope"}`)
+	if err == nil || !strings.Contains(err.Error(), `Unknown repository "bug73-nope"`) {
+		t.Fatalf("unknown name err = %v", err)
+	}
+}

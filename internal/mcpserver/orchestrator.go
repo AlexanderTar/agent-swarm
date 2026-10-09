@@ -494,7 +494,7 @@ func worktreeOut(wt worktree.Worktree) map[string]any {
 func worktreeTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_worktree",
-		Description: "Create or review a Git worktree using a catalog repository id or local Git repository path; also share, release or remove it (remove is owner-only; a retained tree of a finished root is dropped by the user with `swarm cleanup --discard <path>`; list trees with swarm_read filter kind worktree).",
+		Description: "Create or review a Git worktree using a catalog repository id, unique name or local Git repository path; also share, release or remove it (remove is owner-only; a retained tree of a finished root is dropped by the user with `swarm cleanup --discard <path>`; list trees with swarm_read filter kind worktree).",
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"op":{"type":"string","enum":["create","share","review","release","remove"]},
 			"repo":{"type":"string"},"branch":{"type":"string"},"base":{"type":"string"},
@@ -552,6 +552,9 @@ func worktreeTool(s *Server) ToolDef {
 						return nil, fmt.Errorf("repository path: %w", err)
 					}
 					in.Repo = r.ID
+				}
+				if in.Repo, err = items.ResolveRepoRefTx(ctx, s.RT.DB, in.Repo); err != nil {
+					return nil, err
 				}
 				_, path, err := repoNameAndPath(ctx, s, in.Repo)
 				if err != nil {
