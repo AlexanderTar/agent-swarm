@@ -271,6 +271,7 @@ func TestReviseStalesOnlyTheChangedSectionsApprovals(t *testing.T) {
 // I10: a plan needs exactly one valid swarm-tree block.
 func TestPlanRegistrationParsesTheTree(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Tree", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
@@ -434,5 +435,31 @@ func TestParseTreeWithWorkflowUnitsSolo(t *testing.T) {
 	task := tree.Children[0].Children[0]
 	if task.Workflow == nil || task.Workflow.Template != "tdd-reviewed" || len(task.Units) != 1 || task.Solo != "focused" || len(task.Verify) != 1 {
 		t.Fatalf("task = %+v", task)
+	}
+}
+
+// TestRegisterPlanRefusesUnresolvableRepoRefs (BUG-68): a swarm-tree repo ref
+// that would never materialize -- unknown, or a name several repos share --
+// is refused at registration, naming each one, and no revision is stored.
+func TestRegisterPlanRefusesUnresolvableRepoRefs(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, "chat")
+	seedRepo(t, s, "chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bad repos", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	body := strings.Replace(planBody, `"repos":["chat"]`, `"repos":["nope"]`, 1)
+	_, err = s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, body), "")
+	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: ") ||
+		!strings.Contains(err.Error(), `Unknown repository "nope". Pass a repository id or name`) ||
+		!strings.Contains(err.Error(), `Repository name "chat" is ambiguous.`) {
+		t.Fatalf("err = %v", err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE kind = 'plan'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("plan artifacts = %d, %v; want none", n, err)
 	}
 }

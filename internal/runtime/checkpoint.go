@@ -527,6 +527,34 @@ func (s *Store) verifySince(ctx context.Context, tx *sql.Tx, agentID string, sin
 	return out, rows.Err()
 }
 
+// carriedEvidence collects the verification entries that agents of earlier
+// succeeded workflows on itemID recorded on that item, in order. Failed,
+// cancelled and escalated workflows never carry.
+func (s *Store) carriedEvidence(ctx context.Context, tx *sql.Tx, itemID, currentWorkflowID string) ([]Verify, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT verify_json FROM checkpoints
+		WHERE item_id = ? AND agent_id IN (
+			SELECT r.agent_id FROM workflow_runs r JOIN workflows w ON w.id = r.workflow_id
+			WHERE w.item_id = ? AND w.state = 'succeeded' AND w.id != ? AND r.agent_id IS NOT NULL)
+		ORDER BY created_at, rowid`, itemID, itemID, currentWorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Verify
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var vs []Verify
+		if err := json.Unmarshal([]byte(raw), &vs); err != nil {
+			return nil, fmt.Errorf("checkpoints verify_json: %w", err)
+		}
+		out = append(out, vs...)
+	}
+	return out, rows.Err()
+}
+
 // findFixStepsFor returns every review step in spec whose loop retries
 // buildStepID (`Loop.Fix`, falling back to `Of` when `Loop.Fix` is unset --
 // spec B5, fix round 1's R3), or nil if none targets it at all (a step with
@@ -680,6 +708,28 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 		return req
 	}
 
+	// firstRunUnits is a first run's required set: every unit, minus those
+	// already proven in an earlier succeeded workflow on this item (a
+	// reopened task appends units; see ruling-tdd-followups.md). Fix-round
+	// requirements never go through it.
+	firstRunUnits := func() ([]int, error) {
+		req := everyUnit()
+		if len(req) == 0 {
+			return nil, nil
+		}
+		carried, err := s.carriedEvidence(ctx, tx, it.ID, run.WorkflowID)
+		if err != nil {
+			return nil, err
+		}
+		var left []int
+		for _, u := range req {
+			if !hasRedBeforeGreen(carried, u) {
+				left = append(left, u)
+			}
+		}
+		return left, nil
+	}
+
 	var required []int
 	packageWide := false
 	spec, err := s.runSpec(ctx, it, run)
@@ -709,7 +759,12 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 			// workflow's round counter climbed for some OTHER step's fix
 			// loop (a multi-loop spec) -- never mistake that for a fix
 			// round of THIS step.
-			required = everyUnit()
+			if required, err = firstRunUnits(); err != nil {
+				return err
+			}
+			if batched && len(required) == 0 {
+				return nil // every unit carried
+			}
 		case len(findings) == 0:
 			// A genuine fix round (blocked/changes_requested), but no
 			// structured findings at all (e.g. a bare blocked verdict,
@@ -749,7 +804,12 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 		// No review step targets this step at all (no review, e.g.
 		// mechanical/research; or this is round 1 with nothing to retry
 		// yet): always a first run.
-		required = everyUnit()
+		if required, err = firstRunUnits(); err != nil {
+			return err
+		}
+		if batched && len(required) == 0 {
+			return nil // every unit carried
+		}
 	}
 
 	ok, missing := tddOK(entries, required, packageWide)

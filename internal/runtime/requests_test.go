@@ -1196,6 +1196,7 @@ func registerSpecSection(t *testing.T, s *Store, ses Session, key, heading, body
 // field is refused on any approval kind other than approve_section.
 func TestAskApprovalNothingToReviewRefusedOnPlan(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR plan", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	if err != nil {
