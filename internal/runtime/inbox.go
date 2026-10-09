@@ -913,24 +913,32 @@ func (s *Store) pendingInboxItems(ctx context.Context, agentID string, limit int
 // context, native wake, and tryPaste's raw paste alike (v2 Locked decision 1).
 //
 // Only the first notice of a session (sessionID) carries the injection
-// trailer; later ones are shorter.
+// trailer; later ones are shorter. The trailer is spent by MarkNoticeSeen at
+// delivery, not by this render.
 func (s *Store) InboxNotice(ctx context.Context, sessionID, agentID, name, key string) (string, error) {
 	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
 	if err != nil {
 		return "", err
 	}
-	return InboxWith(items, more, name, key, s.firstNoticeOf(sessionID)), nil
+	return InboxWith(items, more, name, key, !s.noticeSent(sessionID)), nil
 }
 
-// firstNoticeOf reports whether this is sessionID's first notice, and marks it
-// seen. Daemon-lifetime memory: after a restart one more trailer is sent.
-func (s *Store) firstNoticeOf(sessionID string) bool {
+// noticeSent reports whether sessionID already got a notice (and its trailer).
+// Rendering never marks it: callers call MarkNoticeSeen once the notice is
+// actually delivered. Daemon-lifetime memory: after a restart one more
+// trailer is sent.
+func (s *Store) noticeSent(sessionID string) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	return s.noticeSeen[sessionID]
+}
+
+// MarkNoticeSeen records that sessionID received an inbox notice.
+func (s *Store) MarkNoticeSeen(sessionID string) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
 	if s.noticeSeen == nil {
 		s.noticeSeen = map[string]bool{}
 	}
-	first := !s.noticeSeen[sessionID]
 	s.noticeSeen[sessionID] = true
-	return first
 }

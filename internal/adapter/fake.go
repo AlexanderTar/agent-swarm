@@ -20,7 +20,8 @@ type Fake struct {
 	AuthError      error
 	NoSuperpowers  bool
 	Version        string
-	WakeOK         bool // e2e can turn on a "native wake" to test the skip-the-paste path
+	WakeErr        error // test: Wake returns this error
+	WakeOK         bool  // e2e can turn on a "native wake" to test the skip-the-paste path
 	Dialogs        []Dialog
 	PromptMatchers []PromptMatcher
 	LastSpec       Spec       // test observability: the Spec most recently passed to Launch/Resume
@@ -97,6 +98,9 @@ func (f *Fake) Idle(capture string) bool        { return idle(f, capture) }
 
 func (f *Fake) Wake(_ context.Context, w WakeTarget) (bool, error) {
 	f.LastWakeTarget = w
+	if f.WakeErr != nil {
+		return false, f.WakeErr
+	}
 	return f.WakeOK, nil
 }
 

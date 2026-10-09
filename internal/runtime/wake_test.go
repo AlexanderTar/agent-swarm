@@ -1230,7 +1230,7 @@ func TestTryPasteUsesPasteReadyWhenTheAdapterHasIt(t *testing.T) {
 		ses, _ := s.LatestSession(ctx, a.ID)
 		tm.captures[ses.TmuxName] = []string{c.capture}
 		r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
-		if err := s.tryPaste(ctx, c.ad(fa), r, "notice"); err != nil {
+		if err := s.tryPaste(ctx, c.ad(fa), r, "notice", false); err != nil {
 			t.Fatal(err)
 		}
 		if got := len(tm.pasted) > 0; got != c.paste {
@@ -1303,5 +1303,76 @@ func TestWakeOnQuotaResetSkipsIdleBlockedSessionAcrossWindows(t *testing.T) {
 		if !lastWake.Valid || lastWake.Int64 < db.Millis(tm.clk.Now().Add(-2*time.Minute)) {
 			t.Fatalf("window %d: skipped session not marked woken for the cutoff: %v", i+1, lastWake)
 		}
+	}
+}
+
+// Decision 16: the trailer is spent by delivery, not by rendering. A failed
+// native wake, its backoff retry and a control notice leave it unsent.
+func TestTrailerSurvivesFailedWakeAndControlNotice(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "TrailerWake", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm) // no pane: the paste fallback cannot deliver either
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
+
+	fa.WakeErr = errors.New("boom")
+	at.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fa.LastWakeTarget.Notice, inboxTrailer) {
+		t.Fatal("first attempt must render the trailer")
+	}
+	if len(tm.pasted) != 0 {
+		t.Fatalf("nothing should have been delivered: %q", tm.pasted)
+	}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	at.Advance(10 * time.Minute) // past the backoff; the retry is the paste
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 1 || !strings.Contains(tm.pasted[0], inboxTrailer) {
+		t.Fatalf("retry after a failed wake must still carry the trailer: %q", tm.pasted)
+	}
+	if next, _ := s.InboxNotice(ctx, ses.ID, a.ID, a.Name, "SPIKE"); strings.Contains(next, inboxTrailer) {
+		t.Fatal("trailer must be spent once delivered")
+	}
+	s.noticeSeen = nil // fresh session state for the control half
+	tm.pasted = nil
+
+	// A control (pause) notice replaces the inbox notice: trailer unspent.
+	enq(t, s, a.ID, a.RootItemID, "control", `{"action":"pause"}`, 0)
+	fa.WakeErr = nil
+	fa.WakeOK = true
+	at.Advance(10 * time.Minute)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if first, _ := s.InboxNotice(ctx, ses.ID, a.ID, a.Name, "SPIKE"); !strings.Contains(first, inboxTrailer) {
+		t.Fatal("a control notice must not spend the trailer")
+	}
+}
+
+func TestTrailerSpentOnceByASuccessfulWake(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "TrailerOK", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
+	tm.clk.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fa.LastWakeTarget.Notice, inboxTrailer) {
+		t.Fatal("delivered notice must carry the trailer")
+	}
+	if next, _ := s.InboxNotice(ctx, ses.ID, a.ID, a.Name, "SPIKE"); strings.Contains(next, inboxTrailer) {
+		t.Fatal("trailer must be spent after delivery")
 	}
 }

@@ -724,6 +724,7 @@ func (h *Handler) inboxNoticeOrFallback(ctx context.Context, s *sessionRow) stri
 		h.logf("hook: inbox notice for %s: %v", s.ID, err)
 		return runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey)
 	}
+	h.RT.MarkNoticeSeen(s.ID) // hook context goes out with this response
 	return notice
 }
 
