@@ -704,7 +704,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		}
 		h.mu.Unlock()
 	}
-	if d.Context == "" && !d.Block && len(d.UpdatedInput) == 0 {
+	if d.Context == "" && !d.Block && len(d.UpdatedInput) == 0 && d.SessionTitle == "" {
 		return nil, nil
 	}
 	return a.HookOutput(event, d)
@@ -775,7 +775,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		if hint := h.graphifyHint(ctx, s); hint != "" {
 			parts = append(parts, hint)
 		}
-		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
+		return adapter.HookDecision{Context: strings.Join(parts, " "), SessionTitle: s.AgentName}, nil
 
 	case "PreCompact":
 		if kind == runtime.Codex || kind == runtime.Cursor || s.Kind == runtime.Codex || s.Kind == runtime.Cursor {
@@ -829,7 +829,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		if s.Pending > 0 && !runtime.IsDaemonPrompt(in.Prompt) {
 			parts = append(parts, h.inboxNoticeOrFallback(ctx, s))
 		}
-		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
+		return adapter.HookDecision{Context: strings.Join(parts, " "), SessionTitle: s.AgentName}, nil
 
 	case "PreToolUse":
 		// Preservation mode (spec §3): a pausing predecessor may still use

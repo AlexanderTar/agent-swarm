@@ -1370,6 +1370,18 @@ func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, e
 	return m.LaunchModel(effort)
 }
 
+// pendingNameFor is the session name the wake tick must paste into a pane of
+// this kind, or nil when the kind sets its title another way (claude's hook
+// sessionTitle) and nothing is pending.
+func (s *Store) pendingNameFor(kind AgentKind, name string) any {
+	if r, ok := s.Adapters[kind].(adapter.SessionRenamer); ok {
+		if _, ok := r.RenameCommand(name); ok {
+			return name
+		}
+	}
+	return nil
+}
+
 // succMode is "" for a brand-new assignment, or one of "handoff", "recovery"
 // or "resume" when this session continues the same agent's prior work: the
 // kickoff is then the section-4 SuccessorKickoff template (with its normative
@@ -1435,10 +1447,10 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO sessions
-			(id, agent_id, attempt, generation, provider_session_id, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, agent_id, attempt, generation, provider_session_id, token_hash, tmux_name, cwd, cwd_kind, state, started_at, pending_name)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ses.ID, ses.AgentID, ses.Attempt, ses.Generation, providerID, ses.TokenHash,
-			ses.TmuxName, ses.Cwd, ses.CwdKind, string(ses.State), nowMs)
+			ses.TmuxName, ses.Cwd, ses.CwdKind, string(ses.State), nowMs, s.pendingNameFor(a.Kind, a.Name))
 		return err
 	})
 	if err != nil {

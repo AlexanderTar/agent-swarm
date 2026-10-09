@@ -535,7 +535,8 @@ func (c *Claude) HookOutput(event string, d HookDecision) ([]byte, error) {
 			},
 		})
 	}
-	if d.Context == "" {
+	titled := d.SessionTitle != "" && (event == "SessionStart" || event == "UserPromptSubmit")
+	if d.Context == "" && !titled {
 		return nil, nil
 	}
 	if event == "PreCompact" {
@@ -543,12 +544,14 @@ func (c *Claude) HookOutput(event string, d HookDecision) ([]byte, error) {
 		// top-level fields such as systemMessage are valid there.
 		return json.Marshal(map[string]string{"systemMessage": d.Context})
 	}
-	return json.Marshal(map[string]any{
-		"hookSpecificOutput": map[string]string{
-			"additionalContext": d.Context,
-			"hookEventName":     event,
-		},
-	})
+	out := map[string]string{"hookEventName": event}
+	if d.Context != "" {
+		out["additionalContext"] = d.Context
+	}
+	if titled {
+		out["sessionTitle"] = d.SessionTitle
+	}
+	return json.Marshal(map[string]any{"hookSpecificOutput": out})
 }
 
 func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {

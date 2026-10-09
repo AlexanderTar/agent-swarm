@@ -178,6 +178,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		Installed: func(context.Context) []AgentKind { return []AgentKind{Fake} }}
 	fa := adapter.NewFake(adapter.Deps{Home: home, UserHome: t.TempDir(),
 		Bin: "/usr/local/bin/swarm", Run: execx.Run, Log: func(string, ...any) {}})
+	fa.NoRename = true // renameStore turns the TASK-769 session-rename paste back on
 	tm := newFakeTmux()
 	tm.clk = clk
 	s := &Store{DB: d, Events: ev, Items: it, Settings: st, Catalog: cat, Home: home,
@@ -556,8 +557,8 @@ func TestStartSpikeWithNoNameInfersTitleAndAgentNameFromRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Name != "fix-the-login-redirect" {
-		t.Fatalf("agent name = %q, want fix-the-login-redirect", a.Name)
+	if a.Name != "fix-the-login-redirect-orchestrator" {
+		t.Fatalf("agent name = %q, want fix-the-login-redirect-orchestrator", a.Name)
 	}
 	it, err := s.Items.Get(ctx, key)
 	if err != nil {

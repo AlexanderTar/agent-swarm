@@ -125,13 +125,17 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN resolved_by_id`); err != nil {
 		t.Fatal(err)
 	}
+	// 0029_session_pending_name.sql adds sessions.pending_name with plain ALTER TABLE (same precedent).
+	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN pending_name`); err != nil {
+		t.Fatal(err)
+	}
 	// 0028_workflow_run_error.sql adds workflow_runs.error with plain ALTER TABLE (same precedent).
 	for _, col := range []string{"error", "error_fatal"} {
 		if _, err := raw.Exec(`ALTER TABLE workflow_runs DROP COLUMN ` + col); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// 0029_low_token.sql adds agents.low_token and sessions context columns with plain ALTER TABLE (same precedent).
+	// 0030_low_token.sql adds agents.low_token and sessions context columns with plain ALTER TABLE (same precedent).
 	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN low_token`); err != nil {
 		t.Fatal(err)
 	}

@@ -229,10 +229,10 @@ func (s *Store) applyPendingTitle(ctx context.Context, tx *sql.Tx, it items.Item
 }
 
 // renameGeneratedAgentTx gives an orchestrator whose name was generated from the
-// request (title_pending was 1) the kebab of the title the agent just chose.
-// It returns "" when nothing was renamed.
+// request (title_pending was 1) the default orchestrator name for the title the
+// agent just chose. It returns "" when nothing was renamed.
 func (s *Store) renameGeneratedAgentTx(ctx context.Context, tx *sql.Tx, a Agent, title string) (string, error) {
-	base, err := ids.KebabMax(title, 24)
+	base, err := defaultName(RoleOrchestrator, title)
 	if err != nil || base == "" || base == a.Name {
 		return "", nil
 	}
@@ -870,8 +870,8 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		return &items.Error{Code: items.CodeBadRequest,
 			Message: "Commit your work before completing: no rw worktree shared with you"}
 	}
-	var sha string
-	for _, wt := range wts {
+	heads := make([]string, len(wts))
+	for i, wt := range wts {
 		dirty, err := s.Worktree.DirtyStrict(ctx, wt.Path)
 		if err != nil {
 			return err
@@ -879,16 +879,24 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		if dirty {
 			return dirtyRepoError(wt.Repo)
 		}
-		head, err := s.gitHead(ctx, wt.Path)
-		if err != nil {
+		if heads[i], err = s.gitHead(ctx, wt.Path); err != nil {
 			return err
 		}
-		g, ok := gitEntryFor(in.Git, wt, head)
+	}
+	var sha string
+	for i, wt := range wts {
+		head := heads[i]
+		g, ok, own := gitEntryFor(in.Git, wts, heads, i)
 		if !ok {
 			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 				"Commit your work before completing: no git entry for %s", wt.Repo)}
 		}
-		if len(g.SHA) < 7 || !strings.HasPrefix(head, strings.ToLower(g.SHA)) {
+		if !own {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Commit your work before completing: %s worktree %s (branch %s, HEAD %s) has no git entry of its own. Add {repo: %q, branch: %q, sha: %q} to git.",
+				wt.Repo, wt.Path, wt.Branch, head, wt.Repo, wt.Branch, head)}
+		}
+		if !headHasSHA(g.SHA, head) {
 			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 				"Commit your work before completing: %s HEAD is %s, checkpoint says %s. Pass the full sha of your committed HEAD.",
 				wt.Repo, head, g.SHA)}
@@ -905,28 +913,52 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 	return nil
 }
 
-// gitEntryFor picks wt's own git entry (BUG-63): two rw trees of one repo
-// each need their own entry, so an entry naming the tree's branch wins, then
-// one whose sha is the tree's HEAD, then the repo's last entry (the one a
-// single-tree checkpoint has always been checked against).
-func gitEntryFor(git []GitRef, wt rwWorktree, head string) (GitRef, bool) {
-	var last GitRef
-	found := false
+// gitEntryFor picks wts[i]'s own git entry (BUG-63): two rw trees of one
+// repo each need their own entry, so an entry naming the tree's branch wins,
+// then one whose sha is the tree's HEAD, then the repo's last entry (the one
+// a single-tree checkpoint has always been checked against). The fallback
+// never takes an entry another tree of the repo claims by branch or sha
+// (BUG-66): own is false when only such entries exist, so the caller asks
+// for this tree's entry instead of checking it against another tree's sha.
+func gitEntryFor(git []GitRef, wts []rwWorktree, heads []string, i int) (g GitRef, ok, own bool) {
+	wt, head := wts[i], heads[i]
 	for _, g := range git {
-		if g.Repo != wt.Repo {
+		if g.Repo == wt.Repo && wt.Branch != "" && g.Branch == wt.Branch {
+			return g, true, true
+		}
+	}
+	for _, g := range git {
+		if g.Repo == wt.Repo && headHasSHA(g.SHA, head) {
+			return g, true, true
+		}
+	}
+	for _, e := range git {
+		if e.Repo != wt.Repo {
 			continue
 		}
-		if wt.Branch != "" && g.Branch == wt.Branch {
-			return g, true
-		}
-		last, found = g, true
-	}
-	for _, g := range git {
-		if g.Repo == wt.Repo && len(g.SHA) >= 7 && strings.HasPrefix(head, strings.ToLower(g.SHA)) {
-			return g, true
+		if !claimedByOther(e, wts, heads, i) {
+			g, ok, own = e, true, true
+		} else if !own {
+			g, ok = e, true
 		}
 	}
-	return last, found
+	return g, ok, own
+}
+
+func headHasSHA(sha, head string) bool {
+	return len(sha) >= 7 && strings.HasPrefix(head, strings.ToLower(sha))
+}
+
+// claimedByOther reports whether another rw tree of g's repo matches g by
+// branch or sha.
+func claimedByOther(g GitRef, wts []rwWorktree, heads []string, i int) bool {
+	for j, other := range wts {
+		if j != i && other.Repo == g.Repo &&
+			((other.Branch != "" && g.Branch == other.Branch) || headHasSHA(g.SHA, heads[j])) {
+			return true
+		}
+	}
+	return false
 }
 
 // registerArtifactAsDaemon registers a design/research artifact the
@@ -1430,6 +1462,10 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if newName != "" {
 						renameFrom, renameTo, renameSes = a.Name, newName, ses.ID
+						if _, err := tx.ExecContext(ctx, `UPDATE sessions SET pending_name = ? WHERE id = ?`,
+							s.pendingNameFor(a.Kind, newName), ses.ID); err != nil {
+							return err
+						}
 						a.Name = newName
 					}
 				} else {

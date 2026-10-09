@@ -914,3 +914,6 @@ func (m *Muse) ObserveModel(_, providerSessionID string) (string, string, bool) 
 	m.obs[path] = memo
 	return memo.model, memo.effort, memo.model != ""
 }
+
+// RenameCommand implements SessionRenamer (muse spells it /name).
+func (*Muse) RenameCommand(name string) (string, bool) { return "/name " + name, true }

@@ -607,3 +607,6 @@ func (c *Codex) AssistantTextSinceLastTurn(transcriptPath string) (string, bool)
 	}
 	return strings.Join(out, "\n"), true
 }
+
+// RenameCommand implements SessionRenamer.
+func (*Codex) RenameCommand(name string) (string, bool) { return "/rename " + name, true }

@@ -284,3 +284,6 @@ func (c *Cursor) modelArg(s Spec) string {
 	}
 	return s.Model
 }
+
+// RenameCommand implements SessionRenamer.
+func (*Cursor) RenameCommand(name string) (string, bool) { return "/rename " + name, true }
