@@ -1183,3 +1183,18 @@ func gitRefsEmpty(gitJSON string) bool {
 	var refs []json.RawMessage
 	return json.Unmarshal([]byte(gitJSON), &refs) != nil || len(refs) == 0
 }
+
+// resolveRepoRefs maps each repo ref through ResolveRepoRefTx into a new, de-duplicated list of catalog ids.
+func resolveRepoRefs(ctx context.Context, tx *sql.Tx, refs []string) ([]string, error) {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		id, err := ResolveRepoRefTx(ctx, tx, r)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}

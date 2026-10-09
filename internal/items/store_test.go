@@ -258,14 +258,14 @@ func TestOrchestratorCanProposeRoot(t *testing.T) {
 }
 
 // TestProposeRootRefusesUnknownRepoID: a propose call's repos are suggestions,
-// but the ids still have to be real repo ids -- not a repo name, a typo, or
-// anything else a confirm_repos gate downstream can never satisfy.
+// but each must still name a real catalog repo (id, unique name or path) --
+// not a typo or anything else a confirm_repos gate downstream can never satisfy.
 func TestProposeRootRefusesUnknownRepoID(t *testing.T) {
 	s := newStore(t)
 	root := mk(t, s, items.Epic, "", "Root")
 	orch := items.Orchestrator("agt_1", root.ID)
 	_, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "New epic", Repos: []string{"agent-swarm"}}, orch)
-	want := `Unknown repository "agent-swarm". Pass a repository id from swarm_read {repos:{q:"agent-swarm"}}.`
+	want := `Unknown repository "agent-swarm". Pass a repository id or name from swarm_read {repos:{q:"agent-swarm"}}, or register its local Git path with swarm_repo_register.`
 	if err == nil || err.Error() != want || code(err) != items.CodeBadRequest {
 		t.Fatalf("err = %v, want %s", err, want)
 	}
