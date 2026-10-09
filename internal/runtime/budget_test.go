@@ -92,3 +92,49 @@ func TestMuseIdleRecordsSample(t *testing.T) {
 		t.Fatalf("row = %v/%v, want 157990/200000", tok, win)
 	}
 }
+
+func TestStartSessionSetsNativeCapForLowTokenOrchestratorsOnly(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	for _, k := range []AgentKind{Claude, Codex, Muse, Cursor, Agy} {
+		s.Adapters[k] = fa
+	}
+	want := map[AgentKind]int{Claude: 200000, Codex: 150000, Muse: 200000, Cursor: 200000, Agy: 0}
+	gen := 20
+	for kind, cap := range want {
+		mustExec(t, s.DB, `UPDATE agents SET kind = ? WHERE id IN (?, ?)`, string(kind), orch.ID, w.ID)
+		for _, tc := range []struct {
+			name  string
+			on    bool
+			agent Agent
+			want  int
+		}{
+			{"orchestrator on", true, orch, cap},
+			{"orchestrator off", false, orch, 0},
+			{"worker under low-token orchestrator", true, w, 0},
+		} {
+			mustExec(t, s.DB, `UPDATE agents SET low_token = ? WHERE id = ?`, tc.on, orch.ID)
+			a, err := s.AgentByID(ctx, tc.agent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gen++
+			ses, err := s.startSession(ctx, a, 1, gen, false, "prov", "")
+			if err != nil {
+				t.Fatalf("%s %s: %v", kind, tc.name, err)
+			}
+			if fa.LastSpec.LowTokenCap != tc.want {
+				t.Errorf("%s %s: LowTokenCap = %d, want %d", kind, tc.name, fa.LastSpec.LowTokenCap, tc.want)
+			}
+			var win sql.NullInt64
+			if err := s.DB.QueryRowContext(ctx, `SELECT context_window FROM sessions WHERE id = ?`, ses.ID).Scan(&win); err != nil {
+				t.Fatal(err)
+			}
+			wantWin := kind == Muse && tc.want > 0
+			if win.Valid != wantWin || (wantWin && win.Int64 != 200000) {
+				t.Errorf("%s %s: context_window = %v, want 200000 only for a capped muse launch", kind, tc.name, win)
+			}
+		}
+	}
+}

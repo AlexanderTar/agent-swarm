@@ -58,7 +58,7 @@ func CursorMCPEnv() map[string]string {
 // caveat).
 func (c *Cursor) argv(s Spec, chat string) []string {
 	a := []string{"cursor-agent", "--resume", chat, "--yolo", "--trust", "--approve-mcps", "--sandbox", "disabled",
-		"--model", s.Model, "--workspace", s.Cwd}
+		"--model", c.modelArg(s), "--workspace", s.Cwd}
 	for _, p := range s.PluginDirs {
 		a = append(a, "--plugin-dir", p)
 	}
@@ -256,3 +256,31 @@ func (c *Cursor) Wake(ctx context.Context, sess WakeTarget) (bool, error) {
 // DiscoverSession is a no-op: the hook path (ParseHook) already populates
 // ProviderSessionID for this kind.
 func (c *Cursor) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }
+
+// modelArg is the --model value: a low-token orchestrator's model gets
+// "[context=200k]" when ~/.cursor/cli-config.json lists 200k for that model,
+// else it is left unchanged (the daemon's backstop still applies).
+func (c *Cursor) modelArg(s Spec) string {
+	if s.LowTokenCap <= 0 {
+		return s.Model
+	}
+	body, err := os.ReadFile(filepath.Join(c.d.UserHome, ".cursor", "cli-config.json"))
+	if err != nil {
+		return s.Model
+	}
+	var cfg struct {
+		ModelParameters map[string][]struct {
+			ID    string `json:"id"`
+			Value string `json:"value"`
+		} `json:"modelParameters"`
+	}
+	if json.Unmarshal(body, &cfg) != nil {
+		return s.Model
+	}
+	for _, p := range cfg.ModelParameters[s.Model] {
+		if p.ID == "context" && p.Value == "200k" {
+			return s.Model + "[context=200k]"
+		}
+	}
+	return s.Model
+}

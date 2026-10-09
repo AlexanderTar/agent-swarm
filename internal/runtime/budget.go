@@ -6,6 +6,27 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 )
 
+// NativeCapTokens is the native compaction cap a low-token orchestrator of this
+// kind launches with, or 0 when the kind has none (agy).
+func NativeCapTokens(kind string) int {
+	switch AgentKind(kind) {
+	case Claude, Muse, Cursor:
+		return 200000
+	case Codex:
+		return 150000
+	}
+	return 0
+}
+
+// BackstopTokens is the context size at which the daemon hands a low-token
+// orchestrator off: 1.5x its native cap, or 300k for a kind with no cap.
+func BackstopTokens(kind string) int {
+	if c := NativeCapTokens(kind); c > 0 {
+		return c * 3 / 2
+	}
+	return 300000
+}
+
 // RecordContextSample stores a session's latest context size. A nil window
 // keeps the existing one (a muse launch limit, or an earlier exact reading).
 // It runs for every session, whether or not low-token mode is on.
