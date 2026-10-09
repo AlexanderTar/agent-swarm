@@ -138,3 +138,189 @@ func TestStartSessionSetsNativeCapForLowTokenOrchestratorsOnly(t *testing.T) {
 		}
 	}
 }
+
+// budgetFixture is a running low-token orchestrator (fake kind: backstop 300k)
+// with one running child worker.
+func budgetFixture(t *testing.T) (s *Store, orch, child Agent, orchSes Session) {
+	t.Helper()
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 8)
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `UPDATE sessions SET state = 'running' WHERE agent_id = ?`, orch.ID)
+	mustExec(t, s.DB, `UPDATE agents SET low_token = 1 WHERE id = ?`, orch.ID)
+	child = spawnRunning(t, s, tm, "TASK-1", orch.ID)
+	orchSes, err = s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, orch, child, orchSes
+}
+
+func strikes(t *testing.T, s *Store, sessionID string) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRow(`SELECT context_strikes FROM sessions WHERE id = ?`, sessionID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func budgetOps(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.DB.Query(`SELECT request_key FROM agent_operations WHERE request_key LIKE 'budget:%' ORDER BY request_key`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func TestRecordContextSampleCountsStrikesForLowTokenOrchestratorsOnly(t *testing.T) {
+	s, _, child, ses := budgetFixture(t)
+	ctx := context.Background()
+	back := BackstopTokens("fake")
+	for i, tc := range []struct{ tokens, want int }{{back, 1}, {back + 5, 2}, {back - 1, 0}, {back, 1}} {
+		if err := s.RecordContextSample(ctx, ses.ID, tc.tokens, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := strikes(t, s, ses.ID); got != tc.want {
+			t.Fatalf("sample %d (%d tokens): strikes = %d, want %d", i, tc.tokens, got, tc.want)
+		}
+	}
+	// A worker is never counted.
+	cSes, _ := s.LatestSession(ctx, child.ID)
+	if err := s.RecordContextSample(ctx, cSes.ID, back*2, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strikes(t, s, cSes.ID); got != 0 {
+		t.Fatalf("worker strikes = %d, want 0", got)
+	}
+	// Mode off: no strikes.
+	mustExec(t, s.DB, `UPDATE agents SET low_token = 0 WHERE id = ?`, ses.AgentID)
+	mustExec(t, s.DB, `UPDATE sessions SET context_strikes = 0 WHERE id = ?`, ses.ID)
+	if err := s.RecordContextSample(ctx, ses.ID, back, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strikes(t, s, ses.ID); got != 0 {
+		t.Fatalf("mode-off strikes = %d, want 0", got)
+	}
+}
+
+func TestBackstopTokens(t *testing.T) {
+	for kind, want := range map[string]int{"claude": 300000, "codex": 225000, "muse": 300000, "cursor": 300000, "agy": 300000} {
+		if got := BackstopTokens(kind); got != want {
+			t.Errorf("BackstopTokens(%s) = %d, want %d", kind, got, want)
+		}
+	}
+}
+
+func TestEnforceContextBudgetHandsOffAfterTwoSamplesDespiteLiveChildren(t *testing.T) {
+	s, orch, _, ses := budgetFixture(t)
+	ctx := context.Background()
+	back := BackstopTokens("fake")
+	if err := s.RecordContextSample(ctx, ses.ID, back, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnforceContextBudget(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := budgetOps(t, s); len(ops) != 0 {
+		t.Fatalf("one sample triggered a handoff: %v", ops)
+	}
+	if err := s.RecordContextSample(ctx, ses.ID, back, nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ { // idempotent across ticks
+		if err := s.EnforceContextBudget(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops := budgetOps(t, s)
+	if len(ops) != 1 || ops[0] != "budget:"+ses.ID {
+		t.Fatalf("budget ops = %v, want exactly budget:%s", ops, ses.ID)
+	}
+	var mode string
+	if err := s.DB.QueryRow(`SELECT mode FROM agent_operations WHERE request_key = ? AND agent_id = ?`, "budget:"+ses.ID, orch.ID).Scan(&mode); err != nil || mode != "handoff" {
+		t.Fatalf("mode = %q err=%v, want handoff", mode, err)
+	}
+}
+
+func TestEnforceContextBudgetExclusions(t *testing.T) {
+	for name, block := range map[string]func(t *testing.T, s *Store, orch, child Agent, ses Session){
+		"mode off": func(t *testing.T, s *Store, orch, _ Agent, _ Session) {
+			mustExec(t, s.DB, `UPDATE agents SET low_token = 0 WHERE id = ?`, orch.ID)
+		},
+		"open request": func(t *testing.T, s *Store, orch, _ Agent, ses Session) {
+			mustExec(t, s.DB, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id, prompt, state, created_at)
+				VALUES ('req_1', 'question', 1, ?, ?, ?, 'Which DB?', 'open', 1)`, orch.ID, ses.ID, orch.ItemID)
+		},
+		"operation in flight on the orchestrator": func(t *testing.T, s *Store, orch, _ Agent, ses Session) {
+			mustExec(t, s.DB, `INSERT INTO agent_operations (id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+				VALUES ('op_x', ?, 'recover', 'queued', 'k1', ?, ?, 1, 1)`, orch.ID, ses.ID, ses.Generation)
+		},
+		"operation in flight on a direct child": func(t *testing.T, s *Store, _, child Agent, _ Session) {
+			cSes, err := s.LatestSession(context.Background(), child.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustExec(t, s.DB, `INSERT INTO agent_operations (id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+				VALUES ('op_c', ?, 'handoff', 'preserving', 'k2', ?, ?, 1, 1)`, child.ID, cSes.ID, cSes.Generation)
+		},
+		"unanswered question": func(t *testing.T, s *Store, orch, _ Agent, _ Session) {
+			mustExec(t, s.DB, `INSERT INTO messages (id, seq, kind, origin, from_agent_id, to_agent_id, root_item_id, payload_json, state, created_at)
+				VALUES ('msg_q', 9001, 'question', 'agent', ?, ?, ?, '{}', 'acked', 1)`, orch.ID, orch.ID, orch.RootItemID)
+		},
+		"second trigger in the same session": func(t *testing.T, s *Store, orch, _ Agent, ses Session) {
+			mustExec(t, s.DB, `INSERT INTO agent_operations (id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+				VALUES ('op_b', ?, 'handoff', 'cancelled', ?, ?, ?, 1, 1)`, orch.ID, "budget:"+ses.ID, ses.ID, ses.Generation)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, orch, child, ses := budgetFixture(t)
+			ctx := context.Background()
+			block(t, s, orch, child, ses)
+			back := BackstopTokens("fake")
+			for i := 0; i < 2; i++ {
+				if err := s.RecordContextSample(ctx, ses.ID, back, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := len(budgetOps(t, s))
+			if err := s.EnforceContextBudget(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if after := len(budgetOps(t, s)); after != before {
+				t.Fatalf("budget ops went %d -> %d, want no new handoff", before, after)
+			}
+		})
+	}
+}
+
+func TestReconcileRunsTheBudgetPass(t *testing.T) {
+	s, _, _, ses := budgetFixture(t)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := s.RecordContextSample(ctx, ses.ID, BackstopTokens("fake"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := budgetOps(t, s); len(ops) != 1 {
+		t.Fatalf("budget ops after Reconcile = %v, want one", ops)
+	}
+}

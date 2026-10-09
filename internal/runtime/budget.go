@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 )
@@ -31,10 +32,99 @@ func BackstopTokens(kind string) int {
 // keeps the existing one (a muse launch limit, or an earlier exact reading).
 // It runs for every session, whether or not low-token mode is on.
 func (s *Store) RecordContextSample(ctx context.Context, sessionID string, tokens int, window *int) error {
-	_, err := s.DB.ExecContext(ctx,
+	if _, err := s.DB.ExecContext(ctx,
 		`UPDATE sessions SET context_tokens = ?, context_window = COALESCE(?, context_window) WHERE id = ?`,
-		tokens, window, sessionID)
+		tokens, window, sessionID); err != nil {
+		return err
+	}
+	return s.updateContextStrikes(ctx, sessionID, tokens)
+}
+
+// budgetKeyPrefix keys a budget handoff "budget:<session id>", so a session
+// is handed off at most once.
+const budgetKeyPrefix = "budget:"
+
+// budgetStrikes is how many consecutive samples at or over the backstop
+// trigger a handoff.
+const budgetStrikes = 2
+
+// updateContextStrikes counts consecutive samples at or over the backstop for
+// a low-token orchestrator's session; any other session stays at 0.
+func (s *Store) updateContextStrikes(ctx context.Context, sessionID string, tokens int) error {
+	var agentID string
+	var role Role
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT a.id, a.role FROM sessions ses JOIN agents a ON a.id = ses.agent_id WHERE ses.id = ?`, sessionID).Scan(&agentID, &role); err != nil {
+		return err
+	}
+	if role != RoleOrchestrator {
+		return nil
+	}
+	a, err := s.agentByID(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	on, err := s.LowTokenFor(ctx, a)
+	if err != nil {
+		return err
+	}
+	if !on {
+		_, err = s.DB.ExecContext(ctx, `UPDATE sessions SET context_strikes = 0 WHERE id = ?`, sessionID)
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`UPDATE sessions SET context_strikes = CASE WHEN ? >= ? THEN context_strikes + 1 ELSE 0 END WHERE id = ?`,
+		tokens, BackstopTokens(string(a.Kind)), sessionID)
 	return err
+}
+
+// budgetCandidatesSQL lists low-token orchestrators whose latest session has
+// two strikes, under the capacity safe-point conditions (no in-flight
+// operation, no open request or unanswered question, no earlier budget
+// handoff for the session). Live children do not exclude one, but an
+// operation in flight on a direct child does.
+var budgetCandidatesSQL = candidatesHeadSQL + `'` + budgetKeyPrefix + `'` + candidatesSafePointSQL + `
+	AND agents.role = 'orchestrator' AND ls.context_strikes >= ` + strconv.Itoa(budgetStrikes) + `
+	AND NOT EXISTS (SELECT 1 FROM agents c JOIN agent_operations co ON co.agent_id = c.id
+		WHERE c.parent_agent_id = agents.id AND co.phase IN ` + inFlightPhasesSQL + `)
+	ORDER BY agents.created_at, agents.id`
+
+// EnforceContextBudget hands off each low-token orchestrator whose context
+// has been at or over its backstop for two consecutive samples. The request
+// is RequestReplacement(ModeHandoff) keyed "budget:<session id>" with the budget note, so a
+// session is handed off once. Runs every reconcile tick; idempotent.
+func (s *Store) EnforceContextBudget(ctx context.Context) error {
+	rows, err := s.DB.QueryContext(ctx, budgetCandidatesSQL)
+	if err != nil {
+		return err
+	}
+	type candidate struct{ agentID, sessionID string }
+	var cands []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.agentID, &c.sessionID); err != nil {
+			rows.Close()
+			return err
+		}
+		cands = append(cands, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range cands {
+		a, err := s.agentByID(ctx, c.agentID)
+		if err != nil {
+			continue
+		}
+		if on, err := s.LowTokenFor(ctx, a); err != nil || !on {
+			continue
+		}
+		if _, err := s.RequestReplacement(ctx, c.agentID, ModeHandoff, budgetKeyPrefix+c.sessionID, ""); err != nil {
+			s.logf("budget: hand off %s: %v", c.agentID, err)
+		}
+	}
+	return nil
 }
 
 // SampleTranscript reads the session's transcript for its kind and records
