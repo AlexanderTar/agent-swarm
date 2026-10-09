@@ -126,16 +126,22 @@ func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Act
 	return err
 }
 
+// errRevisionRequired is parseItemRevision's refusal for an absent revision;
+// the update case appends the item's current revision and status to it.
+const errRevisionRequired = "revision is required: pass the item's current integer revision."
+
 // parseItemRevision decodes swarm_items update's revision (F11: optimistic
-// concurrency stays explicit). An absent revision decodes to zero, which
-// UpdateTx refuses as a stale conflict exactly as before. A "latest"
+// concurrency stays explicit). An absent revision is refused as a missing
+// field (BUG-67: decoding it to zero made UpdateTx report a stale conflict,
+// "This item changed elsewhere", which reads as a race rather than an
+// omission); it is never filled in with the current revision. A "latest"
 // shortcut — or any other non-integer — is refused explicitly with the
 // integer contract instead of decoding into zero or guessing current; the
 // caller reads the real revision from swarm_read (now carried on every
 // checkpoint relay too).
 func parseItemRevision(raw json.RawMessage) (int, error) {
-	if len(raw) == 0 {
-		return 0, nil
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, &items.Error{Code: items.CodeBadRequest, Message: errRevisionRequired}
 	}
 	var n int
 	if err := json.Unmarshal(raw, &n); err == nil {
@@ -272,6 +278,15 @@ func itemsTool(s *Server) ToolDef {
 			case "update":
 				revision, err := parseItemRevision(in.Revision)
 				if err != nil {
+					// A missing revision names the real one, as the stale path below
+					// does, so the caller can retry without a separate read.
+					var ie *items.Error
+					if errors.As(err, &ie) && ie.Message == errRevisionRequired {
+						if cur, gerr := s.RT.Items.Get(ctx, in.Key); gerr == nil {
+							return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+								"%s Current revision: %d, status: %s.", ie.Message, cur.Revision, cur.Status)}
+						}
+					}
 					return nil, err
 				}
 				p := items.Patch{Revision: revision}
