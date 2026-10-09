@@ -65,7 +65,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         )}
         <span className="inline-flex items-center gap-1.5">
           <StateDot state={displayState(agent)} withLabel />
-          {agent.role === "orchestrator" && agent.low_token_effective && (
+          {agent.role === "orchestrator" && agent.low_token_effective && !isFinished(agent) && (
             <span title={C.lowTokenOn} className="inline-flex">
               <Leaf role="img" aria-label={C.lowTokenOn} className="size-3 text-success" />
             </span>

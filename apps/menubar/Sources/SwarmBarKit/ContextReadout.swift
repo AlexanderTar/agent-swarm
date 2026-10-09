@@ -15,8 +15,7 @@ public struct ContextReadout: Sendable, Equatable {
         let window = window.flatMap { $0 > 0 ? $0 : nil }
         text = Format.contextUsage(tokens, window)
         fraction = window.map { min(1, max(0, Double(tokens) / Double($0))) }
-        a11y = window.map { "context \(Self.spoken(tokens)) of \(Self.spoken($0)) tokens" }
-            ?? "context \(Self.spoken(tokens)) tokens"
+        a11y = Copy.paneContextA11y(Self.spoken(tokens), window.map(Self.spoken))
     }
 
     /// `.secondary` below 60%, `.orange` from 60% to 85%, `.red` above.
