@@ -3,8 +3,8 @@ package db
 import "testing"
 
 func TestMigrationAddsLowTokenColumns(t *testing.T) {
-	raw := openFixtureAtVersion(t, 28)
-	continueMigratingTo(t, raw, 28, 29)
+	raw := openFixtureAtVersion(t, 29)
+	continueMigratingTo(t, raw, 29, 30)
 	for _, c := range []struct{ table, col string }{
 		{"agents", "low_token"}, {"sessions", "context_tokens"},
 		{"sessions", "context_window"}, {"sessions", "context_strikes"},
