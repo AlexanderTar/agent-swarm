@@ -358,6 +358,12 @@ final class PaneContextReadoutTests: XCTestCase {
                        "a · T-1 · Claude · Opus 5.5 (High) · 120K / 1M")
     }
 
+    func testPaneContextCopyKeys() {
+        XCTAssertEqual(Copy.paneContext("120K / 1M"), "120K / 1M")
+        XCTAssertEqual(Copy.paneContextA11y("120 thousand", "1 million"), "context 120 thousand of 1 million tokens")
+        XCTAssertEqual(Copy.paneContextA11y("84 thousand", nil), "context 84 thousand tokens")
+    }
+
     func testNoSegmentWithoutASample() {
         XCTAssertNil(ContextReadout(tokens: nil, window: 1_000_000))
         XCTAssertEqual(Copy.paneHeader("a", "T-1", "Claude", "Opus 5.5", "High", context: nil),

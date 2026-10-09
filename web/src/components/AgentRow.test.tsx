@@ -61,6 +61,14 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(screen.queryByRole("img", { name: "Low-token mode is on" })).toBeNull();
   });
 
+  it("hides the leaf on a finished orchestrator", () => {
+    renderWithDaemon(<>
+      <AgentRow agent={makeAgent({ name: "done-orch", role: "orchestrator", state: "finished", session: ses("completed"), low_token_effective: true })} />
+      <AgentRow agent={makeAgent({ name: "ack-orch", role: "orchestrator", state: "acknowledged", session: ses("completed"), low_token_effective: true })} />
+    </>, { events: false });
+    expect(screen.queryByRole("img", { name: "Low-token mode is on" })).toBeNull();
+  });
+
   it("says why the agent isn't on the user's role default", () => {
     const reason = "Role override set on support-chat-attachments-orchestrator-2";
     renderWithDaemon(<AgentRow agent={makeAgent({ name: "r", role: "ui_reviewer", kind_reason: reason, session: ses("running") })} />, { events: false });

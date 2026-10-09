@@ -1264,6 +1264,7 @@ func TestInboxNoticeTrailerOnlyOnTheFirstNoticePerSession(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "TrailerOnce", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
 	first, _ := s.InboxNotice(ctx, "ses_a", a.ID, a.Name, "SPIKE")
+	s.MarkNoticeSeen("ses_a") // delivery, not render, spends the trailer
 	second, _ := s.InboxNotice(ctx, "ses_a", a.ID, a.Name, "SPIKE")
 	other, _ := s.InboxNotice(ctx, "ses_b", a.ID, a.Name, "SPIKE")
 	if !strings.Contains(first, inboxTrailer) {

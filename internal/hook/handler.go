@@ -650,22 +650,14 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 			h.logf("advisor: transcript scan for %s: %v", s.ID, err)
 		}
 	}
-	// every session records its context size at end of turn; cursor's preCompact
-	// payload carries an exact reading, its Stop falls back to the byte proxy
-	if h.RT != nil {
-		switch {
-		case ev == "Stop" && in.TranscriptPath != "":
-			if err := h.RT.SampleTranscript(ctx, s.ID, s.Kind, in.TranscriptPath); err != nil {
-				h.logf("hook: record context sample for %s: %v", s.ID, err)
-			}
-		case ev == "PreCompact" && in.ContextTokens > 0:
-			var window *int
-			if in.ContextWindow > 0 {
-				window = &in.ContextWindow
-			}
-			if err := h.RT.RecordContextSample(ctx, s.ID, in.ContextTokens, window); err != nil {
-				h.logf("hook: record context sample for %s: %v", s.ID, err)
-			}
+	// cursor's preCompact payload carries an exact context reading
+	if h.RT != nil && ev == "PreCompact" && in.ContextTokens > 0 {
+		var window *int
+		if in.ContextWindow > 0 {
+			window = &in.ContextWindow
+		}
+		if err := h.RT.RecordContextSample(ctx, s.ID, in.ContextTokens, window); err != nil {
+			h.logf("hook: record context sample for %s: %v", s.ID, err)
 		}
 	}
 	// a model or effort change in the transcript tail (claude, codex)
@@ -681,6 +673,13 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	d, err := h.decide(ctx, kind, a, s, ev, in)
 	if err != nil {
 		return nil, err
+	}
+	// every session records its context size at a real end of turn: a blocked
+	// Stop continues the turn and fires again, so it must not sample (or strike)
+	if h.RT != nil && ev == "Stop" && !d.Block && in.TranscriptPath != "" {
+		if err := h.RT.SampleTranscript(ctx, s.ID, s.Kind, in.TranscriptPath); err != nil {
+			h.logf("hook: record context sample for %s: %v", s.ID, err)
+		}
 	}
 	// AGY accepts injected context only on PreInvocation, but PostToolUse has
 	// already consumed it (answered question, compaction flag). Hold it for
@@ -724,6 +723,7 @@ func (h *Handler) inboxNoticeOrFallback(ctx context.Context, s *sessionRow) stri
 		h.logf("hook: inbox notice for %s: %v", s.ID, err)
 		return runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey)
 	}
+	h.RT.MarkNoticeSeen(s.ID) // hook context goes out with this response
 	return notice
 }
 

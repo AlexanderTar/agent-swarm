@@ -347,7 +347,16 @@ public enum Copy {
         let base = "\(name) · \(itemKey) · \(agent) · \(model)"
         let head = (effort?.isEmpty ?? true) ? base : "\(base) (\(effort!))"
         guard let context else { return head }
-        return "\(head) · \(context.text)"
+        return "\(head) · \(paneContext(context.text))"
+    }
+
+    /// The header's context segment, e.g. "120K / 1M".
+    public static func paneContext(_ usage: String) -> String { usage }
+
+    /// The spoken context clause: "context 120 thousand of 1 million tokens", or without the window when unknown.
+    public static func paneContextA11y(_ tokens: String, _ window: String?) -> String {
+        guard let window else { return "context \(tokens) tokens" }
+        return "context \(tokens) of \(window) tokens"
     }
 
     /// The header's VoiceOver label: the visible text plus the spoken context clause.

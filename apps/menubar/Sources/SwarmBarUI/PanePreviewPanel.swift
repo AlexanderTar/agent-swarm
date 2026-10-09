@@ -43,24 +43,12 @@ public struct PanePreviewPanel: View {
     private var headerRow: some View {
         HStack(spacing: 6) {
             Text(header()).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-            if let context, let fraction = context.fraction {
-                ProgressView(value: fraction)
-                    .progressViewStyle(.linear)
-                    .tint(Self.tint(context.tint))
-                    .frame(width: 48, height: 4)
-                    .accessibilityHidden(true)
+            if let context, context.fraction != nil {
+                ContextBar(readout: context).accessibilityHidden(true)
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Copy.paneHeaderA11y(header(showingContext: false), context))
-    }
-
-    private static func tint(_ t: ContextReadout.Tint) -> Color {
-        switch t {
-        case .secondary: return .secondary
-        case .orange: return .orange
-        case .red: return .red
-        }
     }
 
     public var body: some View {
@@ -128,7 +116,8 @@ public struct PanePreviewPanel: View {
 extension View {
     @ViewBuilder func glassPanel(cornerRadius: CGFloat) -> some View {
         if #available(macOS 26, *) {
-            glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+            // Glass is a background layer: wrapping the content washes its colours to white.
+            background { Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius)) }
         } else {
             background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
         }
@@ -157,5 +146,30 @@ struct ScreenAnchorReader: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         anchor.view = nsView
+    }
+}
+
+/// The context bar: a track and a tinted fill. Drawn by hand because a ProgressView loses its
+/// accent colour inside the never-key preview panel.
+struct ContextBar: View {
+    let readout: ContextReadout
+
+    var body: some View {
+        Capsule().fill(Color.secondary.opacity(0.25))
+            .overlay(alignment: .leading) {
+                GeometryReader { g in
+                    Capsule().fill(Self.tint(readout.tint))
+                        .frame(width: g.size.width * (readout.fraction ?? 0))
+                }
+            }
+            .frame(width: 48, height: 4)
+    }
+
+    private static func tint(_ t: ContextReadout.Tint) -> Color {
+        switch t {
+        case .secondary: return .secondary
+        case .orange: return .orange
+        case .red: return .red
+        }
     }
 }

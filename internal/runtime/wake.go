@@ -150,6 +150,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 // pileup the quota-reset flush then has to digest.
 func (s *Store) WakeDue(ctx context.Context) error {
 	s.sampleMuseContexts(ctx)
+	s.pruneNoticeSeen(ctx)
 	rows, err := s.wakeCandidates(ctx)
 	if err != nil {
 		return err
@@ -184,6 +185,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 			continue
 		}
 		notice, err := s.InboxNotice(ctx, r.SessionID, r.AgentID, r.AgentName, r.ItemKey)
+		inboxRendered := err == nil && !r.HasControl // only a real inbox notice spends the trailer
 		if err != nil {
 			s.logf("wake: inbox notice for %s: %v", r.AgentName, err)
 			notice = PendingNotice(r.Pending, r.AgentName, r.ItemKey) // fallback, never block a wake on a render error
@@ -214,6 +216,9 @@ func (s *Store) WakeDue(ctx context.Context) error {
 			}
 			if delivered {
 				s.setBatchPastes(r.SessionID, 0)
+				if inboxRendered {
+					s.MarkNoticeSeen(r.SessionID)
+				}
 				if err := s.markWoken(ctx, r.SessionID, true); err != nil {
 					s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 					s.logf("wake: markWoken for %s: %v (fail=%d backoff=%s)", r.AgentName, err, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
@@ -239,7 +244,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		}
 		// tryPaste never fails the tick: per-session errors are logged and
 		// counted with backoff inside, so one bad pane cannot starve the rest.
-		_ = s.tryPaste(ctx, ad, r, notice)
+		_ = s.tryPaste(ctx, ad, r, notice, inboxRendered)
 	}
 	return nil
 }
@@ -270,7 +275,7 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 // (the same rich Inbox notice native wake gets, or PausePreservationNotice for a
 // control batch — never the bare IdleToken). The daemon never logs a full process listing: other
 // tools' bearer tokens show up there (P0-4).
-func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string) error {
+func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string, inboxRendered bool) error {
 	fail := func(reason string) error {
 		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 		s.logf("wake: paste for %s skipped/failed (%s; fail=%d backoff=%s)", r.AgentName, reason, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
@@ -294,6 +299,9 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	}
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")
+	}
+	if inboxRendered {
+		s.MarkNoticeSeen(r.SessionID)
 	}
 	n := 1
 	if r.LastWakeAt != nil && !r.NewestPendingAt.After(*r.LastWakeAt) {
