@@ -117,6 +117,18 @@ func TestSwarmSkillCarriesLowTokenRule(t *testing.T) {
 	}
 }
 
+func TestSkillsDocumentTopLevelPeerMessaging(t *testing.T) {
+	orch := string(install.SkillBody("swarm-orchestrator"))
+	for _, want := range []string{"Talking to other top-level orchestrators", "swarm_send", "root key", "SendMessage"} {
+		if !strings.Contains(orch, want) {
+			t.Errorf("swarm-orchestrator skill is missing %q", want)
+		}
+	}
+	if !strings.Contains(string(install.SkillBody("swarm")), "top-level agent may also message another top-level orchestrator") {
+		t.Errorf("swarm skill rule 8 is missing the top-level peer clause")
+	}
+}
+
 func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	spike := string(install.SkillBody("swarm-spike"))
