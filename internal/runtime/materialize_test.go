@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -407,7 +408,7 @@ func TestMaterializeRejectsAmbiguousCatalogRepoName(t *testing.T) {
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
 	seedRepo(t, s, "chat")
 	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
-	if err == nil || !strings.Contains(err.Error(), `repository name "chat" is ambiguous`) {
+	if err == nil || !strings.Contains(err.Error(), `Repository name "chat" is ambiguous. Pass a repository id or a unique name`) {
 		t.Fatalf("ambiguous repository = %v", err)
 	}
 }
@@ -429,8 +430,45 @@ func TestMaterializeRejectsUnregisteredCatalogRepoName(t *testing.T) {
 	}
 	defer tx.Rollback()
 	_, err = s.createTree(ctx, tx, spike, tree, items.Epic)
-	if err == nil || !strings.Contains(err.Error(), `repository "chat" is not registered`) || !strings.Contains(err.Error(), "swarm_repo_register") {
+	if err == nil || !strings.Contains(err.Error(), `Unknown repository "chat". Pass a repository id or name`) || !strings.Contains(err.Error(), "swarm_repo_register") {
 		t.Fatalf("unregistered repository = %v", err)
+	}
+}
+
+// TestMaterializeAcceptsCatalogRepoIDAndPath is the BUG-68 repro: a swarm-tree
+// task naming its repo by catalog id (or by path) materializes with that id.
+func TestMaterializeAcceptsCatalogRepoIDAndPath(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	id := seedRepo(t, s, "chat")
+	var path string
+	if err := s.DB.QueryRowContext(ctx, `SELECT path FROM repos WHERE id = ?`, id).Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{id, path} {
+		tree, err := ParseTree(strings.ReplaceAll(planBody, `"repos":["chat"]`, fmt.Sprintf(`"repos":[%q]`, ref)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike", SpikeIntent: "feature"}, items.Daemon())
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.createTree(ctx, tx, spike, tree, items.Epic)
+		if err != nil {
+			tx.Rollback()
+			t.Fatalf("%s: %v", ref, err)
+		}
+		var repos string
+		err = tx.QueryRowContext(ctx, `SELECT repo_hints_json FROM items WHERE key = ?`, res.Created[len(res.Created)-1]).Scan(&repos)
+		tx.Rollback()
+		if err != nil || repos != `["`+id+`"]` {
+			t.Fatalf("%s: task repos = %s, %v; want [%s]", ref, repos, err, id)
+		}
 	}
 }
 
