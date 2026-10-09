@@ -2419,3 +2419,24 @@ func TestPreCompactRecordsSample(t *testing.T) {
 		t.Fatalf("stop row = %v/%v, want 100000/200000", tok, win)
 	}
 }
+
+// A blocked Stop is not the end of the turn: the agent keeps going and Stop
+// fires again, so only the allowed Stop samples (one strike per real turn).
+func TestBlockedStopRecordsNoSample(t *testing.T) {
+	h, ses := seed(t, 1, runtime.Running) // pending message -> Stop is blocked
+	path, err := filepath.Abs("../adapter/testdata/context/claude.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, _ := json.Marshal(map[string]string{"session_id": "p1", "transcript_path": path})
+	out, err := h.Handle(context.Background(), runtime.Claude, "Stop", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "block") {
+		t.Fatalf("setup: Stop should be blocked, got %s", out)
+	}
+	if tok, _ := sessionSample(t, h); tok.Valid {
+		t.Fatalf("blocked Stop recorded a sample: %v", tok)
+	}
+}
