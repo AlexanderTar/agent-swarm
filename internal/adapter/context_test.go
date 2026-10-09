@@ -114,7 +114,7 @@ func TestMuseSessionContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &Muse{d: Deps{UserHome: home}}
-	if got, ok := m.SessionContext("prov-1"); !ok || got.Tokens != 157990 {
+	if got, ok := m.SessionContext("prov-1"); !ok || got.Tokens != 157990 || got.Seq <= 0 {
 		t.Fatalf("SessionContext = %+v, %v; want 157990", got, ok)
 	}
 	if _, ok := m.SessionContext("nope"); ok {

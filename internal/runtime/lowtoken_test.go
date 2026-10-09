@@ -192,3 +192,22 @@ func TestSetLowTokenAllClearsOverrides(t *testing.T) {
 		t.Fatal("notes went to the wrong agents")
 	}
 }
+
+func TestSetLowTokenAllIsAtomic(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	mustExec(t, s.DB, `UPDATE agents SET low_token = 0 WHERE id = ?`, orch.ID)
+	mustExec(t, s.DB, `CREATE TRIGGER fail_clear BEFORE UPDATE OF low_token ON agents
+		WHEN NEW.low_token IS NULL BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	if _, err := s.SetLowTokenAll(ctx, true); err == nil {
+		t.Fatal("want the override clear to fail")
+	}
+	cfg, err := s.Settings.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LowTokenMode {
+		t.Fatal("global setting written although the override clear failed")
+	}
+}

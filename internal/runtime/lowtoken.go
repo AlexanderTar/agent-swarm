@@ -149,11 +149,14 @@ func (s *Store) SetLowTokenAll(ctx context.Context, on bool) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := s.Settings.SetLowTokenMode(ctx, on); err != nil {
-		return 0, err
-	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET low_token = NULL
-		WHERE role = 'orchestrator' AND state IN ('active', 'queued')`); err != nil {
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.Settings.SetLowTokenModeTx(ctx, tx, on); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE agents SET low_token = NULL
+			WHERE role = 'orchestrator' AND state IN ('active', 'queued')`)
+		return err
+	}); err != nil {
 		return 0, err
 	}
 	return s.noteLowTokenChanges(ctx, s.reloadAgents(ctx, as), before)
