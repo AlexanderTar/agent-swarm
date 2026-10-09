@@ -24,8 +24,9 @@ fmt:
 # §23.1's order, minus `swarm doctor`, which only runs on a real machine (Task 23).
 test: test-go test-web test-menubar
 
+# -race is several times slower; Go's 10m default timeout is too tight for internal/runtime.
 test-go: vet fmt web-build
-	$(GO) test -race ./...
+	$(GO) test -race -timeout 30m ./...
 	GO=$(GO) scripts/cover.sh
 
 test-web:
