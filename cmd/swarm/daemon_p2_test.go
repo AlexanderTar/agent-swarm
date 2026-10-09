@@ -71,12 +71,20 @@ func TestDaemonWritesItsOwnTmuxConf(t *testing.T) {
 	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	t.Setenv("SWARM_USAGE", "")
 	home := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Generous: openDaemon runs every migration, which is slow under -race on a loaded machine.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	addr := make(chan string, 1)
-	go serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, Port: 0, Background: false, ScanRoot: t.TempDir(),
-		Embedder: offlineEmb{}, Log: func(string, ...any) {}, Ready: func(a string) { addr <- a }})
-	<-addr
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, Port: 0, Background: false, ScanRoot: t.TempDir(),
+			Embedder: offlineEmb{}, Log: func(string, ...any) {}, Ready: func(a string) { addr <- a }})
+	}()
+	select {
+	case <-addr:
+	case err := <-done:
+		t.Fatalf("serve returned before ready: %v", err)
+	}
 	b, err := os.ReadFile(filepath.Join(home, "tmux.conf"))
 	if err != nil {
 		t.Fatal(err)
