@@ -25,18 +25,47 @@ public struct PanePreviewPanel: View {
     /// Air between the dark fill's edge and the text.
     private static let textInset: CGFloat = 6
 
-    private var header: String {
+    private var context: ContextReadout? {
+        guard let name = preview.agent, let found = lookup?(name) else { return nil }
+        return ContextReadout(tokens: found.contextTokens, window: found.contextWindow)
+    }
+
+    private func header(showingContext: Bool = true) -> String {
         guard let name = preview.agent else { return "" }
         guard let found = lookup?(name) else { return name }
         let entry = CatalogRules.entry(catalog, found.kind)
         return Copy.paneHeader(name, found.itemKey, Copy.agentLabel(found.kind),
                                CatalogRules.modelLabel(entry, found.model),
-                               CatalogRules.previewEffortLabel(entry, found.model, found.effort))
+                               CatalogRules.previewEffortLabel(entry, found.model, found.effort),
+                               context: showingContext ? context : nil)
+    }
+
+    private var headerRow: some View {
+        HStack(spacing: 6) {
+            Text(header()).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+            if let context, let fraction = context.fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .tint(Self.tint(context.tint))
+                    .frame(width: 48, height: 4)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Copy.paneHeaderA11y(header(showingContext: false), context))
+    }
+
+    private static func tint(_ t: ContextReadout.Tint) -> Color {
+        switch t {
+        case .secondary: return .secondary
+        case .orange: return .orange
+        case .red: return .red
+        }
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(header).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+            headerRow
             Divider()
             content
         }

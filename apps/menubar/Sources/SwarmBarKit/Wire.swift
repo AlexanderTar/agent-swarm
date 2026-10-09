@@ -159,9 +159,13 @@ public struct AgentHeader: Sendable, Equatable {
     public var model: String
     public var effort: String?
     public var itemKey: String
+    public var contextTokens: Int?
+    public var contextWindow: Int?
 
-    public init(kind: AgentKind, model: String, effort: String? = nil, itemKey: String) {
+    public init(kind: AgentKind, model: String, effort: String? = nil, itemKey: String,
+                contextTokens: Int? = nil, contextWindow: Int? = nil) {
         self.kind = kind; self.model = model; self.effort = effort; self.itemKey = itemKey
+        self.contextTokens = contextTokens; self.contextWindow = contextWindow
     }
 }
 

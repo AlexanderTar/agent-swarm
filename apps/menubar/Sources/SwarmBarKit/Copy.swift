@@ -343,9 +343,17 @@ public enum Copy {
     /// is omitted when the effort is empty; callers resolve unknown models to
     /// their ID (never a guessed version) before passing `model` in.
     public static func paneHeader(_ name: String, _ itemKey: String, _ agent: String,
-                                  _ model: String, _ effort: String?) -> String {
-        guard let effort, !effort.isEmpty else { return "\(name) · \(itemKey) · \(agent) · \(model)" }
-        return "\(name) · \(itemKey) · \(agent) · \(model) (\(effort))"
+                                  _ model: String, _ effort: String?, context: ContextReadout? = nil) -> String {
+        let base = "\(name) · \(itemKey) · \(agent) · \(model)"
+        let head = (effort?.isEmpty ?? true) ? base : "\(base) (\(effort!))"
+        guard let context else { return head }
+        return "\(head) · \(context.text)"
+    }
+
+    /// The header's VoiceOver label: the visible text plus the spoken context clause.
+    public static func paneHeaderA11y(_ header: String, _ context: ContextReadout?) -> String {
+        guard let context else { return header }
+        return "\(header), \(context.a11y)"
     }
 
     /// A stored effort slug's human label for the preview header.
