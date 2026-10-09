@@ -93,10 +93,13 @@ enum NativeDialogCheck {
                 if let dir = ProcessInfo.processInfo.environment["SWARM_NATIVE_POLISH_EVIDENCE_DIR"], let window = dialogs.first {
                     let capture = Process()
                     capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                    capture.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", "\(dir)/dialog-\(name).png"]
+                    let path = "\(dir)/dialog-\(name).png"
+                    capture.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", path]
                     try? capture.run()
                     capture.waitUntilExit()
-                    check(capture.terminationStatus == 0, "\(name): visual capture")
+                    // screencapture exits 0 even when it cannot write the file.
+                    check(capture.terminationStatus == 0 && FileManager.default.fileExists(atPath: path),
+                          "\(name): visual capture at \(path)")
                 }
                 dialogs.forEach { $0.close() }
                 openMenuOnce()

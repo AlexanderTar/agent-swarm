@@ -102,14 +102,7 @@ final class DialogChromeTests: XCTestCase {
         let titlebar = try XCTUnwrap(theme.subviews.firstIndex { String(describing: type(of: $0)) == "NSTitlebarContainerView" })
         XCTAssertLessThan(content, titlebar, "content view must sit below the title bar, not cover it")
 
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let capture = Process()
-        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        capture.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", url.path]
-        try capture.run()
-        capture.waitUntilExit()
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: url)))
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: screencaptureWindow(window.windowNumber, prefix: "chrome")))
         let request = VNRecognizeTextRequest()
         try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage), options: [:]).perform([request])
         let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
