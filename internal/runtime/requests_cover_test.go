@@ -223,3 +223,30 @@ func TestResolveQuestionReplyWithUnknownSessionResolvesNothing(t *testing.T) {
 		t.Fatalf("question state = %s, want still open", r.State)
 	}
 }
+
+func TestNativeAskKindsValidateTheirOwnInputs(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, ses := spikeSession(t, s, "Native input")
+
+	cases := []struct {
+		name string
+		in   AskInput
+		want string
+	}{
+		{"unknown decision", AskInput{Kind: "native_answer", Decision: "maybe", Ref: "r"}, "decision must be approve or request_changes"},
+		{"missing ref", AskInput{Kind: "native_answer", Decision: "approve"}, "ref is required"},
+		{"missing for_msg", AskInput{Kind: "native_prompt"}, "for_msg is required"},
+	}
+	for _, c := range cases {
+		if _, err := s.Ask(ctx, ses.ID, c.in); !isBadRequest(err, c.want) {
+			t.Errorf("%s: err = %v, want bad request containing %q", c.name, err, c.want)
+		}
+	}
+	if !HasRefToken("see ⟦swarm:req_01ABC⟧ for details") || HasRefToken("see ⟦swarm:ref=abc⟧ or plain swarm:req_01ABC") {
+		t.Error("HasRefToken must match only the bracketed req_/msg_ form")
+	}
+	if err := wantCount(s, `SELECT COUNT(*) FROM requests`, 0); err != nil {
+		t.Fatal(err)
+	}
+}

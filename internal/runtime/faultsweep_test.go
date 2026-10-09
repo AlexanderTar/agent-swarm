@@ -225,3 +225,31 @@ func TestFaultSweepQueuedRetryOperation(t *testing.T) {
 		})
 	})
 }
+
+func TestFaultSweepReconcileAndPauseAll(t *testing.T) {
+	// Reconcile over a worker whose pane has vanished: the session is judged dead.
+	sweepOK(t, 300, func(t *testing.T) (*Store, func(context.Context) error, func(context.Context) error) {
+		s, tm, _ := newStore(t)
+		_, w, wSes := worker(t, s)
+		if _, err := s.WriteCheckpoint(context.Background(), wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+			t.Fatal(err)
+		}
+		panes(tm)
+		return mkSweep(s, s.Reconcile, func() error {
+			// However far reconcile got, the agent never ends with two live sessions.
+			return wantCount(s, `SELECT CASE WHEN COUNT(*) > 1 THEN 1 ELSE 0 END FROM sessions
+				WHERE agent_id = ? AND state IN ('spawning', 'running')`, 0, w.ID)
+		})
+	})
+	sweepOK(t, 200, func(t *testing.T) (*Store, func(context.Context) error, func(context.Context) error) {
+		s, _, _ := newStore(t)
+		_, w, _ := worker(t, s)
+		return mkSweep(s, func(ctx context.Context) error {
+			_, err := s.PauseAll(ctx)
+			return err
+		}, func() error {
+			return wantCount(s, `SELECT COUNT(*) FROM sessions se WHERE se.agent_id = ? AND se.state = 'pause_requested'
+				AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.to_agent_id = se.agent_id AND m.kind = 'control')`, 0, w.ID)
+		})
+	})
+}
