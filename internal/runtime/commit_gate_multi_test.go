@@ -87,3 +87,53 @@ func TestCommitGateRefusesDirtyOrMismatchedSecondWorktree(t *testing.T) {
 		}
 	})
 }
+
+// A checkpoint naming only tree A must not check tree B against A's entry
+// (BUG-66): B is refused with its own path, branch and HEAD, not a sha
+// mismatch quoting A's sha.
+func TestCommitGateAsksForMissingSecondWorktreeEntry(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	_, head1, dir2, head2 := seedTwoTreesOneRepo(t, s, coder)
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "task/x", SHA: head1}}})
+	want := fmt.Sprintf("Commit your work before completing: proj worktree %s (branch task/two, HEAD %s) has no git entry of its own."+
+		" Add {repo: \"proj\", branch: \"task/two\", sha: \"%s\"} to git."+hintCopy, dir2, head2, head2)
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// A single rw tree keeps the last-entry fallback (BUG-66 must not tighten
+// it): an entry with an empty or different branch is still checked against
+// the tree's HEAD, passing when the sha matches and quoting the existing
+// mismatch message when it doesn't.
+func TestCommitGateSingleTreeFallback(t *testing.T) {
+	ctx := context.Background()
+	for _, branch := range []string{"", "other"} {
+		t.Run("branch="+branch, func(t *testing.T) {
+			t.Run("match", func(t *testing.T) {
+				s, _, _ := newStore(t)
+				coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+				_, head := seedCommitRepo(t, s, coder)
+				if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+					Git: []GitRef{{Repo: "proj", Branch: branch, SHA: head}}}); err != nil {
+					t.Fatalf("single tree with its HEAD sha should pass: %v", err)
+				}
+			})
+			t.Run("mismatch", func(t *testing.T) {
+				s, _, _ := newStore(t)
+				coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+				_, head := seedCommitRepo(t, s, coder)
+				wrong := strings.Repeat("ab", 20)
+				_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+					Git: []GitRef{{Repo: "proj", Branch: branch, SHA: wrong}}})
+				want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s. Pass the full sha of your committed HEAD."+hintCopy, head, wrong)
+				if err == nil || err.Error() != want {
+					t.Fatalf("err = %v, want %q", err, want)
+				}
+			})
+		})
+	}
+}
