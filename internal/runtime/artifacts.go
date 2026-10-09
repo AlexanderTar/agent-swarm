@@ -360,6 +360,41 @@ func (s *Store) staleApprovals(ctx context.Context, tx *sql.Tx, artifactID strin
 	return stale, nil
 }
 
+// checkTreeRepos refuses a swarm-tree whose repo refs materialize can't resolve, naming each bad ref once.
+func checkTreeRepos(ctx context.Context, tx *sql.Tx, t Tree) error {
+	var msgs []string
+	seen := map[string]bool{}
+	var walk func([]TreeNode) error
+	walk = func(nodes []TreeNode) error {
+		for _, n := range nodes {
+			for _, r := range n.Repos {
+				if seen[r] {
+					continue
+				}
+				seen[r] = true
+				_, err := items.ResolveRepoRefTx(ctx, tx, r)
+				var ie *items.Error
+				if errors.As(err, &ie) {
+					msgs = append(msgs, ie.Message)
+				} else if err != nil {
+					return err
+				}
+			}
+			if err := walk(n.Children); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(append([]TreeNode{t.Root}, t.Children...)); err != nil {
+		return err
+	}
+	if len(msgs) > 0 {
+		return fmt.Errorf("tree_invalid: %s", strings.Join(msgs, " "))
+	}
+	return nil
+}
+
 // RegisterArtifact is swarm_register (register or revise a spec/plan/report/note,
 // C2, I10). Only the item's own top-level orchestrator may call it. requestID
 // is I11's idempotency key (empty means "no idempotency, just run once").
@@ -407,6 +442,11 @@ func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, ki
 		if it.RootID != a.RootItemID {
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: fmt.Sprintf("%s is outside your assignment.", itemKey)}
+		}
+		if tree != nil {
+			if err := checkTreeRepos(ctx, tx, *tree); err != nil {
+				return err
+			}
 		}
 		var artifactID string
 		var revision int

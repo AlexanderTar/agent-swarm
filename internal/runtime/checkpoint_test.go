@@ -725,6 +725,7 @@ func TestCompletedOnEpicRequiresARegisteredPlan(t *testing.T) {
 
 func TestCompletedOnEpicSucceedsOnceAPlanIsRegistered(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	it := seedTopLevelItem(t, s, items.Epic)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
@@ -798,6 +799,7 @@ func TestRequiredArtifactGateAppliesOnlyToRootOrchestrator(t *testing.T) {
 
 func TestCompletedOnBugSucceedsOnceADebugReportIsRegistered(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	it := seedTopLevelItem(t, s, items.Bug)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
@@ -865,6 +867,7 @@ func TestCompletedOnTddExemptEpicNeedsNoArtifact(t *testing.T) {
 // be blocked -- only gatedRoles are.
 func TestWriteCheckpointAllowsOrchestratorCompletedOnItsOwnEpic(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	it := seedTopLevelItem(t, s, items.Epic)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})

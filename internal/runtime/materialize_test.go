@@ -76,6 +76,7 @@ func TestSpecSectionRequestAndMaterializationGateAgree(t *testing.T) {
 
 func TestHeadinglessPreambleBlocksPlanReviewUntilApproved(t *testing.T) {
 	s, _, _ := newStore(t)
+	seedRepo(t, s, "chat") // the plan's swarm-tree names repo "chat"
 	ctx := context.Background()
 	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Preamble decision", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	if err != nil {
