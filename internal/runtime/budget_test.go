@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
@@ -45,6 +47,44 @@ func TestRecordContextSample(t *testing.T) {
 	}
 	if tok, win := sampleRow(t, s, ses.ID); tok.Int64 != 95000 || win.Int64 != 200000 {
 		t.Fatalf("row = %v/%v, want 95000/200000", tok, win)
+	}
+}
+
+// TestSampleTranscriptSizesWindowFromTranscriptModel is CHORE-53: an agent
+// stored with the alias "opus" showed a 200K window for a 1M Opus session.
+func TestSampleTranscriptSizesWindowFromTranscriptModel(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Window", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := func(model string) string {
+		return `{"type":"assistant","message":{"model":"` + model + `","usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":551000}}}` + "\n"
+	}
+	for _, tc := range []struct {
+		configured, transcript string
+		want                   int64
+	}{
+		{"opus", "claude-opus-5-5", 1000000},
+		{"sonnet", "claude-sonnet-4-5", 200000},
+		{"claude-opus-4-8[1m]", "claude-opus-4-8", 1000000},
+	} {
+		mustExec(t, s.DB, `UPDATE agents SET kind = 'claude', model = ? WHERE id = ?`, tc.configured, a.ID)
+		path := filepath.Join(t.TempDir(), "t.jsonl")
+		if err := os.WriteFile(path, []byte(line(tc.transcript)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SampleTranscript(ctx, ses.ID, Claude, path); err != nil {
+			t.Fatal(err)
+		}
+		if tok, win := sampleRow(t, s, ses.ID); tok.Int64 != 551030 || win.Int64 != tc.want {
+			t.Errorf("%s/%s: row = %v/%v, want 551030/%d", tc.configured, tc.transcript, tok, win, tc.want)
+		}
 	}
 }
 

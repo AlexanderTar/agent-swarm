@@ -42,6 +42,13 @@ func TestReadContext(t *testing.T) {
 	}
 }
 
+func TestReadContextClaudeReportsModel(t *testing.T) {
+	got, ok := ReadContext(kinds.Claude, "testdata/context/claude.jsonl")
+	if !ok || got.Model != "claude-opus-5-5" {
+		t.Fatalf("claude = %+v, %v; want model claude-opus-5-5", got, ok)
+	}
+}
+
 func TestReadContextMuseAndCursor(t *testing.T) {
 	got, ok := ReadContext(kinds.Muse, "testdata/context/muse-session.jsonl")
 	if !ok || got.Tokens != 157990 || got.Window != nil {
