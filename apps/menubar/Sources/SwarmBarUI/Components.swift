@@ -105,7 +105,7 @@ public struct IconButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12))
-                .foregroundStyle(tint ?? Color.primary)
+                .ifLet(tint) { $0.foregroundStyle($1) }
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
@@ -114,8 +114,13 @@ public struct IconButton: View {
         .opacity(disabled ? 0.35 : 1) // .borderless barely dims a disabled symbol in the popover
         .help(help)
         .accessibilityLabel(help)
-        .accessibilityAddTraits(toggleValue == nil ? [] : .isToggle)
-        .accessibilityValue(toggleValue.map { $0 ? Copy.on : Copy.off } ?? "")
+        .ifLet(toggleValue) { $0.accessibilityAddTraits(.isToggle).accessibilityValue($1 ? Copy.on : Copy.off) }
+    }
+}
+
+private extension View {
+    @ViewBuilder func ifLet<T>(_ value: T?, _ apply: (Self, T) -> some View) -> some View {
+        if let value { apply(self, value) } else { self }
     }
 }
 

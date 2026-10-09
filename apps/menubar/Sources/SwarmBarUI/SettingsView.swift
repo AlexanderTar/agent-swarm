@@ -134,6 +134,7 @@ struct DefaultsTab: View {
                 Toggle(Copy.lowTokenMode, isOn: Binding(get: { model.settings.lowTokenMode },
                                                         set: { on in Task { await model.setLowTokenMode(on) } }))
                     .toggleStyle(.checkbox)
+                    .disabled(!model.connected || model.lowTokenPending)
                 Text(Copy.lowTokenSettingsCaption).font(.caption).foregroundStyle(.secondary)
                     .padding(.leading, 20).fixedSize(horizontal: false, vertical: true)
             }

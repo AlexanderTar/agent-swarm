@@ -43,6 +43,28 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(client.calls.dropFirst(before).filter { $0.hasPrefix("low-token") }, [])
     }
 
+    func testSetLowTokenModeIgnoresASecondClickWhileInFlight() async {
+        let m = await model()
+        client.holdAgent = true
+        let first = Task { await m.setLowTokenMode(false) }
+        while !m.lowTokenPending { await Task.yield() }
+        await m.setLowTokenMode(true)
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("low-token") }, ["low-token-all:off"])
+        client.releaseAgent()
+        await first.value
+        XCTAssertFalse(m.lowTokenPending)
+        XCTAssertFalse(m.settings.lowTokenMode)
+    }
+
+    func testSetLowTokenModeNamesAReasonForAnyError() async {
+        let m = await model()
+        client.failNextWith = URLError(.timedOut)
+        await m.setLowTokenMode(false)
+        XCTAssertTrue(m.settings.lowTokenMode)
+        XCTAssertNotEqual(m.saveError, Copy.lowTokenFailed(""))
+        XCTAssertTrue(m.saveError?.hasPrefix("Couldn't change low-token mode: ") == true)
+    }
+
     func testAgentsTabRows() async {
         let m = await model()
         let rows = m.agentRows

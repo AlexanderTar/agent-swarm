@@ -140,11 +140,16 @@ public final class SettingsModel {
 
     /// Same action as the Agents header toggle (sets the default and every live orchestrator), so it goes
     /// through the low-token route rather than `save()`.
+    public private(set) var lowTokenPending = false
+
     public func setLowTokenMode(_ on: Bool) async {
         guard connected else {
             saveError = Copy.settingsDaemonDown
             return
         }
+        guard !lowTokenPending else { return }
+        lowTokenPending = true
+        defer { lowTokenPending = false }
         let before = settings.lowTokenMode
         settings.lowTokenMode = on
         do {
@@ -152,7 +157,7 @@ public final class SettingsModel {
             saveError = nil
         } catch {
             settings.lowTokenMode = before
-            saveError = Copy.lowTokenFailed((error as? DaemonError)?.message ?? "")
+            saveError = Copy.lowTokenFailed((error as? DaemonError)?.message ?? error.localizedDescription)
         }
     }
 
