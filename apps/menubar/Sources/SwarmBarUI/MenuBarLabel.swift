@@ -44,8 +44,9 @@ public struct MenuBarLabelView: View {
 
     /// Where the live badge sits: the top-right corner of the 14 pt swarm glyph, which is the
     /// first thing in the HStack above. It is deliberately NOT drawn into `LabelRenderer.image`:
-    /// that image is a template, and AppKit paints template images monochrome, so a green dot
-    /// inside it would come out black or white. It is overlaid on the SwiftUI side instead.
+    /// that image is a template, and AppKit paints template images monochrome, so a coloured dot
+    /// inside it would come out black or white. A SwiftUI overlay doesn't work either, since
+    /// MenuBarExtra keeps only the label's image; `StatusBadge` draws it on the status button.
     public static let badgeOffset = CGPoint(x: 9, y: 0)
     public static let badgeSize: CGFloat = 5
 
@@ -77,32 +78,15 @@ public enum LabelRenderer {
     }
 }
 
-/// The menu bar item: the template label image, plus a colored corner dot — yellow while
-/// something needs the user, green while an agent is live, none otherwise. The dot has to live
-/// outside the template image (see `MenuBarLabelView.badgeOffset`).
+/// The menu bar item: the template label image. Its coloured corner dot is drawn by
+/// `StatusBadge` on the status item's button (see `MenuBarLabelView.badgeOffset`).
 public struct MenuBarLabelImage: View {
     let label: MenuLabel
 
     public init(_ label: MenuLabel) { self.label = label }
 
-    private var badgeColor: Color? {
-        switch label.badge {
-        case .none: return nil
-        case .green: return .green
-        case .yellow: return .yellow
-        }
-    }
-
     public var body: some View {
         Image(nsImage: LabelRenderer.image(label))
-            .overlay(alignment: .topLeading) {
-                if let badgeColor {
-                    Circle()
-                        .fill(badgeColor)
-                        .frame(width: MenuBarLabelView.badgeSize, height: MenuBarLabelView.badgeSize)
-                        .offset(x: MenuBarLabelView.badgeOffset.x, y: MenuBarLabelView.badgeOffset.y)
-                }
-            }
             .accessibilityLabel(label.badge == .yellow ? Copy.needsYouBadge
                                  : label.badge == .green ? Copy.agentsWorking : Copy.appTitle)
     }

@@ -11,6 +11,7 @@ public final class StatusItemWatcher {
     private let onVisibility: @MainActor (Bool) -> Void
     private var last: Bool?
     private var lastSlots: [(text: String, width: CGFloat)] = []
+    private var badge: MenuLabel.Badge = .none
 
     public init(onVisibility: @escaping @MainActor (Bool) -> Void) {
         self.onVisibility = onVisibility
@@ -34,12 +35,26 @@ public final class StatusItemWatcher {
     }
 
     public func check() {
+        applyBadge()
         guard let w = Self.statusWindow() else { return }
         let visible = w.screen.map { $0.frame.intersects(w.frame) } ?? false
         if visible != last {
             last = visible
             onVisibility(visible)
         }
+    }
+
+    /// Shows the corner dot for `badge`. Applied on the next run loop turn so the button has
+    /// already taken the new label image (its width moves the image rect), and again on every
+    /// `check()` in case AppKit re-laid the button out since.
+    public func setBadge(_ badge: MenuLabel.Badge) {
+        self.badge = badge
+        DispatchQueue.main.async { [weak self] in self?.applyBadge() }
+    }
+
+    private func applyBadge() {
+        guard let button = Self.statusItem()?.button else { return }
+        StatusBadge.apply(badge, to: button)
     }
 
     /// One tooltip rectangle per agent slot, left to right after the count.
