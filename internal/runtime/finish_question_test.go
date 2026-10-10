@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -650,5 +651,37 @@ func TestRequestWireCarriesWaiverHistory(t *testing.T) {
 	}
 	if w.WaiverHistory == nil || w.WaiverHistory.Waivers != 1 || w.WaiverHistory.Overrides != 0 {
 		t.Fatalf("waiver_history = %+v, want 1 waiver (removed ones still count)", w.WaiverHistory)
+	}
+}
+
+// CHORE-64 review: with no integrated checkpoint to read, the finish notification falls back to the
+// request prompt.
+func TestFinishNotificationFallsBackToRequestPrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ep := seedEpicWithTask(t, s)
+	openAcceptRowGit(t, s, "req_fallback", "accept_epic", ep.Key, gitOne)
+	if n := notified(t, s, "request.accept_epic"); n.Args["summary"] != "Review completed work and accept the epic." {
+		t.Fatalf("args = %v", n.Args)
+	}
+}
+
+// CHORE-64 review: a repo-less finish with the orchestrator's own options doesn't say "Not pushed."
+func TestFinishPromptNoReposWithAgentOptions(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	chore, err := s.Items.Create(ctx, items.CreateInput{Type: items.Chore, Title: "Clean caches"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var np NativePrompt
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		np, err = s.nativePromptFor(ctx, tx, Request{Kind: KindAcceptFix, ItemID: chore.ID,
+			Binding: []byte(`{"item_revision":1,"integrated_checkpoint":"ckp_x","git":[],"finish_options":[{"label":"Accept as done"}]}`)}, "", nil, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if np.Question != fmt.Sprintf("Finish %s %q?", chore.Key, "Clean caches") || np.Options[0] != "Accept as done" {
+		t.Fatalf("prompt = %+v", np)
 	}
 }

@@ -1540,6 +1540,16 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			switch {
 			case a.Role != RoleOrchestrator:
 				out.TodosIgnored = "only the orchestrator keeps a task list"
+			case it.ParentID == "" && (it.Type == items.Epic || it.Type == items.Bug || it.Type == items.Chore):
+				labels, err := s.mergeRootTodoLabels(ctx, tx, it, in.Todos)
+				if err != nil {
+					return err
+				}
+				b, err := json.Marshal(labels)
+				if err != nil {
+					return err
+				}
+				todosJSON = string(b)
 			case it.Type != items.Spike || spikeSteps[it.SpikeIntent] == nil:
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: fmt.Sprintf("todos are derived from tasks for %s; don't send them", it.Key)}

@@ -314,7 +314,12 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 			return NativePrompt{}, err
 		}
 		waived := w + o
-		return withAgentOptions(req, finishPrompt(header, key, title, repos, waived)), nil
+		np := withAgentOptions(req, finishPrompt(header, key, title, repos, waived))
+		if len(repos) == 0 && len(agentOptions(req)) > 0 {
+			// CHORE-64 review: work that changed no repo has nothing to push.
+			np.Question = strings.Replace(np.Question, "? Not pushed.", "?", 1)
+		}
+		return np, nil
 	default:
 		return NativePrompt{}, nil
 	}

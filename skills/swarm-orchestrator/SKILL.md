@@ -62,7 +62,7 @@ Legacy tasks whose `workflow_json` is NULL still use manual `swarm_spawn` and re
 - On `pr_closed`: the PR was closed without merging and the item is back in progress. Ask the user what to do with your native question tool before changing anything.
 - On `changes_requested`, do what the comment asks, re-integrate, and the daemon asks again. If `native_answer` says the request is stale, the item changed after the question: wait for the new `request_open`.
 - Don't poll. End your turn when waiting; the daemon wakes you.
-- Progress list: when `swarm_sync` returns `todos`, do what `todos_next` says, right away. For an epic, bug or chore the list is the item's tasks and is maintained by Swarm; never send `todos` for it.
+- Progress list: when `swarm_sync` returns `todos`, do what `todos_next` says, right away. For an epic, bug or chore the list is the item's tasks plus fixed steps (chore: `context`, `work`, `integrate`, `accept`; epic and bug: `integrate`, `accept`), and Swarm keeps every status. Name the fixed steps for the actual work once you know it, in your first `progress` checkpoint: `todos: [{id, label}]`, labels only, 1–80 characters (e.g. `work` → `Clearing Chrome and tmp caches`, `accept` → `Finishing: accept the cleanup`). Never leave `Finishing: PR or merge` on work that has nothing to merge. Spikes may add a `label` to any step entry the same way.
 
 ## Talking to other top-level orchestrators
 Only top-level agents (no parent) can message across items; children ask their parent. Use `swarm_send`, never the native SendMessage or ListAgents (they list unrelated local sessions and are blocked).

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -28,9 +29,70 @@ type Todo struct {
 	ItemKey string     `json:"item_key,omitempty"` // task entries only
 }
 
+// TodoReport is one step an orchestrator reports: a spike step's status, and for any root an
+// optional label naming the step for the work at hand (CHORE-64). An epic, bug or chore root
+// sends labels only; its statuses are derived.
 type TodoReport struct {
 	ID     string     `json:"id"`
-	Status TodoStatus `json:"status"`
+	Status TodoStatus `json:"status,omitempty"`
+	Label  string     `json:"label,omitempty"`
+}
+
+// todoLabels maps step id to the label an orchestrator gave it.
+func todoLabels(reports []TodoReport) map[string]string {
+	out := map[string]string{}
+	for _, r := range reports {
+		if r.Label != "" {
+			out[r.ID] = r.Label
+		}
+	}
+	return out
+}
+
+func checkTodoLabel(r TodoReport) error {
+	if n := utf8.RuneCountInString(r.Label); n > 80 || r.Label != "" && strings.TrimSpace(r.Label) == "" {
+		return &items.Error{Code: items.CodeBadRequest, Message: "todos: a label must be 1–80 characters"}
+	}
+	return nil
+}
+
+// rootTodoSteps are the fixed step ids of an epic, bug or chore list.
+func rootTodoSteps(typ items.Type) []string {
+	if typ == items.Chore {
+		return []string{"context", "work", "integrate", "accept"}
+	}
+	return []string{"integrate", "accept"}
+}
+
+// mergeRootTodoLabels validates a root orchestrator's labels and returns them merged over the
+// newest stored ones, in step order.
+func (s *Store) mergeRootTodoLabels(ctx context.Context, tx *sql.Tx, root items.Item, in []TodoReport) ([]TodoReport, error) {
+	ids := rootTodoSteps(root.Type)
+	for _, r := range in {
+		if r.Status != "" || r.Label == "" {
+			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"todo statuses for %s are derived from its tasks; send only labels for: %s", root.Key, strings.Join(ids, ", "))}
+		}
+		if !slices.Contains(ids, r.ID) {
+			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"todos: unknown step %q for %s; use: %s", r.ID, root.Key, strings.Join(ids, ", "))}
+		}
+		if err := checkTodoLabel(r); err != nil {
+			return nil, err
+		}
+	}
+	prev, err := s.latestTodoReports(ctx, tx, root.ID)
+	if err != nil {
+		return nil, err
+	}
+	labels := todoLabels(append(prev, in...))
+	var out []TodoReport
+	for _, id := range ids {
+		if labels[id] != "" {
+			out = append(out, TodoReport{ID: id, Label: labels[id]})
+		}
+	}
+	return out, nil
 }
 
 type TodoProgress struct {
@@ -169,8 +231,19 @@ func (s *Store) taskTodos(ctx context.Context, tx todoQuerier, rootID string, ty
 		}
 		out = append([]Todo{ctxTodo}, out...)
 	}
-	return append(out, Todo{ID: "integrate", Label: "Merging and verifying", Status: integrate},
-		Todo{ID: "accept", Label: "Finishing: PR or merge", Status: accept}), nil
+	out = append(out, Todo{ID: "integrate", Label: "Merging and verifying", Status: integrate},
+		Todo{ID: "accept", Label: "Finishing: PR or merge", Status: accept})
+	reports, err := s.latestTodoReports(ctx, tx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	labels := todoLabels(reports)
+	for i := range out {
+		if l := labels[out[i].ID]; l != "" && out[i].ItemKey == "" {
+			out[i].Label = l
+		}
+	}
+	return out, nil
 }
 
 // latestTodoReports is the newest stored spike step list for itemID, nil if none.
@@ -195,6 +268,7 @@ func (s *Store) spikeTodos(ctx context.Context, tx todoQuerier, spikeID string, 
 	for _, r := range reports {
 		byID[r.ID] = r.Status
 	}
+	labels := todoLabels(reports)
 	var specID string
 	err := tx.QueryRowContext(ctx, `SELECT id FROM artifacts WHERE item_id = ? AND kind = 'spec'
 		ORDER BY created_at DESC, id DESC LIMIT 1`, spikeID).Scan(&specID)
@@ -218,7 +292,11 @@ func (s *Store) spikeTodos(ctx context.Context, tx todoQuerier, spikeID string, 
 		if status == "" {
 			status = TodoPending
 		}
-		out = append(out, Todo{ID: st.ID, Label: st.Label, Status: status})
+		label := st.Label
+		if l := labels[st.ID]; l != "" {
+			label = l
+		}
+		out = append(out, Todo{ID: st.ID, Label: label, Status: status})
 	}
 	return out, nil
 }
@@ -265,6 +343,12 @@ func (s *Store) mergeSpikeTodos(ctx context.Context, tx *sql.Tx, spike items.Ite
 			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 				"todos: unknown step %q for a %s spike; use: %s", r.ID, spike.SpikeIntent, strings.Join(ids, ", "))}
 		}
+		if err := checkTodoLabel(r); err != nil {
+			return nil, err
+		}
+		if r.Status == "" && r.Label != "" {
+			continue // a label-only entry keeps the step's status
+		}
 		if r.Status != TodoPending && r.Status != TodoInProgress && r.Status != TodoCompleted {
 			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 				"todos: status must be pending, in_progress or completed (got %q)", r.Status)}
@@ -276,15 +360,18 @@ func (s *Store) mergeSpikeTodos(ctx context.Context, tx *sql.Tx, spike items.Ite
 	}
 	byID := map[string]TodoStatus{}
 	for _, r := range append(prev, in...) {
-		byID[r.ID] = r.Status
+		if r.Status != "" {
+			byID[r.ID] = r.Status
+		}
 	}
+	labels := todoLabels(append(prev, in...))
 	merged := make([]TodoReport, 0, len(steps))
 	for _, id := range ids {
 		st := byID[id]
 		if st == "" {
 			st = TodoPending
 		}
-		merged = append(merged, TodoReport{ID: id, Status: st})
+		merged = append(merged, TodoReport{ID: id, Status: st, Label: labels[id]})
 	}
 	view, err := s.spikeTodos(ctx, tx, spike.ID, steps, merged)
 	if err != nil {

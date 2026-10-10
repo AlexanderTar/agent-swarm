@@ -757,7 +757,7 @@ func (s *Store) applyPRTx(ctx context.Context, tx *sql.Tx, id, itemID, key, repo
 			summary := key + " is done."
 			if err := tx.QueryRowContext(ctx, `SELECT c.summary FROM checkpoints c JOIN item_merges m ON m.id = ?
 				WHERE c.item_id = m.item_id AND c.kind = 'progress' AND c.created_at = m.created_at
-				ORDER BY c.rowid LIMIT 1`, id).Scan(&summary); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				ORDER BY c.rowid DESC LIMIT 1`, id).Scan(&summary); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
 			return s.notify(ctx, tx, NotifyInput{Kind: "item.merged", ItemKey: key,

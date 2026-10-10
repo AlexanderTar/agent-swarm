@@ -1533,7 +1533,8 @@ func TestSkillsCarryTheProgressListRule(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	for _, want := range []string{
 		"- Progress list: when `swarm_sync` returns `todos`, do what `todos_next` says, right away.",
-		"never send `todos` for it.",
+		"`todos: [{id, label}]`, labels only",
+		"Never leave `Finishing: PR or merge` on work that has nothing to merge.",
 		"- Report spike step progress on each checkpoint with `todos: [{id, status}]`",
 		"debug: frame, evidence, root_cause, report, plan, critic, approve",
 		"Swarm ticks `spec` and `approve` itself.",
