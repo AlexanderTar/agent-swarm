@@ -31,9 +31,11 @@ type Doctor struct {
 	GhosttyApps     []string
 	LookPath        func(string) (string, error)
 	HTTP            *http.Client
-	Cfg             Config                       // P5: the per-agent checks derive every path from this (S-5)
-	Installed       func(context.Context) []Kind // P5: which agents to check; InstalledKinds in production
-	ClaudeSessions  ClaudeSessionsFunc           // D4: the daemon's Claude sessions, for the live-session WARN
+	Cfg             Config                                           // P5: the per-agent checks derive every path from this (S-5)
+	Installed       func(context.Context) []Kind                     // P5: which agents to check; InstalledKinds in production
+	ClaudeSessions  ClaudeSessionsFunc                               // D4: the daemon's Claude sessions, for the live-session WARN
+	Procs           func(context.Context) ([]Proc, error)            // nil skips the orphan-process row
+	Session         func(context.Context, string) (SessionRef, bool) // session id -> agent and state
 }
 
 var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
@@ -44,6 +46,7 @@ var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
 func (d Doctor) Checks(ctx context.Context) []Check {
 	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
 		d.launchAgent(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
+	out = append(out, d.orphans(ctx)...)
 	for _, k := range d.installedKinds(ctx) {
 		switch k {
 		case KindClaude:

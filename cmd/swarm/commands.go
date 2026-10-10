@@ -152,6 +152,8 @@ func newDoctor(home, daemonURL string) install.Doctor {
 		Cfg:             cfg,
 		Installed:       install.InstalledKinds(exec.LookPath),
 		ClaudeSessions:  daemonClaudeSessions(home, daemonURL),
+		Procs:           func(ctx context.Context) ([]install.Proc, error) { return install.ListProcs(ctx, execx.Run) },
+		Session:         sessionLookup(home),
 	}
 }
 
