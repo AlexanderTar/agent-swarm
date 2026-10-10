@@ -15,7 +15,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
-// cmdCleanup runs the work-dir pass and the worktree reclaim pass once, on
+// cmdCleanup runs the work-dir and scratchpad passes and the worktree reclaim pass once, on
 // the database directly like the other offline commands.
 func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	fs, home, _ := flags("cleanup", stderr, false)
@@ -67,11 +67,13 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	}
 	dirs, dirErr := rt.ReclaimWorkDirs(ctx, opt)
 	printResults("workdir", dirs)
+	pads, padErr := rt.ReclaimScratchpads(ctx, opt)
+	printResults("scratchpad", pads)
 	trees, treeErr := rt.ReclaimWorktreesWith(ctx, opt)
 	printResults("worktree", trees)
 	fmt.Fprintf(stdout, "%d removed, %d would_remove, %d kept, %d untracked\n",
 		counts["removed"], counts["would_remove"], counts["kept"], counts["untracked"])
-	for _, err := range []error{dirErr, treeErr} {
+	for _, err := range []error{dirErr, padErr, treeErr} {
 		if err != nil {
 			return fail(stderr, err)
 		}

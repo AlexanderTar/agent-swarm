@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,5 +141,48 @@ func TestCleanupDiscardRefusesActiveRootThenDiscardsDoneRootKeepingTheBranch(t *
 	}
 	if code := run([]string{"cleanup", "--home", home, "--discard", "/nope"}, &out, &errb); code == 0 {
 		t.Fatal("discard of an unknown path exited 0")
+	}
+}
+
+func TestCleanupSweepsScratchpadsOfFinishedAgents(t *testing.T) {
+	home, _, _, _ := seedCleanupHome(t)
+	// The scratch root is the real /tmp/claude-<uid>; the entry is named after
+	// this test's own temp home, so no real session's dir can match it.
+	pad := filepath.Join(fmt.Sprintf("/tmp/claude-%d", os.Getuid()), strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, filepath.Join(home, "work", "done-agent")))
+	if err := os.MkdirAll(filepath.Join(pad, "uuid", "scratchpad"), 0o700); err != nil {
+		t.Skipf("scratch root not writable: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(pad) })
+	d, err := db.Open(context.Background(), filepath.Join(home, "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.ExecContext(context.Background(), `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES ('ses_1', 'agt_1', 1, 1, 't', 't', ?, 'completed', 'neutral', 3)`, filepath.Join(home, "work", "done-agent"))
+	d.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := run([]string{"cleanup", "--home", home, "--dry-run"}, &out, &out); code != 0 {
+		t.Fatalf("exit = %d, output = %q", code, out.String())
+	}
+	if !strings.Contains(out.String(), "scratchpad would_remove "+pad) {
+		t.Fatalf("dry run output missing scratchpad:\n%s", out.String())
+	}
+	if _, err := os.Stat(pad); err != nil {
+		t.Fatalf("dry run removed the scratchpad: %v", err)
+	}
+	out.Reset()
+	if code := run([]string{"cleanup", "--home", home}, &out, &out); code != 0 {
+		t.Fatalf("exit = %d, output = %q", code, out.String())
+	}
+	if _, err := os.Stat(pad); !os.IsNotExist(err) {
+		t.Fatalf("scratchpad still exists (%v):\n%s", err, out.String())
 	}
 }

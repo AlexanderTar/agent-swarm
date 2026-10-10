@@ -403,6 +403,10 @@ type Store struct {
 	After     func(time.Duration) <-chan time.Time        // nil means time.After
 	Go        func(func())                                // nil means `go f()`; tests run it inline
 
+	// ScratchRoot is Claude Code's per-uid scratch root (ReclaimScratchpads);
+	// empty means /tmp/claude-<uid>. Tests point it at a temp dir.
+	ScratchRoot string
+
 	// TmuxPath and TmuxSocketName are the two strings `swarm attach` and
 	// httpapi's Ghostty fallback need, so neither ever writes "-L swarm" as a
 	// literal (safety invariant S-1, R11). cmd/swarm sets both from the same
