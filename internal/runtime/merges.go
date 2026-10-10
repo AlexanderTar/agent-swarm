@@ -424,7 +424,8 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 			return err
 		}
 		if it.Status == items.Done {
-			if err := s.notify(ctx, tx, NotifyInput{Kind: "item.merged", ItemKey: key, Args: map[string]string{"KEY": key}}); err != nil {
+			if err := s.notify(ctx, tx, NotifyInput{Kind: "item.merged", ItemKey: key,
+				Args: map[string]string{"KEY": key, "summary": in.Summary}}); err != nil {
 				return err
 			}
 		}
@@ -752,7 +753,15 @@ func (s *Store) applyPRTx(ctx context.Context, tx *sql.Tx, id, itemID, key, repo
 			return err
 		}
 		if it.Status == items.Done {
-			return s.notify(ctx, tx, NotifyInput{Kind: "item.merged", ItemKey: key, Args: map[string]string{"KEY": key}})
+			// CHORE-64: the finishing checkpoint written with this row (same created_at) says what was done.
+			summary := key + " is done."
+			if err := tx.QueryRowContext(ctx, `SELECT c.summary FROM checkpoints c JOIN item_merges m ON m.id = ?
+				WHERE c.item_id = m.item_id AND c.kind = 'progress' AND c.created_at = m.created_at
+				ORDER BY c.rowid LIMIT 1`, id).Scan(&summary); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			return s.notify(ctx, tx, NotifyInput{Kind: "item.merged", ItemKey: key,
+				Args: map[string]string{"KEY": key, "summary": summary}})
 		}
 	}
 	return nil

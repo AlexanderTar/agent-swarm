@@ -3034,9 +3034,10 @@ func TestIntegratedChoreEmptyGitAccepted(t *testing.T) {
 		t.Fatal("integrated still needs verification")
 	}
 	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "no code change",
-		Git:          []GitRef{},
-		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
-		t.Fatalf("chore with git: [] plus verification: %v", err)
+		Git:           []GitRef{},
+		Verification:  []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+		FinishOptions: []FinishOption{{Label: "Accept as done"}}}); err != nil {
+		t.Fatalf("chore with git: [] plus verification and finish_options: %v", err)
 	}
 	it, _ := s.Items.Get(ctx, key)
 	if it.Status != items.InReview {

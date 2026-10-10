@@ -527,6 +527,18 @@ func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) erro
 		return err
 	}
 	args := map[string]string{"KEY": w.ItemKey, "prompt": w.Prompt}
+	if w.Kind == KindAcceptEpic || w.Kind == KindAcceptFix {
+		// CHORE-64: the finish notification shows the orchestrator's integrated summary (what it did),
+		// falling back to the request prompt when that checkpoint is gone.
+		args["summary"] = w.Prompt
+		var sum string
+		if err := tx.QueryRowContext(ctx, `SELECT c.summary FROM requests r JOIN checkpoints c
+			ON c.id = json_extract(r.binding_json, '$.integrated_checkpoint') WHERE r.id = ?`, id).Scan(&sum); err == nil && sum != "" {
+			args["summary"] = sum
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	if w.AgentName != nil {
 		args["name"] = *w.AgentName
 	}

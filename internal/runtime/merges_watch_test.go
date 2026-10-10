@@ -112,7 +112,9 @@ func TestWatchMergesMergedMovesRootToDone(t *testing.T) {
 	if st := itemStatus(t, s, key); st != items.Done {
 		t.Fatalf("status = %s", st)
 	}
-	notified(t, s, "item.merged")
+	if n := notified(t, s, "item.merged"); n.Args["summary"] != "PR open" {
+		t.Fatalf("item.merged args = %v, want the finishing summary", n.Args)
+	}
 }
 
 func TestWatchMergesMergedOneOfTwoStaysInReview(t *testing.T) {

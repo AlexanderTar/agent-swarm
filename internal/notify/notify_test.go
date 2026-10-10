@@ -57,11 +57,13 @@ func TestRulesCoverSection175(t *testing.T) {
 		"request.approve_section": {"action", "Section approval needed", `{KEY}: Review "{section}".`, "swarm.approval"},
 		"request.approve_plan":    {"action", "Plan approval needed", "{KEY}: Review the proposed implementation plan.", "swarm.approval"},
 		"request.approve_report":  {"action", "Report approval needed", "{KEY}: Review the root cause and fix plan.", "swarm.approval"},
-		"request.accept_epic":     {"action", "Finish {KEY}: create PR?", "{KEY}: integrated and verified. Pick how to finish.", "swarm.approval"},
-		"request.accept_fix":      {"action", "Finish {KEY}: create PR?", "{KEY}: integrated and verified. Pick how to finish.", "swarm.approval"},
+		// CHORE-64: the orchestrator's integrated summary, not a fixed "create PR?".
+		"request.accept_epic": {"action", "Finish {KEY}?", "{KEY}: {summary}", "swarm.approval"},
+		"request.accept_fix":  {"action", "Finish {KEY}?", "{KEY}: {summary}", "swarm.approval"},
 		// Added by docs/specs/2026-09-29-finish-with-pr.md.
 		"pr.checks_failed": {"attention", "PR checks failed", "{KEY}: {repo} #{N} — {checks}", "swarm.agent"},
-		"item.merged":      {"info", "Merged", "{KEY}: all PRs merged — done.", "swarm.info"},
+		// CHORE-64: the orchestrator's finishing summary, not a fixed "all PRs merged".
+		"item.merged": {"info", "{KEY} done", "{summary}", "swarm.info"},
 	}
 	for kind, w := range want {
 		r, ok := Rules[kind]
@@ -232,11 +234,11 @@ func TestNoRuleBodyEscapesWithBraces(t *testing.T) {
 
 // 2026-09-29-finish-with-pr: the finish notification expands {KEY} in its title too.
 func TestRenderExpandsTitle(t *testing.T) {
-	r, err := Render("request.accept_epic", map[string]string{"KEY": "EPIC-14"})
+	r, err := Render("request.accept_epic", map[string]string{"KEY": "EPIC-14", "summary": "Login merged and verified."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Title != "Finish EPIC-14: create PR?" || r.Body != "EPIC-14: integrated and verified. Pick how to finish." {
+	if r.Title != "Finish EPIC-14?" || r.Body != "EPIC-14: Login merged and verified." {
 		t.Fatalf("rendered = %q / %q", r.Title, r.Body)
 	}
 	Rules["test.title"] = notifyrules.Rule{Level: "info", Title: "Hi {who}", Body: "body", Category: "swarm.info"}

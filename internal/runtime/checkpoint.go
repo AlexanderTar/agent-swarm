@@ -1569,6 +1569,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
 			}
+			// CHORE-64: work that changed no repo has no PR or merge to offer; the orchestrator says how it finishes.
+			if len(in.Git) == 0 && len(in.FinishOptions) == 0 {
+				return &items.Error{Code: items.CodeBadRequest, Message: "An integrated checkpoint with no git needs " +
+					"finish_options: 1–4 ways to finish work that changed no repository (e.g. \"Accept as done\")."}
+			}
 			if err := validateFinishOptions(in.FinishOptions); err != nil {
 				return err
 			}

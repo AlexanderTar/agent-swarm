@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os/exec"
 	"slices"
@@ -679,7 +680,8 @@ func gitlessFixture(t *testing.T, intent string) (s *Store, ses, key string, err
 		t.Fatal(serr)
 	}
 	_, err = s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "nothing to merge",
-		Verification: []Verify{{Cmd: "make check", Phase: "green", OK: true}}})
+		Verification:  []Verify{{Cmd: "make check", Phase: "green", OK: true}},
+		FinishOptions: []FinishOption{{Label: "Accept as done", Description: "Nothing to merge."}}})
 	return
 }
 
@@ -703,6 +705,38 @@ func TestGitlessChoreIntegratedOpensAcceptFix(t *testing.T) {
 	if st := itemStatus(t, s, key); st != items.InReview {
 		t.Fatalf("status = %s", st)
 	}
+	// CHORE-64: the finish notification shows the orchestrator's own integrated summary, not "create PR?".
+	var reqID string
+	if err := s.DB.QueryRow(`SELECT id FROM requests WHERE item_id = ? AND kind = 'accept_fix'`, mustItemID(t, s, key)).Scan(&reqID); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, reqID) }); err != nil {
+		t.Fatal(err)
+	}
+	if n := notified(t, s, "request.accept_fix"); n.Args["summary"] != "nothing to merge" {
+		t.Fatalf("accept_fix args = %v", n.Args)
+	}
+}
+
+// CHORE-64: work that changed no repo has no PR or merge to offer, so the orchestrator must say how
+// to finish it; the daemon's fixed PR question would be wrong.
+func TestGitlessIntegratedNeedsFinishOptions(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Tidy notes", Intent: "chore", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "tidying"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "nothing to merge",
+		Verification: []Verify{{Cmd: "make check", Phase: "green", OK: true}}})
+	if err == nil || !strings.Contains(err.Error(), "finish_options") {
+		t.Fatalf("err = %v, want a finish_options refusal", err)
+	}
 }
 
 func TestGitlessChoreFinishingClosesIt(t *testing.T) {
@@ -723,12 +757,16 @@ func TestGitlessChoreFinishingClosesIt(t *testing.T) {
 			if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err == nil {
 				t.Fatal("completed accepted after approved finish")
 			}
-			tc.in.Kind, tc.in.Summary = Finishing, "nothing to merge"
+			tc.in.Kind, tc.in.Summary = Finishing, "Cleared 40 GB of Chrome cache; nothing to merge."
 			if _, err := s.WriteCheckpoint(ctx, ses, tc.in); err != nil {
 				t.Fatal(err)
 			}
 			if st := itemStatus(t, s, key); st != items.Done {
 				t.Fatalf("status = %s, want done", st)
+			}
+			// CHORE-64: the done notification says what the orchestrator did, not "all PRs merged".
+			if n := notified(t, s, "item.merged"); n.Args["summary"] != tc.in.Summary {
+				t.Fatalf("item.merged args = %v", n.Args)
 			}
 			if _, err := s.WriteCheckpoint(ctx, ses, tc.in); err == nil {
 				t.Fatal("repeat finishing accepted")
