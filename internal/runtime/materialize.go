@@ -134,7 +134,7 @@ func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tr
 		Workflow: rootWorkflow,
 		Type:     rootType, Title: tree.Root.Title, Brief: tree.Root.Brief,
 		Acceptance: tree.Root.Acceptance, Status: items.Ready,
-		Repos: spike.Repos, OriginSpikeID: spike.ID,
+		Repos: spike.Repos, OriginSpikeID: spike.ID, Materialized: true,
 	}, items.Daemon())
 	if err != nil {
 		return MaterializeResult{}, err

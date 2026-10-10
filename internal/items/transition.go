@@ -1035,10 +1035,19 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 }
 
 // spikeFinished reports whether the spike's own work is over: it was
-// materialized (a root names it as origin) or its close_spike was approved.
+// materialized or its close_spike was approved.
 func (s *Store) spikeFinished(ctx context.Context, tx *sql.Tx, it Item) (bool, error) {
-	return exists(ctx, tx, `SELECT 1 FROM items WHERE origin_spike_id = ?
-		UNION ALL SELECT 1 FROM requests WHERE item_id = ? AND kind = 'close_spike' AND state = 'approved'`, it.ID, it.ID)
+	if ok, err := SpikeMaterializedTx(ctx, tx, it.ID); ok || err != nil {
+		return ok, err
+	}
+	return exists(ctx, tx, `SELECT 1 FROM requests WHERE item_id = ? AND kind = 'close_spike' AND state = 'approved'`, it.ID)
+}
+
+// SpikeMaterializedTx reports whether swarm_materialize built a root from
+// spikeID. A top-level item the spike's orchestrator proposed, or a bug it
+// reported, also names the spike as origin but doesn't count (BUG-75).
+func SpikeMaterializedTx(ctx context.Context, q querier, spikeID string) (bool, error) {
+	return exists(ctx, q, `SELECT 1 FROM items WHERE origin_spike_id = ? AND materialized = 1`, spikeID)
 }
 
 // OpenSpikeTasksTx lists the keys of spikeID's own tasks that are still

@@ -547,7 +547,7 @@ func TestSpikeTransitions(t *testing.T) {
 	// materialization is the other way to done
 	sp2 := mk(t, s, items.Spike, "", "Payments")
 	setStatus(t, s, sp2, items.InProgress)
-	if _, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Payments", OriginSpikeID: sp2.ID}, daemon); err != nil {
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Payments", OriginSpikeID: sp2.ID, Materialized: true}, daemon); err != nil {
 		t.Fatal(err)
 	}
 	wantDenied(t, move(t, s, sp2.Key, items.Done, user), "This spike reaches Done after materialization.")
@@ -558,6 +558,33 @@ func TestSpikeTransitions(t *testing.T) {
 	if err := move(t, s, sp3.Key, items.Cancelled, user); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestSpikeProposalIsNotMaterialization is BUG-75: a top-level item the spike's
+// orchestrator proposes, or a bug it reports to the board, names the spike as
+// origin but is not its materialized root, so the spike stays open.
+func TestSpikeProposalIsNotMaterialization(t *testing.T) {
+	s := newStore(t)
+	sp := mk(t, s, items.Spike, "", "COROS")
+	setStatus(t, s, sp, items.InProgress)
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Chore, Title: "Proposed"},
+		items.Orchestrator("agt_s", sp.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Bug, Title: "Reported", OriginSpikeID: sp.ID},
+		items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	s.Reconcile(ctx, sp.Key)
+	wantStatus(t, s, sp.Key, items.InProgress)
+	wantDenied(t, move(t, s, sp.Key, items.Done, items.Daemon()), "This spike reaches Done after materialization.")
+
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "COROS", OriginSpikeID: sp.ID,
+		Materialized: true}, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	s.Reconcile(ctx, sp.Key)
+	wantStatus(t, s, sp.Key, items.Done)
 }
 
 // TestCompletedCurrentIsPerAgent reproduces the cross-agent attempt bug (spec

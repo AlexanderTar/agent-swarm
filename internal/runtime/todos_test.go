@@ -186,8 +186,14 @@ func TestTodosFeatureSpikeUsesStoredReportsAndDaemonFacts(t *testing.T) {
 	if st := todoStatuses(mustTodos(t, s, spikeID)); st[3] != TodoCompleted {
 		t.Fatalf("spec after approval = %s", st[3])
 	}
+	// BUG-75: a proposal naming the spike as origin is not materialization.
+	proposed := mkItem(t, s, items.Chore, "", "Proposed")
+	execSQL(t, s, `UPDATE items SET origin_spike_id = ? WHERE id = ?`, spikeID, proposed.ID)
+	if st := todoStatuses(mustTodos(t, s, spikeID)); st[6] != TodoPending {
+		t.Fatalf("approve after a proposal = %s", st[6])
+	}
 	ep := mkItem(t, s, items.Epic, "", "Materialized")
-	execSQL(t, s, `UPDATE items SET origin_spike_id = ? WHERE id = ?`, spikeID, ep.ID)
+	execSQL(t, s, `UPDATE items SET origin_spike_id = ?, materialized = 1 WHERE id = ?`, spikeID, ep.ID)
 	if st := todoStatuses(mustTodos(t, s, spikeID)); st[6] != TodoCompleted {
 		t.Fatalf("approve after materialize = %s", st[6])
 	}

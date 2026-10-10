@@ -69,6 +69,7 @@ type CreateInput struct {
 	SuggestedRepos []string
 	SpikeIntent    string
 	OriginSpikeID  string
+	Materialized   bool // the root swarm_materialize built from OriginSpikeID, not a proposal (BUG-75)
 	TitlePending   bool // true when Title is a daemon-computed placeholder (spec 2026-09-28)
 	LegacyKey      string
 	SortOrder      int
@@ -534,13 +535,13 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	_, err = tx.ExecContext(ctx, `INSERT INTO items (id, key, type, parent_id, root_id, title, brief, acceptance_json,
 		status, priority, role_hint, tdd_exempt, confirmed_repos_json, repos_version, repo_hints_json, spike_intent,
 		suggested_repos_json, origin_spike_id, legacy_key, sort_order, created_at, updated_at,
-		workflow_json, steps_json, units_json, solo, verify_json, title_pending)
+		workflow_json, steps_json, units_json, solo, verify_json, title_pending, materialized)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?,
-		NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?)`,
+		NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?)`,
 		id, key, in.Type, parentID, rootID, in.Title, in.Brief, jsonList(in.Acceptance),
 		in.Status, prio, in.RoleHint, in.TddExempt, confirmed, reposVersion, hints, in.SpikeIntent,
 		jsonList(in.SuggestedRepos), in.OriginSpikeID, in.LegacyKey, in.SortOrder, now, now,
-		workflowJSONString(in.Workflow), jsonList(in.Steps), jsonUnits(in.Units), in.Solo, jsonList(in.Verify), in.TitlePending)
+		workflowJSONString(in.Workflow), jsonList(in.Steps), jsonUnits(in.Units), in.Solo, jsonList(in.Verify), in.TitlePending, in.Materialized)
 	if err != nil {
 		return Item{}, err
 	}

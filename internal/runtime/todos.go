@@ -275,9 +275,8 @@ func (s *Store) spikeTodos(ctx context.Context, tx todoQuerier, spikeID string, 
 	if specID != "" && s.checkEverySectionApproved(ctx, tx, specID) == nil {
 		byID["spec"] = TodoCompleted
 	}
-	var materialized bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM items WHERE origin_spike_id = ?)`,
-		spikeID).Scan(&materialized); err != nil {
+	materialized, err := items.SpikeMaterializedTx(ctx, tx, spikeID)
+	if err != nil {
 		return nil, err
 	}
 	if materialized {

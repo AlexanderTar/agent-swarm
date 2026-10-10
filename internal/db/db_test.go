@@ -121,6 +121,10 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 0031_materialized_root.sql adds items.materialized with plain ALTER TABLE (same precedent).
+	if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN materialized`); err != nil {
+		t.Fatal(err)
+	}
 	// 0027_resolved_by.sql adds items.resolved_by_id with plain ALTER TABLE (same precedent).
 	if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN resolved_by_id`); err != nil {
 		t.Fatal(err)
