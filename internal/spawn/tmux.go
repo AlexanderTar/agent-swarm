@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -24,6 +25,12 @@ type Spawner struct {
 	Tmux   string // absolute tmux path
 	Run    execx.Runner
 	Log    func(format string, args ...any)
+
+	// Kill's descendant sweep. Nil/zero mean the real thing: a `ps` process
+	// table, syscall.Kill and a 2 s grace between SIGTERM and SIGKILL.
+	ProcTable func(context.Context) ([]ProcInfo, error)
+	Signal    func(pid int, sig syscall.Signal) error
+	TermWait  time.Duration
 }
 
 // TmuxConf is ~/.swarm/tmux.conf. set-titles lets the menubar find a terminal by
@@ -238,16 +245,117 @@ func (s *Spawner) Env(ctx context.Context, name, key string) (string, error) {
 }
 
 // Kill is idempotent: a missing session, or a server that has already exited
-// because that was its last session, is not an error.
+// because that was its last session, is not an error. tmux only hangs up the
+// pane's own process, so build helpers the agent started (simulators' idb,
+// upload-symbols, dev servers) outlive it as ppid-1 orphans. Kill therefore
+// captures the pane's descendant tree first and, once the session is gone,
+// sends exactly those pids SIGTERM, then SIGKILL to any that survive TermWait.
+// Nothing outside the captured tree is ever signalled.
 func (s *Spawner) Kill(ctx context.Context, name string) error {
+	tree := s.paneDescendants(ctx, name)
 	out, err := s.run(ctx, "kill-session", "-t", name)
 	if err == nil {
+		s.terminate(ctx, tree)
 		return nil
 	}
 	if strings.Contains(string(out), "can't find session") || strings.Contains(err.Error(), "can't find session") || noServer(out, err) {
 		return nil
 	}
 	return err
+}
+
+// ProcInfo is one row of the process table.
+type ProcInfo struct{ PID, PPID int }
+
+// paneDescendants returns every descendant of the session's pane pids. Any
+// failure yields no pids: the sweep is best-effort and must never stop the
+// kill itself.
+func (s *Spawner) paneDescendants(ctx context.Context, name string) []int {
+	out, err := s.run(ctx, "list-panes", "-t", name, "-F", "#{pane_pid}")
+	if err != nil {
+		return nil
+	}
+	table := s.ProcTable
+	if table == nil {
+		table = s.psTable
+	}
+	procs, err := table(ctx)
+	if err != nil {
+		return nil
+	}
+	children := map[int][]int{}
+	for _, p := range procs {
+		children[p.PPID] = append(children[p.PPID], p.PID)
+	}
+	var tree []int
+	seen := map[int]bool{}
+	var walk func(int)
+	walk = func(pid int) {
+		for _, c := range children[pid] {
+			if !seen[c] {
+				seen[c] = true
+				tree = append(tree, c)
+				walk(c)
+			}
+		}
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if pid, err := strconv.Atoi(f); err == nil && pid > 1 {
+			walk(pid)
+		}
+	}
+	return tree
+}
+
+func (s *Spawner) psTable(ctx context.Context) ([]ProcInfo, error) {
+	out, err := s.Run(ctx, "ps", "-axo", "pid=,ppid=")
+	if err != nil {
+		return nil, err
+	}
+	var procs []ProcInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		ppid, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil {
+			procs = append(procs, ProcInfo{pid, ppid})
+		}
+	}
+	return procs, nil
+}
+
+// terminate sends SIGTERM to pids, waits up to TermWait for them to exit, then
+// SIGKILLs the ones still alive. Signal 0 probes liveness.
+func (s *Spawner) terminate(ctx context.Context, pids []int) {
+	signal := s.Signal
+	if signal == nil {
+		signal = func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }
+	}
+	wait := s.TermWait
+	if wait == 0 {
+		wait = 2 * time.Second
+	}
+	self := os.Getpid()
+	var live []int
+	for _, pid := range pids {
+		if pid > 1 && pid != self && signal(pid, syscall.SIGTERM) == nil {
+			live = append(live, pid)
+		}
+	}
+	for deadline := time.Now().Add(wait); len(live) > 0 && time.Now().Before(deadline); {
+		if sleep(ctx, wait/20) != nil {
+			break
+		}
+		live = slices.DeleteFunc(live, func(pid int) bool { return signal(pid, 0) != nil })
+	}
+	for _, pid := range live {
+		if signal(pid, 0) == nil {
+			signal(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 // Paste pacing. These are calibration knobs, not constants of nature: 1022 is
