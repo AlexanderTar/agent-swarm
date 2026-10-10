@@ -1574,8 +1574,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "Only an orchestrator can write an integrated checkpoint."}
 			}
-			// ponytail: a git-less chore is trusted to have no worktree commits; it only needs verification.
-			if len(in.Verification) == 0 || len(in.Git) == 0 && it.Type != items.Chore {
+			// ponytail: a git-less root is trusted to have no worktree commits; it only needs verification.
+			if len(in.Verification) == 0 || len(in.Git) == 0 && it.Type == items.Spike {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
 			}

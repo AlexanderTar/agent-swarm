@@ -12,10 +12,10 @@ func TestItemDetailCarriesTodosForARootOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	todos, ok := root["todos"].([]any)
-	if !ok || len(todos) != 3 {
+	if !ok || len(todos) != 4 { // context + task + integrate + accept
 		t.Fatalf("root todos = %v", root["todos"])
 	}
-	first := todos[0].(map[string]any)
+	first := todos[1].(map[string]any)
 	if first["id"] != seed.TaskKey || first["label"] != seed.TaskKey+" · Task" || first["status"] != "pending" || first["item_key"] != seed.TaskKey {
 		t.Fatalf("first todo = %v", first)
 	}
@@ -44,7 +44,7 @@ func TestOrchestratorAgentNodeCarriesProgress(t *testing.T) {
 		t.Fatal("orchestrator missing from /api/state")
 	}
 	p, ok := orch["progress"].(map[string]any)
-	if !ok || p["done"] != float64(0) || p["total"] != float64(3) || p["current"] != seed.TaskKey+" · Task" {
+	if !ok || p["done"] != float64(1) || p["total"] != float64(4) || p["current"] != seed.TaskKey+" · Task" {
 		t.Fatalf("progress = %v", orch["progress"])
 	}
 	for _, c := range orch["children"].([]any) {

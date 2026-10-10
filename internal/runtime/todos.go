@@ -57,11 +57,8 @@ func checkTodoLabel(r TodoReport) error {
 }
 
 // rootTodoSteps are the fixed step ids of an epic, bug or chore list.
-func rootTodoSteps(typ items.Type) []string {
-	if typ == items.Chore {
-		return []string{"context", "work", "integrate", "accept"}
-	}
-	return []string{"integrate", "accept"}
+func rootTodoSteps(items.Type) []string {
+	return []string{"context", "work", "integrate", "accept"}
 }
 
 // mergeRootTodoLabels validates a root orchestrator's labels and returns them merged over the
@@ -208,7 +205,7 @@ func (s *Store) taskTodos(ctx context.Context, tx todoQuerier, rootID string, ty
 	} else if integrate == TodoCompleted {
 		accept = TodoInProgress
 	}
-	if typ == items.Chore {
+	{ // CHORE-64: every root, not just a chore, gathers context and may have no tasks.
 		var progressed bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'progress')`,
 			rootID).Scan(&progressed); err != nil {

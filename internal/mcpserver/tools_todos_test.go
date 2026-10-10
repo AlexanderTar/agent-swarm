@@ -19,7 +19,7 @@ func TestSyncToolCarriesTodosOnlyWhenChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	todos, ok := out.(map[string]any)["todos"].([]runtime.Todo)
-	if !ok || len(todos) != 4 { // two tasks + integrate + accept
+	if !ok || len(todos) != 5 { // context + two tasks + integrate + accept
 		t.Fatalf("todos = %s", mustJSON(out))
 	}
 	if next, _ := out.(map[string]any)["todos_next"].(string); !strings.HasPrefix(next, "Call update_plan now") {

@@ -887,9 +887,10 @@ func TestChoreWithNoTasksReachesDone(t *testing.T) {
 	s.Reconcile(ctx, e.Key)
 	seedCheckpoint(t, s.DB, e, "integrated", 1, later(s), gitJSON)
 	s.Reconcile(ctx, e.Key)
-	wantStatus(t, s, e.Key, items.InProgress)
-	if states, _ := acceptRequests(t, s, e); len(states) != 0 {
-		t.Fatalf("a childless epic must not ask for acceptance: %v", states)
+	// CHORE-64: any root, not just a chore, may finish with no tasks.
+	wantStatus(t, s, e.Key, items.InReview)
+	if states, _ := acceptRequests(t, s, e); count(states, "accept_epic:open") != 1 {
+		t.Fatalf("a childless epic with an integration asks for acceptance: %v", states)
 	}
 }
 

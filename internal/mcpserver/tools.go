@@ -118,7 +118,7 @@ func checkpointTool(s *Server) ToolDef {
 				"required":["cmd","ok"]}},
 			"artifacts":{"type":"array"},"processed":{"type":"array"},
 			"title":{"type":"string","description":"Only when your kickoff says the item has no name yet: a 3–6 word name for the work."},
-			"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"label":{"type":"string","description":"1–80 chars: names this step for the work at hand"}},"required":["id"]},"description":"Root orchestrators only. Spike: step statuses (and optional labels) by id; omitted ids keep their status. Epic, bug or chore: labels only for the fixed steps (chore: context, work, integrate, accept; epic/bug: integrate, accept); statuses are derived."},
+			"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"label":{"type":"string","description":"1–80 chars: names this step for the work at hand"}},"required":["id"]},"description":"Root orchestrators only. Spike: step statuses (and optional labels) by id; omitted ids keep their status. Epic, bug or chore: labels only for the fixed steps context, work, integrate and accept; statuses are derived."},
 			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},
 			"findings":{"type":"array","items":{"type":"object","properties":{
 				"severity":{"type":"string","enum":["critical","major","minor","nit"]},

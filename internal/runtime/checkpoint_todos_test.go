@@ -141,7 +141,7 @@ func TestCheckpointTodosRefusedOnATaskDerivedList(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = ckTodos(s, ses.ID, TodoReport{ID: "frame", Status: TodoCompleted})
-	wantErr(t, err, "todo statuses for "+ep.Key+" are derived from its tasks; send only labels for: integrate, accept")
+	wantErr(t, err, "todo statuses for "+ep.Key+" are derived from its tasks; send only labels for: context, work, integrate, accept")
 
 	cses, sp := spikeOrchestrator(t, s, "feature")
 	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET spike_intent = 'chore' WHERE id = ?`, sp.ID); err != nil {

@@ -22,7 +22,7 @@ func TestSyncSendsTodosOnlyWhenTheListChanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Todos) != 3 || first.Todos[0].ID != "TASK-1" {
+	if len(first.Todos) != 4 || first.Todos[1].ID != "TASK-1" {
 		t.Fatalf("first sync todos = %+v", first.Todos)
 	}
 	second, err := s.Sync(ctx, ses.ID, nil, 0)
@@ -39,7 +39,7 @@ func TestSyncSendsTodosOnlyWhenTheListChanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(third.Todos) != 3 || third.Todos[0].Status != TodoCompleted || third.Todos[1].Status != TodoInProgress {
+	if len(third.Todos) != 4 || third.Todos[1].Status != TodoCompleted || third.Todos[2].Status != TodoInProgress {
 		t.Fatalf("after task done = %+v", third.Todos)
 	}
 	fresh, err := s.startSessionForTest(ctx, orch, 1, 2)

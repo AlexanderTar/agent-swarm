@@ -76,19 +76,19 @@ func TestTodosEpicTreeOrderAndStatusMapping(t *testing.T) {
 	execSQL(t, s, `UPDATE items SET status = 'blocked' WHERE id = ?`, t3.ID)
 
 	got := mustTodos(t, s, ep.ID)
-	wantIDs := []string{direct.Key, t1.Key, t2.Key, t3.Key, "integrate", "accept"}
+	wantIDs := []string{"context", direct.Key, t1.Key, t2.Key, t3.Key, "integrate", "accept"}
 	if !reflect.DeepEqual(todoIDs(got), wantIDs) {
 		t.Fatalf("ids = %v, want %v", todoIDs(got), wantIDs)
 	}
-	wantSt := []TodoStatus{TodoPending, TodoInProgress, TodoCompleted, TodoPending, TodoPending, TodoPending}
+	wantSt := []TodoStatus{TodoCompleted, TodoPending, TodoInProgress, TodoCompleted, TodoPending, TodoPending, TodoPending}
 	if !reflect.DeepEqual(todoStatuses(got), wantSt) {
 		t.Fatalf("statuses = %v, want %v", todoStatuses(got), wantSt)
 	}
-	if got[1].Label != t1.Key+" · One" || got[1].ItemKey != t1.Key {
-		t.Fatalf("task entry = %+v", got[1])
+	if got[2].Label != t1.Key+" · One" || got[2].ItemKey != t1.Key {
+		t.Fatalf("task entry = %+v", got[2])
 	}
-	if got[4].Label != "Merging and verifying" || got[5].Label != "Finishing: PR or merge" || got[4].ItemKey != "" {
-		t.Fatalf("fixed entries = %+v %+v", got[4], got[5])
+	if got[5].Label != "Merging and verifying" || got[6].Label != "Finishing: PR or merge" || got[5].ItemKey != "" {
+		t.Fatalf("fixed entries = %+v %+v", got[5], got[6])
 	}
 }
 
@@ -109,7 +109,7 @@ func TestTodosIntegrateInProgressOnceEveryTaskIsDone(t *testing.T) {
 	ep := seedEpicWithTwoTasks(t, s)
 	execSQL(t, s, `UPDATE items SET status = 'done' WHERE type = 'task'`)
 	got := mustTodos(t, s, ep.ID)
-	if st := todoStatuses(got)[2:]; !reflect.DeepEqual(st, []TodoStatus{TodoInProgress, TodoPending}) {
+	if st := todoStatuses(got)[3:]; !reflect.DeepEqual(st, []TodoStatus{TodoInProgress, TodoPending}) {
 		t.Fatalf("integrate/accept = %v", st)
 	}
 }
@@ -223,7 +223,7 @@ func TestTodosDebugSpikeAndNoListCases(t *testing.T) {
 	if got := mustTodos(t, s, task.ID); got != nil {
 		t.Fatalf("task = %+v, want nil", got)
 	}
-	if got := mustTodos(t, s, ep.ID); len(got) != 3 {
+	if got := mustTodos(t, s, ep.ID); len(got) != 4 {
 		t.Fatalf("epic = %+v", got)
 	}
 }

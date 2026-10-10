@@ -775,11 +775,37 @@ func TestGitlessChoreFinishingClosesIt(t *testing.T) {
 	}
 }
 
-func TestGitlessIntegratedRefusedForEpicAndBug(t *testing.T) {
-	for _, intent := range []string{"feature", "debug"} {
-		if _, _, _, err := gitlessFixture(t, intent); err == nil || !strings.Contains(err.Error(), "needs git and verification") {
-			t.Errorf("%s: err = %v", intent, err)
+// CHORE-64: an epic or bug can finish without changing a repo too, on the orchestrator's own options.
+func TestGitlessIntegratedAllowedForEpicAndBug(t *testing.T) {
+	for _, typ := range []items.Type{items.Epic, items.Bug} {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		root, err := s.Items.Create(ctx, items.CreateInput{Type: typ, Title: "Answer a question"}, items.User("board"))
+		if err != nil {
+			t.Fatal(err)
 		}
+		orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: root.Key, Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses := mustSessionID(t, s, orch.ID)
+		if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "looking"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "answered, nothing to merge",
+			Verification:  []Verify{{Cmd: "make check", Phase: "green", OK: true}},
+			FinishOptions: []FinishOption{{Label: "Accept as done"}}}); err != nil {
+			t.Fatalf("%s: %v", typ, err)
+		}
+		if st := itemStatus(t, s, root.Key); st != items.InReview {
+			t.Errorf("%s: status = %s, want in_review", typ, st)
+		}
+	}
+}
+
+func TestGitlessIntegratedRefusedForSpike(t *testing.T) {
+	if _, _, _, err := gitlessFixture(t, "feature"); err == nil || !strings.Contains(err.Error(), "needs git and verification") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

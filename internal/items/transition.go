@@ -542,7 +542,7 @@ func (s *Store) rootState(ctx context.Context, q querier, it Item) (rootState, e
 	if err != nil {
 		return st, err
 	}
-	st.finished = fin == n && (n > 0 || it.Type == Chore) // a chore may have no tasks
+	st.finished = fin == n && (n > 0 || it.Type == Chore || it.Type == Epic || it.Type == Bug) // CHORE-64: any root may have no tasks
 	err = q.QueryRowContext(ctx, `SELECT id, git_json, COALESCE(finish_options_json, ''), created_at FROM checkpoints
 		WHERE item_id = ? AND kind = 'integrated' ORDER BY created_at DESC, rowid DESC LIMIT 1`, it.ID).
 		Scan(&st.ckpID, &st.ckpGit, &st.ckpOpts, &st.ckpAt)
