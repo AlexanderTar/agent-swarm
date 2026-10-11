@@ -160,6 +160,10 @@ export function Kanban(p: KanbanProps) {
   useEffect(() => {
     const pos = readJson(storage("localStorage"), SCROLL_KEY, { left: 0, top: 0 });
     scroller.current?.scrollTo?.(pos.left, pos.top);
+    // Phones: with no saved position, start at the first expanded column, not the collapsed stub.
+    if (!pos.left && window.matchMedia?.("(max-width: 639px)").matches) {
+      scroller.current?.querySelector('[data-testid^="col-"][data-collapsed="false"]')?.scrollIntoView?.({ inline: "start", block: "nearest" });
+    }
   }, [p.loaded]);
 
   async function move(card: Item, status: ItemStatus) {
@@ -261,7 +265,7 @@ export function Kanban(p: KanbanProps) {
           return (
             <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border">
               {group === "root" && (
-                <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left">
+                <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-md:h-auto max-md:min-h-11 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
                   {l.root ? <><Key>{l.root.key}</Key><span className="font-semibold">{l.root.title}</span></> : <span className="font-semibold">{C.unassignedLane}</span>}
                   <span className="font-normal text-muted-foreground">{collapsed && l.completedText ? l.completedText : l.header}</span>

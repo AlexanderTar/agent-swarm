@@ -103,7 +103,22 @@ describe("Kanban view (§16.7)", () => {
     expect(cell("EPIC-12", "done")).toHaveClass("max-sm:w-[132px]");
     expect(card("TASK-101")).toHaveClass("max-sm:w-full");
     const lane = within(screen.getByTestId("lane-EPIC-12")).getAllByRole("button")[0]!;
-    expect(lane).toHaveClass("max-sm:max-w-[100vw]", "max-sm:flex-wrap", "max-sm:whitespace-normal");
+    expect(lane).toHaveClass("max-sm:max-w-[100vw]", "max-sm:flex-wrap", "max-sm:whitespace-normal", "max-md:h-auto", "max-md:min-h-11");
+  });
+
+  it("opens on the first expanded column below sm, not the collapsed stub", async () => {
+    const into = vi.fn();
+    Element.prototype.scrollIntoView = into;
+    const orig = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      renderWithDaemon(<Host />, { events: false });
+      const ready = await screen.findByTestId("col-ready");
+      await waitFor(() => expect(into).toHaveBeenCalled());
+      expect(into.mock.contexts[0]).toBe(ready);
+    } finally {
+      window.matchMedia = orig;
+    }
   });
 
   it("shows every conditional card line", async () => {

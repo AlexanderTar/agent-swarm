@@ -248,6 +248,26 @@ test("kanban lane headers wrap inside the screen and collapsed names are not cut
   expect(cardBox.width).toBeGreaterThan(cell.width - 28);
 });
 
+test("kanban lane header text stays inside its button and the board opens on the first expanded column on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+  const lanes = await page.locator('[data-testid^="lane-"]').all();
+  for (const l of lanes) {
+    const btn = l.getByRole("button").first();
+    const fits = await btn.evaluate((b) => {
+      const r = b.getBoundingClientRect();
+      const kids = [...b.children].map((c) => c.getBoundingClientRect().bottom);
+      return { h: r.height, ok: Math.max(...kids) <= r.bottom + 0.5 };
+    });
+    expect(fits.h).toBeGreaterThanOrEqual(44);
+    expect(fits.ok).toBe(true);
+  }
+  const ready = (await page.getByTestId("col-ready").boundingBox())!;
+  expect(ready.x).toBeGreaterThanOrEqual(-1);
+  expect(ready.x).toBeLessThan(40);
+});
+
 test("Move to… works from the keyboard", async ({ page }) => {
   await page.goto("/#/kanban");
   // the card itself picks up "Move to… TASK-110" in its own accessible name (dnd-kit gives it
