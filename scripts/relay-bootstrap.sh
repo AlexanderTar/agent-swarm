@@ -8,7 +8,7 @@
 #   - Reads RAILWAY_API_TOKEN from ~/.config/railway-personal/token.
 #   - Uses workspace "My Projects" only; refuses to touch any other
 #     workspace (in particular never Endurio).
-#   - Finds or creates project `swarm-relay` (CLI first, GraphQL fallback).
+#   - Finds or creates project `Agent Swarm` (CLI first, GraphQL fallback).
 #   - Finds or creates service `relay` in the production environment.
 #   - Generates ~/.swarm/run/tunnel.secret (0600) when missing and sets it
 #     as the service's RELAY_SECRET (via stdin, never on argv).
@@ -29,8 +29,9 @@
 # Never prints secrets: logs (stderr) carry names and ids only.
 set -euo pipefail
 
-PROJECT_NAME="${RELAY_PROJECT_NAME:-swarm-relay}"
+PROJECT_NAME="${RELAY_PROJECT_NAME:-Agent Swarm}"
 SERVICE_NAME="${RELAY_SERVICE_NAME:-relay}"
+ICON_URL="${RELAY_ICON_URL:-https://raw.githubusercontent.com/AlexanderTar/agent-swarm/main/apps/menubar/Resources/AppIconLayers/Composed-1024.png}"
 WORKSPACE_NAME="${RAILWAY_WORKSPACE:-My Projects}"
 ENVIRONMENT_NAME="${RAILWAY_ENVIRONMENT:-production}"
 TOKEN_FILE="${RAILWAY_TOKEN_FILE:-$HOME/.config/railway-personal/token}"
@@ -185,6 +186,17 @@ HAVE="$(gql "$(jq -n --arg sid "$SERVICE_ID" -r \
   | jq -r --arg eid "$ENV_ID" '.service.serviceInstances.edges[].node | select(.environmentId == $eid) | "\(.dockerfilePath) \(.healthcheckPath)"')"
 [ "$HAVE" = "relay/Dockerfile /healthz" ] || die "build settings read back as '$HAVE'"
 log "service config: $CONFIG_PATH (as instance settings)"
+
+# 7b. Service icon. Projects have no icon field in the API, so only the
+# service gets one. Read-compare-set keeps re-runs free of writes.
+HAVE_ICON="$(gql "$(jq -n --arg sid "$SERVICE_ID" -r \
+    '"query { service(id: \($sid|@json)) { icon } }"')" | jq -r '.service.icon // empty')"
+if [ "$HAVE_ICON" != "$ICON_URL" ]; then
+  doc="$(jq -n --arg sid "$SERVICE_ID" --arg icon "$ICON_URL" -r \
+    '"mutation { serviceUpdate(id: \($sid|@json), input: {icon: \($icon|@json)}) { id } }"')"
+  gql "$doc" | jq -e '.serviceUpdate.id' >/dev/null || die "serviceUpdate icon failed"
+  log "service icon set"
+fi
 
 # 8. Generated domain: CLI first, GraphQL serviceDomainCreate fallback.
 find_domain_cli() {

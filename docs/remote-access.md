@@ -27,6 +27,10 @@ scripts/relay-bootstrap.sh   # idempotent: project, service, secret, config, dom
 make relay-deploy            # runs the bootstrap, then uploads and deploys
 ```
 
+The project is named `Agent Swarm` (workspace **My Projects**) with a
+service named `relay` carrying the Agent Swarm icon. The bootstrap finds
+the project by name, so re-runs stay idempotent after the rename.
+
 The bootstrap prints the `wss://…/_tunnel` URL at the end. Record the
 domain and the client-IP header (see "Which client-IP header") in the
 Deployment record above.
