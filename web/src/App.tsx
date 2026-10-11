@@ -16,6 +16,7 @@ import { NewItemSheet } from "./panels/NewItemSheet";
 import { NewSpikeSheet } from "./panels/NewSpikeSheet";
 import { Review } from "./panels/Review";
 import { SpawnSheet } from "./panels/SpawnSheet";
+import { SessionProvider } from "./state/session";
 import { filterOf, useBoardUrl } from "./state/url";
 import type { Item, ItemType } from "./types";
 import { Dependencies } from "./views/Dependencies";
@@ -140,18 +141,25 @@ export function App() {
 
 export default function Root() {
   const [auth, setAuth] = useState<"loading" | "login" | "ready">("loading");
+  const [who, setWho] = useState<{ remote: boolean; email?: string }>({ remote: false });
   const api = useMemo(() => createApi({ onUnauthenticated: () => setAuth("login") }), []);
   useEffect(() => {
     // If /api/auth/me itself fails the board renders anyway and shows its own connection errors.
-    api.session().then((s) => setAuth(s.authenticated ? "ready" : "login"), () => setAuth("ready"));
+    api.session().then((s) => {
+      setWho({ remote: s.origin !== "local", email: s.email });
+      setAuth(s.authenticated ? "ready" : "login");
+    }, () => setAuth("ready"));
   }, [api]);
   if (auth === "loading") return null;
   if (auth === "login") return <Login login={api.login} onSignedIn={() => setAuth("ready")} />;
+  const signOut = () => void api.logout().then(() => setAuth("login"), () => setAuth("login"));
   return (
-    <DataProvider api={api}>
-      <ToastProvider>
-        <App />
-      </ToastProvider>
-    </DataProvider>
+    <SessionProvider value={{ ...who, signOut }}>
+      <DataProvider api={api}>
+        <ToastProvider>
+          <App />
+        </ToastProvider>
+      </DataProvider>
+    </SessionProvider>
   );
 }

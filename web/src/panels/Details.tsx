@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useConnection, useInvalidate, useMutation } from "../data/hooks";
+import { useSession } from "../state/session";
 import { qk, useItemDetail } from "../data/queries";
 import { displayState, flattenAgents, isFinished } from "../logic/agentActions";
 import { agentActionToast } from "../logic/toasts";
@@ -89,6 +90,7 @@ export function Details(p: DetailsProps) {
   const invalidate = useInvalidate();
   const toast = useToast();
   const { live } = useConnection();
+  const { remote } = useSession();
   const [tab, setTab] = useState<"overview" | "agents" | "checkpoints" | "deps">("overview");
   const pendingAgentScroll = useRef<string | null>(null);
   const agentsNode = useRef<HTMLElement | null>(null);
@@ -227,7 +229,7 @@ export function Details(p: DetailsProps) {
               <ul className="list-disc pl-5">{item.acceptance.map((a) => <li key={a}>{a}</li>)}</ul>
             </div>
           )}
-          <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
+          <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={remote ? undefined : (name) => {
             if (!live.connected) return;
             const epoch = live.epoch;
             void terminal.run(name).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", name)); })

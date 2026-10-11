@@ -5,6 +5,7 @@ import { makeAgent } from "../logic/agentActions";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import type { SessionState } from "../types";
+import { SessionProvider } from "../state/session";
 import { AgentList, AgentRow } from "./AgentRow";
 
 const streamState = vi.hoisted(() => ({ current: "connecting" }));
@@ -287,5 +288,17 @@ describe("AgentList", () => {
       { events: false },
     );
     expect(screen.getByText("Finished (1)")).toBeInTheDocument();
+  });
+});
+
+describe("AgentRow in remote mode", () => {
+  it("hides Open terminal and keeps the other actions", () => {
+    renderWithDaemon(
+      <SessionProvider value={{ remote: true, signOut: () => {} }}>
+        <AgentRow agent={makeAgent({ name: "login-form-coder", session: ses("running") })} />
+      </SessionProvider>,
+    );
+    const labels = within(screen.getByTestId("agent-login-form-coder")).getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    expect(labels).toEqual(["Pause", "Cancel"]);
   });
 });

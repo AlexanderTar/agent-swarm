@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_URL, type BoardUrl } from "../state/url";
 import { pickOption } from "../test/select";
+import { SessionProvider } from "../state/session";
 import { Header } from "./Header";
 
 const narrow = (matches: boolean) =>
@@ -114,5 +115,32 @@ describe("Header at sm and up", () => {
     expect(screen.queryByRole("button", { name: /^Filters/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New orchestrator" })).toBeInTheDocument();
     for (const name of ["Type", "Status", "Card level", "Group by"]) expect(screen.getByRole("combobox", { name })).toBeInTheDocument();
+  });
+});
+
+describe.each([["phone", true], ["desktop", false]])("Header Sign out on %s", (_name, isNarrow) => {
+  const remote = (signOut = vi.fn()) => {
+    narrow(isNarrow);
+    render(
+      <SessionProvider value={{ remote: true, email: "me@example.com", signOut }}>
+        <Header url={DEFAULT_URL} setUrl={() => {}} matches={null} needsYou={0} onNewSpike={() => {}} onNewItem={() => {}} />
+      </SessionProvider>,
+    );
+    return signOut;
+  };
+
+  it("offers Sign out from an Account menu in remote mode", async () => {
+    const signOut = remote();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    expect(await screen.findByText("me@example.com")).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no Account menu in local mode", () => {
+    narrow(isNarrow);
+    setup();
+    expect(screen.queryByRole("button", { name: "Account" })).not.toBeInTheDocument();
   });
 });

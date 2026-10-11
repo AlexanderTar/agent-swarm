@@ -74,6 +74,7 @@ export const C = {
   signIn: "Sign in",
   signingIn: "Signing in…",
   signOut: "Sign out",
+  account: "Account",
   wrongLogin: "Wrong email or password.",
   tooManyAttempts: (seconds?: number) => {
     if (seconds === undefined) return "Too many attempts. Try again later.";

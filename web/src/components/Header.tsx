@@ -1,15 +1,16 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { ChevronDown, ListFilter, Search } from "lucide-react";
+import { ChevronDown, CircleUser, ListFilter, Search } from "lucide-react";
 import { C, STATUS_LABEL, T, TYPE_LABEL, TYPE_PLURAL } from "../copy";
 import { effectiveGrouping } from "../logic/kanban";
 import { useMediaQuery } from "../state/media";
+import { useSession } from "../state/session";
 import type { BoardUrl } from "../state/url";
 import { ITEM_STATUSES } from "../types";
 import type { CardLevel, Grouping, ItemStatus, ItemType, View } from "../types";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -126,6 +127,23 @@ function NewItemMenu(p: Pick<HeaderProps, "onNewSpike" | "onNewItem"> & { orches
   );
 }
 
+// Remote origins only: this Mac signs in with a token, so it has nothing to sign out of.
+function AccountMenu() {
+  const { remote, email, signOut } = useSession();
+  if (!remote) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="outline" size="icon" className="shrink-0" aria-label={C.account}><CircleUser className="size-4" /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" aria-label={C.account}>
+        {email && <><DropdownMenuLabel className="font-normal text-muted-foreground">{email}</DropdownMenuLabel><DropdownMenuSeparator /></>}
+        <DropdownMenuItem onSelect={signOut}>{C.signOut}</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ViewTabs({ url, setUrl, className }: Pick<HeaderProps, "url" | "setUrl"> & { className?: string }) {
   return (
     <Tabs value={url.view} onValueChange={(v) => setUrl({ view: v as View })} className={className}>
@@ -152,6 +170,7 @@ function NarrowHeader(p: HeaderProps) {
         </div>
         <FiltersPopover {...p} />
         <NewItemMenu onNewSpike={p.onNewSpike} onNewItem={p.onNewItem} orchestratorItem />
+        <AccountMenu />
       </div>
     </header>
   );
@@ -169,6 +188,7 @@ export function Header(p: HeaderProps) {
         <NeedsYouButton count={p.needsYou} onClick={() => setUrl({ view: "inbox" })} className="ml-auto" />
         <Button type="button" variant="outline" onClick={p.onNewSpike}>{C.newOrchestrator}</Button>
         <NewItemMenu onNewSpike={p.onNewSpike} onNewItem={p.onNewItem} />
+        <AccountMenu />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">

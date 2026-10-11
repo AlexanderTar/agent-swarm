@@ -62,6 +62,24 @@ describe("Root auth", () => {
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
   });
 
+  it("signs out from the Account menu and returns to Login", async () => {
+    const { calls } = remoteDaemon({ authenticated: true });
+    render(<Root />);
+    const user = userEvent.setup();
+    await screen.findByTestId("view");
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(calls).toContain("POST /api/auth/logout");
+  });
+
+  it("has no Account menu on this Mac", async () => {
+    vi.stubGlobal("fetch", mockFetch(createMockDaemon()));
+    render(<Root />);
+    await screen.findByTestId("view");
+    expect(screen.queryByRole("button", { name: "Account" })).toBeNull();
+  });
+
   it("stays in local mode without Login", async () => {
     vi.stubGlobal("fetch", mockFetch(createMockDaemon()));
     render(<Root />);
