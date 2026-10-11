@@ -26,7 +26,7 @@ function Rows({ title, rows, checked, onToggle }: { title: string; rows: Confirm
           <span>
             <span className="font-medium">{r.name}</span> <span className="text-muted-foreground">{r.subtitle}</span>
             {r.youSelected && <Badge variant="outline" className="ml-2">{C.youSelected}</Badge>}
-            {r.reason && <span className="block text-muted-foreground">{T.reason(r.reason)}</span>}
+            {r.reason && <span className="block leading-normal text-muted-foreground">{T.reason(r.reason)}</span>}
           </span>
         </Label>
       ))}

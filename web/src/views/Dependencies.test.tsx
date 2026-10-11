@@ -1,7 +1,9 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { useItems } from "../data/queries";
+import { seed } from "../mock/fixtures";
 import { createMockDaemon } from "../mock/daemon";
 import { clickNode, renderWithDaemon } from "../test/render";
 import { pickOption } from "../test/select";
@@ -28,6 +30,15 @@ describe("Dependencies view (§16.8)", () => {
     expect(screen.getByText("STORY-40 Login")).toBeInTheDocument();
     expect(screen.getByText("A → B: B waits for A")).toBeInTheDocument();
     expect(within(node("TASK-104")).getByLabelText("Needs you")).toBeInTheDocument();
+  });
+
+  it("insets the legend from the left and right safe areas like the toolbar", async () => {
+    renderWithDaemon(<Host selected="TASK-102" />, { events: false });
+    await screen.findByTestId("node-TASK-104");
+    expect(screen.getByText("A → B: B waits for A")).toHaveClass(
+      "pl-[max(0.75rem,env(safe-area-inset-left))]",
+      "pr-[max(0.75rem,env(safe-area-inset-right))]",
+    );
   });
 
   it("selects nodes and opens the root of an external node", async () => {
@@ -88,10 +99,67 @@ describe("Dependencies view (§16.8)", () => {
   it("shows the empty state and picks a start item", async () => {
     const onSelect = vi.fn();
     const a = renderWithDaemon(<Host selected="TASK-110" />, { events: false });
-    expect(await screen.findByText("No dependencies for this item.")).toBeInTheDocument();
+    const empty = await screen.findByText("No dependencies for this item.");
+    // Desktop matches main: the empty state is the message alone, no anchor key/title line.
+    expect(empty.parentElement!.querySelectorAll("p")).toHaveLength(1);
     a.unmount();
     renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith("EPIC-12"));
+  });
+
+  it("below 1100 it opens on the graph of the first root instead of selecting it", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
+      ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    const onSelect = vi.fn();
+    renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
+    // No root has an edge in the seed, so the empty state names the anchor (EPIC-12, the first root).
+    const empty = await screen.findByText("No dependencies for this item.");
+    expect(empty.parentElement).toHaveTextContent("EPIC-12 Authentication");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("below 1100 it anchors on the first root that has dependency edges", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
+      ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    // EPIC-12 is the first root but has no edge; BUG-8 waits for BUG-7, so BUG-8 is the first root with one.
+    const db = seed();
+    db.deps = [{ item: "BUG-8", blocked_by: "BUG-7" }];
+    const onSelect = vi.fn();
+    renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false, daemon: createMockDaemon(db) });
+    expect(await screen.findByTestId("node-BUG-8")).toBeInTheDocument();
+    expect(screen.getByTestId("node-BUG-7")).toBeInTheDocument();
+    expect(screen.queryByText("No dependencies for this item.")).not.toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("does not re-select a root after the selection is closed, and keeps the graph", async () => {
+    const onSelect = vi.fn();
+    function Closable() {
+      const [sel, setSel] = useState("");
+      const items = useItems();
+      if (!items.data) return null;
+      return (
+        <>
+          <button type="button" onClick={() => setSel("")}>Close details</button>
+          <Dependencies items={items.data.items} loaded filter={none} selected={sel} connected onSelect={(k) => { onSelect(k); setSel(k); }} />
+        </>
+      );
+    }
+    const { user } = renderWithDaemon(<Closable />, { events: false });
+    await screen.findByText("No dependencies for this item.");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith("EPIC-12");
+    await user.click(screen.getByRole("button", { name: "Close details" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("No dependencies for this item.")).toBeInTheDocument();
+  });
+
+  it("lays the toolbar out as one scroll row below md", async () => {
+    renderWithDaemon(<Host selected="TASK-102" />, { events: false });
+    await screen.findByTestId("node-TASK-104");
+    const bar = screen.getByRole("button", { name: "Fit" }).parentElement!;
+    expect(bar).toHaveClass("max-md:flex-nowrap", "max-md:overflow-x-auto");
   });
 
   it("surfaces a failed graph load with the daemon's reason and a working retry (standing rule)", async () => {

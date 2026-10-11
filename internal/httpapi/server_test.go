@@ -96,7 +96,7 @@ func TestBootstrapIsLoopbackOnly(t *testing.T) {
 		req.Header.Set("X-Forwarded-For", "127.0.0.1")
 		rec := httptest.NewRecorder()
 		e.s.Handler().ServeHTTP(rec, req)
-		wantErr(t, rec.Code, rec.Body.Bytes(), 401, "unauthorized", "Bootstrap is only available on this Mac.")
+		wantErr(t, rec.Code, rec.Body.Bytes(), 404, "not_found", "Unknown API route.")
 	}
 	for _, host := range []string{"localhost:7777", "[::1]:7777", "127.0.0.1", "localhost", "[::1]"} {
 		req := httptest.NewRequest("GET", "/api/bootstrap", nil)
@@ -234,7 +234,7 @@ func TestSessionAuth(t *testing.T) {
 		w.Write([]byte(c.SessionID))
 	}})
 	for token, want := range map[string]int{"live-token": 200, "old-token": 401, daemonToken: 401, "": 401} {
-		req := httptest.NewRequest("POST", "/hook/x", nil)
+		req := localReq("POST", "/hook/x", nil)
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}

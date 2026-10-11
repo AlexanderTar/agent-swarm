@@ -4,6 +4,7 @@ import { useConnection, useMutation } from "../data/hooks";
 import { useAgents } from "../data/queries";
 import { requestTarget } from "../logic/inbox";
 import { agentActionToast } from "../logic/toasts";
+import { useSession } from "../state/session";
 import type { Request } from "../types";
 import { useToast } from "./Toast";
 import { Button } from "./ui/button";
@@ -13,6 +14,7 @@ export function QuestionView({ request, connected }: { request: Request; connect
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
   const { live } = useConnection();
+  const { remote } = useSession();
   const options = Array.isArray(request.options) ? request.options : [];
   const target = requestTarget(request, agents.data ?? []);
   const open = target?.kind === "terminal" ? target.agent : undefined;
@@ -29,7 +31,7 @@ export function QuestionView({ request, connected }: { request: Request; connect
           </ul>
         </div>
       )}
-      <Button
+      {!remote && <Button
         type="button"
         variant="outline"
         size="sm"
@@ -41,7 +43,7 @@ export function QuestionView({ request, connected }: { request: Request; connect
         } }}
       >
         {C.openOrchestratorTerminal}
-      </Button>
+      </Button>}
       {target?.kind === "unavailable" && <p className="text-muted-foreground">{target.hint}</p>}
     </div>
   );

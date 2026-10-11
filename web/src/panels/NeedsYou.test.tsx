@@ -6,6 +6,7 @@ import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import type { InboxFilter } from "../types";
+import { SessionProvider } from "../state/session";
 import { NeedsYou } from "./NeedsYou";
 
 function Host(p: { initial?: string; connected?: boolean; onViewItem?: (k: string) => void }) {
@@ -30,6 +31,40 @@ function ConnectedHost() {
 }
 
 describe("NeedsYou inbox (§16.11)", () => {
+  it("below md the list fills the screen until a request is opened, then Back returns to it", async () => {
+    const { user } = renderWithDaemon(<Host />, { events: false });
+    const list = await screen.findByRole("list", { name: "Needs you" });
+    const listPane = list.parentElement!;
+    const reviewPane = screen.getByText("review:req_accept").parentElement!.parentElement!;
+    expect(listPane).toHaveClass("max-md:flex-1");
+    expect(listPane.className).not.toMatch(/max-h/);
+    expect(within(list).getAllByRole("button", { name: /Waiting for your input/ })[0]).toHaveClass("max-md:h-auto");
+    expect(listPane).not.toHaveClass("max-md:hidden");
+    expect(reviewPane).toHaveClass("max-md:hidden");
+    expect(screen.queryByRole("button", { name: "← Back" })).not.toBeInTheDocument();
+
+    await user.click(within(list).getAllByRole("button", { name: /Waiting for your input/ })[0]!);
+    expect(listPane).toHaveClass("max-md:hidden");
+    expect(reviewPane).not.toHaveClass("max-md:hidden");
+    const back = screen.getByRole("button", { name: "← Back" });
+    expect(back).toHaveClass("md:hidden");
+    await user.click(back);
+    expect(listPane).not.toHaveClass("max-md:hidden");
+    expect(reviewPane).toHaveClass("max-md:hidden");
+  });
+
+  it("pads the left inset on the list and the right inset on the detail pane at md and wider", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const listPane = (await screen.findByRole("list", { name: "Needs you" })).parentElement!;
+    const reviewPane = screen.getByText("review:req_accept").parentElement!.parentElement!;
+    // The 280px list column's right edge is interior at md+, so only the left inset applies there.
+    expect(listPane).toHaveClass("pl-[max(0.75rem,env(safe-area-inset-left))]", "md:pr-3");
+    // The column grows by the left inset so the 224px Segmented still fits (underscores: lightningcss drops calc() without spaces).
+    expect(listPane).toHaveClass("md:w-[calc(280px_+_env(safe-area-inset-left))]");
+    // The detail pane touches the right screen edge at md+ and the list on its left.
+    expect(reviewPane).toHaveClass("pr-[max(1rem,env(safe-area-inset-right))]", "md:pl-4");
+  });
+
   it("lists requests oldest first and shows the first one", async () => {
     const { user } = renderWithDaemon(<Host />, { events: false });
     const list = await screen.findByRole("list", { name: "Needs you" });
@@ -132,5 +167,13 @@ describe("NeedsYou inbox (§16.11)", () => {
     d.db.requests = [];
     renderWithDaemon(<Host />, { daemon: d, events: false });
     await waitFor(() => expect(screen.getAllByText("Nothing needs your attention.").length).toBeGreaterThan(0));
+  });
+});
+
+describe("NeedsYou in remote mode", () => {
+  it("lists requests without the per-row terminal buttons", async () => {
+    renderWithDaemon(<SessionProvider value={{ remote: true, signOut: () => {} }}><Host /></SessionProvider>, { events: false });
+    expect(await within(await screen.findByRole("list", { name: "Needs you" })).findAllByRole("listitem")).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Open agent terminal" })).not.toBeInTheDocument();
   });
 });

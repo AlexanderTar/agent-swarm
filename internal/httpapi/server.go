@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -9,7 +10,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -30,6 +30,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/agent-swarm/internal/webauth"
 )
 
 type Deps struct {
@@ -54,11 +55,25 @@ type Deps struct {
 	// Dev enables POST /api/dev/seed (Task 39). Set from daemonConfig.Dev,
 	// which only `make dev --dev` and a test's devDaemon pass; the launchd
 	// job never does. It gates nothing else.
-	Dev          bool
-	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
-	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
-	Log          func(format string, args ...any) // nil means log.Printf
-	Web          http.Handler                     // board for non-/api paths; nil means not built yet
+	Dev bool
+	// Auth is the web login and its cookie sessions; nil means a store over DB.
+	// HasCredentials defaults to Auth.HasCredentials.
+	Auth *webauth.Store
+	// HasCredentials reports whether a web login exists. Until it does, lan and
+	// tunnel callers get the "run swarm auth set" 503. Nil counts as false.
+	HasCredentials func(context.Context) bool
+	WriteTimeout   time.Duration                    // per SSE write; 0 means 10 s
+	PingInterval   time.Duration                    // SSE keep-alive; 0 means 25 s
+	Log            func(format string, args ...any) // nil means log.Printf
+	Web            http.Handler                     // board for non-/api paths; nil means not built yet
+
+	// Tunnel switches the relay tunnel for the local-only /api/tunnel routes;
+	// nil means this daemon has none.
+	Tunnel TunnelControl
+
+	// LAN switches LAN access for the local-only /api/lan routes; nil means
+	// this daemon has none.
+	LAN LANControl
 
 	// Run is how this package starts a process. The only one it starts is the
 	// Ghostty fallback for POST /api/agents/{name}/terminal (§10.4), and without
@@ -88,6 +103,7 @@ type route struct {
 
 type Server struct {
 	Deps
+	limiter   *webauth.Limiter
 	mux       *http.ServeMux
 	routes    []route
 	idemMu    sync.Mutex
@@ -130,16 +146,25 @@ func New(d Deps) *Server {
 	if d.Log == nil {
 		d.Log = log.Printf
 	}
-	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
+	if d.Auth == nil && d.DB != nil {
+		d.Auth = webauth.New(d.DB, time.Now)
+	}
+	if d.HasCredentials == nil && d.Auth != nil {
+		d.HasCredentials = func(ctx context.Context) bool { ok, _ := d.Auth.HasCredentials(ctx); return ok }
+	}
+	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{}), limiter: webauth.NewLimiter(time.Now)}
 	if d.MCP != nil {
 		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
 	}
 	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
-		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.bugRoutes(), s.agentIORoutes(), s.devRoutes())
+		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.authRoutes(), s.tunnelRoutes(), s.lanRoutes(), s.bugRoutes(), s.agentIORoutes(), s.devRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if s.setupRequired(w, r, RequestOrigin(r)) {
+			return
+		}
 		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
 			return
@@ -168,19 +193,30 @@ func bearer(r *http.Request) string {
 	return tok
 }
 
+var errCrossOrigin = apiErr(http.StatusForbidden, "forbidden", "Cross-origin request refused.")
 var errUnauthorized = apiErr(http.StatusUnauthorized, "unauthorized", "Missing or invalid token.")
 
 func (s *Server) wrap(rt route) http.HandlerFunc {
+	localOnly := localOnlyRoute(rt)
 	return func(w http.ResponseWriter, r *http.Request) {
+		origin := RequestOrigin(r)
+		if localOnly && origin != OriginLocal {
+			// indistinguishable from a route that does not exist
+			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
+			return
+		}
+		if s.setupRequired(w, r, origin) {
+			return
+		}
+		if _, err := r.Cookie(sessionCookie); err == nil && origin != OriginLocal &&
+			r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOrigin(r) {
+			s.writeErr(w, errCrossOrigin) // a cookie write needs a matching Origin (CSRF)
+			return
+		}
 		switch rt.auth {
 		case authDaemon:
-			if tok := bearer(r); tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) != 1 {
+			if !s.daemonAuthorized(r, origin) {
 				s.writeErr(w, errUnauthorized)
-				return
-			}
-		case authLoopback:
-			if !isLocal(r) {
-				s.writeErr(w, apiErr(http.StatusUnauthorized, "unauthorized", "Bootstrap is only available on this Mac."))
 				return
 			}
 		case authSession:
@@ -193,19 +229,16 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 	}
 }
 
-// isLocal requires a loopback peer and a loopback Host (guards against DNS rebinding).
-func isLocal(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-		return false
+// daemonAuthorized is the check behind authDaemon routes. The daemon token never
+// leaves this Mac, so it is honoured only from local; lan and tunnel callers
+// present the login cookie instead.
+func (s *Server) daemonAuthorized(r *http.Request, origin Origin) bool {
+	if origin != OriginLocal {
+		_, ok := s.cookieSession(r)
+		return ok
 	}
-	h := r.Host
-	if hh, _, err := net.SplitHostPort(h); err == nil {
-		h = hh
-	} else {
-		h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
-	}
-	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+	tok := bearer(r)
+	return tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) == 1
 }
 
 // sessionCaller is what a session token resolves to (P2 T34).

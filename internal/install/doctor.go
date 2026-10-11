@@ -36,6 +36,22 @@ type Doctor struct {
 	ClaudeSessions  ClaudeSessionsFunc                               // D4: the daemon's Claude sessions, for the live-session WARN
 	Procs           func(context.Context) ([]Proc, error)            // nil skips the orphan-process row
 	Session         func(context.Context, string) (SessionRef, bool) // session id -> agent and state
+	Tunnel          func(context.Context) (TunnelInfo, error)        // the daemon's tunnel state; nil skips the row
+	LAN             func(context.Context) (LANInfo, error)           // the daemon's LAN state; nil skips the row
+}
+
+// LANInfo is the part of the daemon's LAN status the doctor shows.
+type LANInfo struct {
+	State     string // disabled | waiting | listening | error
+	URL       string
+	LastError string
+}
+
+// TunnelInfo is the part of the daemon's tunnel status the doctor shows.
+type TunnelInfo struct {
+	State     string // disabled | connecting | connected | error
+	PublicURL string
+	LastError string
 }
 
 var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
@@ -47,6 +63,12 @@ func (d Doctor) Checks(ctx context.Context) []Check {
 	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
 		d.launchAgent(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
 	out = append(out, d.orphans(ctx)...)
+	if d.Tunnel != nil {
+		out = append(out, d.tunnel(ctx))
+	}
+	if d.LAN != nil {
+		out = append(out, d.lan(ctx))
+	}
 	for _, k := range d.installedKinds(ctx) {
 		switch k {
 		case KindClaude:
@@ -310,6 +332,45 @@ func (d Doctor) daemon(ctx context.Context) Check {
 		return down
 	}
 	return Check{"Daemon", true, fmt.Sprintf("Running (version %s, schema %d).", h.Version, h.Schema)}
+}
+
+// tunnel reports the relay tunnel: off is fine, a connection that failed is not.
+// With the daemon down the daemon row already fails, so this one stays quiet.
+func (d Doctor) tunnel(ctx context.Context) Check {
+	info, err := d.Tunnel(ctx)
+	if err != nil {
+		return Check{"Tunnel", true, "Not checked: the daemon isn't running."}
+	}
+	switch info.State {
+	case "connected":
+		return Check{"Tunnel", true, "Connected to " + info.PublicURL + "."}
+	case "connecting":
+		return Check{"Tunnel", true, "Connecting to " + info.PublicURL + "."}
+	case "error":
+		return Check{"Tunnel", false, "Can't reach " + info.PublicURL + ": " + info.LastError}
+	}
+	return Check{"Tunnel", true, "Off. Turn it on with swarm tunnel enable."}
+}
+
+// lan reports LAN access: off is fine, waiting for a network is fine, but a
+// listener that failed or a swarm.local that Bonjour refused is not.
+func (d Doctor) lan(ctx context.Context) Check {
+	info, err := d.LAN(ctx)
+	if err != nil {
+		return Check{"LAN", true, "Not checked: the daemon isn't running."}
+	}
+	switch info.State {
+	case "listening":
+		if info.LastError != "" {
+			return Check{"LAN", false, "Serving " + info.URL + ", but " + info.LastError}
+		}
+		return Check{"LAN", true, "Serving " + info.URL + "."}
+	case "waiting":
+		return Check{"LAN", true, "Waiting for a network."}
+	case "error":
+		return Check{"LAN", false, info.LastError}
+	}
+	return Check{"LAN", true, "Off. Turn it on with swarm lan enable."}
 }
 
 func (d Doctor) data() Check {

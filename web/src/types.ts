@@ -402,7 +402,7 @@ export interface ConfirmReposBody { repos: string[]; comment?: string; repos_ver
 
 export type ApiErrorCode =
   | "bad_request" | "unauthorized" | "not_found" | "conflict" | "transition_denied"
-  | "limit_reached" | "preflight_failed" | "internal";
+  | "limit_reached" | "preflight_failed" | "rate_limited" | "internal";
 export interface ApiErrorBody { error: { code: ApiErrorCode; message: string; reason?: string } }
 
 // SSE

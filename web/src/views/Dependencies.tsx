@@ -3,6 +3,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { NARROW, useMediaQuery } from "../state/media";
 import { errorText } from "../api";
 import { Key } from "../components/icons";
 import { Segmented } from "../components/Segmented";
@@ -14,7 +15,7 @@ import { C } from "../copy";
 import { useGraph } from "../data/queries";
 import { type ItemNodeData, LayoutCache, type StoryNodeData, dimmedKeys, storyOfFn, toFlow } from "../logic/graphLayout";
 import { buildIndex } from "../logic/tree";
-import type { GraphNode, GraphScope } from "../types";
+import type { GraphNode, GraphScope, Item } from "../types";
 import type { DependenciesProps } from "./props";
 
 function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
@@ -45,6 +46,14 @@ const StoryNode = ({ data }: NodeProps<Node<StoryNodeData>>) => (
 
 const nodeTypes = { item: ItemNode, story: StoryNode };
 
+// First root that waits for something or is waited on; the first root when none does.
+// ponytail: reads blocked_by, which lists unresolved dependencies only, so a root whose
+// dependencies are all resolved looks edge-free; upgrade by asking the daemon for the edges.
+function firstRootWithEdges(roots: Item[], items: Item[]): Item {
+  const blockers = new Set(items.flatMap((i) => i.blocked_by));
+  return roots.find((r) => r.blocked_by.length > 0 || blockers.has(r.key)) ?? roots[0]!;
+}
+
 function Graph(p: DependenciesProps) {
   const rf = useReactFlow();
   const [scope, setScope] = useState<GraphScope>("root");
@@ -52,19 +61,30 @@ function Graph(p: DependenciesProps) {
   const [picked, setPicked] = useState<GraphNode | null>(null);
   const [find, setFind] = useState("");
   const cache = useRef(new LayoutCache());
-  const graph = useGraph(p.selected || null, scope, hops);
+  // The graph stays on the last selection after Details is closed, and the start item is picked once:
+  // re-picking on every empty selection would reopen Details right after the user closes it.
+  const [anchor, setAnchor] = useState(p.selected);
+  const autoPicked = useRef(false);
+  // Selecting a root opens Details, which covers the whole screen below 1100 (phones in landscape too): show the graph first there.
+  const phone = useMediaQuery(NARROW);
+  const graph = useGraph(anchor || null, scope, hops);
   const idx = useMemo(() => buildIndex(p.items), [p.items]);
 
   useEffect(() => {
-    if (!p.selected && idx.roots[0]) p.onSelect(idx.roots[0].key);
-  }, [p.selected, idx, p.onSelect]);
+    if (p.selected) setAnchor(p.selected);
+    else if (!anchor && !autoPicked.current && idx.roots[0]) {
+      autoPicked.current = true;
+      if (phone) setAnchor(firstRootWithEdges(idx.roots, p.items).key);
+      else p.onSelect(idx.roots[0].key);
+    }
+  }, [p.selected, anchor, idx, p.items, p.onSelect, phone]);
   useEffect(() => setPicked(null), [p.selected]);
 
   const g = graph.data;
   const flow = useMemo(() => {
     if (!g) return null;
-    const rootKey = idx.byKey.get(p.selected)?.root_key ?? p.selected;
-    const cacheKey = scope === "root" ? `${rootKey}:root` : `${p.selected}:neighbourhood:${hops}`;
+    const rootKey = idx.byKey.get(anchor)?.root_key ?? anchor;
+    const cacheKey = scope === "root" ? `${rootKey}:root` : `${anchor}:neighbourhood:${hops}`;
     const storyOf = storyOfFn(idx.byKey, scope);
     const laid = cache.current.get(cacheKey, g, storyOf);
     const needsYou = new Set(p.items.filter((i) => i.open_requests > 0).map((i) => i.key));
@@ -74,9 +94,9 @@ function Graph(p: DependenciesProps) {
       needsYou,
       storyLabel: (k) => `${k} ${idx.byKey.get(k)?.title ?? ""}`,
     });
-  }, [g, idx, p.items, p.selected, p.filter, scope, hops]);
+  }, [g, idx, p.items, p.selected, anchor, p.filter, scope, hops]);
 
-  const touching = g?.edges.some((e) => e.from === p.selected || e.to === p.selected) ?? false;
+  const touching = g?.edges.some((e) => e.from === anchor || e.to === anchor) ?? false;
 
   const onFind = () => {
     const q = find.trim().toLowerCase();
@@ -102,7 +122,7 @@ function Graph(p: DependenciesProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border py-2 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-nowrap max-md:overflow-x-auto max-md:[&>*]:shrink-0">
         <span>{C.scope}</span>
         <Segmented
           label={C.scope}
@@ -118,8 +138,8 @@ function Graph(p: DependenciesProps) {
         </label>
         <Button type="button" variant="outline" disabled={scope !== "neighbourhood"} onClick={() => setHops((n) => n + 1)}>{C.expandHop}</Button>
         <Button type="button" variant="outline" onClick={() => void rf.fitView()}>{C.fit}</Button>
-        <Button type="button" variant="outline" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
-        <Button type="button" variant="outline" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>
+        <Button type="button" variant="outline" className="max-md:size-11" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
+        <Button type="button" variant="outline" className="max-md:size-11" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>
         <Button type="button" variant="outline" onClick={() => { setHops(1); void rf.fitView(); }}>{C.reset}</Button>
         <Input
           type="search"
@@ -134,9 +154,12 @@ function Graph(p: DependenciesProps) {
           <Button type="button" variant="link" onClick={() => p.onSelect(picked.root_key)}>{C.openRoot}</Button>
         )}
       </div>
-      <p className="px-3 py-1 text-muted-foreground">{C.depLegend}</p>
+      <p className="py-1 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] text-muted-foreground">{C.depLegend}</p>
       {g && !touching ? (
-        <p className="p-8 text-center">{C.noDeps}</p>
+        <div className="p-8 text-center">
+          <p>{C.noDeps}</p>
+          {phone && idx.byKey.get(anchor) && <p className="mt-1 text-muted-foreground"><Key>{anchor}</Key> {idx.byKey.get(anchor)!.title}</p>}
+        </div>
       ) : (
         <div className="min-h-[400px] flex-1">
           {flow && (

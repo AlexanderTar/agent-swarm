@@ -9,12 +9,15 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: ApiErrorCode;
   readonly reason: string | undefined;
-  constructor(status: number, code: ApiErrorCode, message: string, reason?: string) {
+  /** Seconds from a 429's Retry-After header. */
+  readonly retryAfter: number | undefined;
+  constructor(status: number, code: ApiErrorCode, message: string, reason?: string, retryAfter?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.reason = reason;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -27,7 +30,8 @@ export function errorText(e: unknown): string {
 async function toError(res: Response): Promise<ApiError> {
   try {
     const body = (await res.json()) as ApiErrorBody;
-    return new ApiError(res.status, body.error.code, body.error.message, body.error.reason);
+    const wait = Number(res.headers.get("Retry-After"));
+    return new ApiError(res.status, body.error.code, body.error.message, body.error.reason, wait > 0 ? wait : undefined);
   } catch {
     return new ApiError(res.status, "internal", res.statusText || `HTTP ${res.status}`);
   }
@@ -43,10 +47,44 @@ function query(params: Record<string, string | number | undefined>): string {
 const enc = encodeURIComponent;
 const via = { via: "board" as const };
 
-export interface ApiOptions { base?: string; fetchFn?: typeof fetch }
+/** GET /api/auth/me: "local" is this Mac (Bearer token); any other origin signs in with a session cookie. */
+export interface Session { origin: string; authenticated: boolean; email?: string }
 
-export function createApi({ base = "", fetchFn = (...a) => fetch(...a) }: ApiOptions = {}) {
+export interface ApiOptions { base?: string; fetchFn?: typeof fetch; onUnauthenticated?: () => void }
+
+export function createApi({ base = "", fetchFn = (...a) => fetch(...a), onUnauthenticated }: ApiOptions = {}) {
   let token: Promise<string> | null = null;
+  let me: Promise<Session> | null = null;
+
+  function session(): Promise<Session> {
+    me ??= (async () => {
+      const res = await fetchFn(`${base}/api/auth/me`, { credentials: "same-origin" });
+      if (!res.ok) throw await toError(res);
+      return (await res.json()) as Session;
+    })().catch((e: unknown) => {
+      me = null;
+      throw e;
+    });
+    return me;
+  }
+
+  const isCookieMode = async () => (await session()).origin !== "local";
+
+  // Cookie mode only: a session that expired or was revoked sends the board back to Login.
+  async function unauthorized(): Promise<void> {
+    if (await isCookieMode().catch(() => false)) onUnauthenticated?.();
+  }
+
+  async function post(path: string, body?: unknown): Promise<void> {
+    const res = await fetchFn(`${base}${path}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: body === undefined ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    me = null;
+    if (!res.ok) throw await toError(res);
+  }
 
   function getToken(): Promise<string> {
     token ??= (async () => {
@@ -61,7 +99,7 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a) }: ApiOpt
   }
 
   async function authHeaders(): Promise<Record<string, string>> {
-    return { Authorization: `Bearer ${await getToken()}` };
+    return (await isCookieMode()) ? {} : { Authorization: `Bearer ${await getToken()}` };
   }
 
   async function call<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
@@ -70,11 +108,15 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a) }: ApiOpt
     const res = await fetchFn(`${base}${path}`, {
       method,
       headers,
+      credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    if (res.status === 401 && !retried) {
-      token = null;
-      return call<T>(method, path, body, true);
+    if (res.status === 401) {
+      if (await isCookieMode()) onUnauthenticated?.();
+      else if (!retried) {
+        token = null;
+        return call<T>(method, path, body, true);
+      }
     }
     if (!res.ok) throw await toError(res);
     if (res.status === 202 || res.status === 204) return undefined as T;
@@ -83,6 +125,10 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a) }: ApiOpt
 
   return {
     authHeaders,
+    session,
+    unauthorized,
+    login: (email: string, password: string) => post("/api/auth/login", { email, password }),
+    logout: () => post("/api/auth/logout"),
     items: () => call<ItemsResponse>("GET", "/api/items?view=flat"),
     item: (key: string) => call<ItemDetail>("GET", `/api/items/${enc(key)}`),
     createItem: (b: CreateItemBody) => call<Item>("POST", "/api/items", b),

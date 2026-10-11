@@ -4,6 +4,7 @@ import { toast as sonner } from "sonner";
 import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
+import { SessionProvider } from "../state/session";
 import { QuestionView } from "./QuestionView";
 
 const question = () => createMockDaemon().db.requests.find((r) => r.id === "req_question")!;
@@ -21,6 +22,12 @@ describe("QuestionView (read-only, §16.11)", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "CRDT" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send answer" })).not.toBeInTheDocument();
+  });
+
+  it("has no terminal button in remote mode but still shows the question", () => {
+    renderWithDaemon(<SessionProvider value={{ remote: true, signOut: () => {} }}><QuestionView request={question()} connected /></SessionProvider>, { events: false });
+    expect(screen.getByText("Which sync strategy?")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open orchestrator terminal" })).not.toBeInTheDocument();
   });
 
   it("opens the terminal of terminal_agent", async () => {

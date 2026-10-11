@@ -67,15 +67,30 @@ export const C = {
   waivedRow: (gate: string, reason: string) => `Waived: ${gate} — ${reason}`,
   overrideRow: (status: string, reason: string) => `Overridden to ${status} — ${reason}`,
   appTitle: "Agent Swarm",
+  signInHint: "Sign in to open the board.",
+  email: "Email",
+  password: "Password",
+  signIn: "Sign in",
+  signingIn: "Signing in…",
+  signOut: "Sign out",
+  account: "Account",
+  wrongLogin: "Wrong email or password.",
+  tooManyAttempts: (seconds?: number) => {
+    if (seconds === undefined) return "Too many attempts. Try again later.";
+    const m = Math.ceil(seconds / 60);
+    return `Too many attempts. Try again in ${m} ${m === 1 ? "minute" : "minutes"}.`;
+  },
   needsYou: "Needs you",
   newOrchestrator: "New orchestrator",
   newChore: "New chore",
   newItem: "New item",
   search: "Search name or key…",
+  searchShort: "Search",
   type: "Type",
   status: "Status",
   all: "All",
   clearFilters: "Clear filters",
+  filters: "Filters",
   hierarchy: "Hierarchy",
   kanban: "Kanban",
   dependencies: "Dependencies",
@@ -285,6 +300,7 @@ export const T = {
   reposNoLonger: (n: number) =>
     `${n} selected ${n === 1 ? "repository is" : "repositories are"} no longer available.`,
   matches: (n: number) => `${n} matches`,
+  filtersActive: (n: number) => `Filters, ${n} active`,
   startedFrom: (key: string) => `Started from ${key}`,
   agentName: (kebab: string) => `Agent name: ${kebab}`,
   selected: (names: string) => `Selected: ${names}`,

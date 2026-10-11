@@ -65,7 +65,7 @@ function Form(p: {
       onClose={p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-xs text-muted-foreground">{C.queuedCaption}</span>}
+          {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
           <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
           <Button disabled={!valid || !connected || create.pending} onClick={() => void submit()}>
             {failure.banner ? C.tryAgain : submitLabel(busy)}
@@ -88,7 +88,7 @@ function Form(p: {
         <p className="text-xs text-muted-foreground">{T.agentName(kebab(name))}</p>
         {nameErr && <p className="text-xs text-destructive">{nameErr}</p>}
       </div>
-      <div className="grid grid-cols-[72px_1fr] items-start gap-x-2 gap-y-1">
+      <div className="grid grid-cols-[72px_1fr] items-start gap-x-2 gap-y-1 max-sm:grid-cols-1">
           <Label className="h-7 leading-7">{C.intent}</Label>
           <Segmented<SpikeIntent>
             label={C.intent}
@@ -96,7 +96,7 @@ function Form(p: {
             onChange={setIntent}
             options={[{ value: "chore", label: C.choreIntent }, { value: "feature", label: C.featureSpike }, { value: "debug", label: C.debugSpike }]}
           />
-          <p className="col-start-2 text-xs text-muted-foreground">{intent === "chore" ? C.choreCaption : intent === "feature" ? C.featureCaption : C.debugCaption}</p>
+          <p className="col-start-2 text-xs text-muted-foreground max-sm:col-start-1">{intent === "chore" ? C.choreCaption : intent === "feature" ? C.featureCaption : C.debugCaption}</p>
       </div>
       <RepoPicker label={C.repositoriesOptional} caption={intent === "chore" ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
       <AgentFields value={fields} onChange={setFields} settings={p.settings} catalog={p.catalog} />

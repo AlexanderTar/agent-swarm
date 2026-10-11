@@ -4,6 +4,7 @@ import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { agentActionToast } from "../logic/toasts";
+import { useSession } from "../state/session";
 import { useAgents, useRequests } from "../data/queries";
 import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
 import type { InboxFilter, Request } from "../types";
@@ -23,6 +24,7 @@ export function NeedsYou(p: {
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
   const { live } = useConnection();
+  const { remote } = useSession();
   const toast = useToast();
   const seen = useRef(new Map<string, Request>());
   for (const r of requests.data ?? []) seen.current.set(r.id, r);
@@ -52,7 +54,7 @@ export function NeedsYou(p: {
 
   return (
     <div className="flex h-full min-h-0 flex-col md:flex-row">
-      <div className="max-h-48 w-full shrink-0 space-y-2 overflow-y-auto border-b border-border p-3 md:max-h-none md:w-[280px] md:border-b-0 md:border-r">
+      <div className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border py-3 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-1 md:w-[calc(280px_+_env(safe-area-inset-left))] md:pr-3 md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -81,13 +83,13 @@ export function NeedsYou(p: {
                     variant="ghost"
                     aria-current={isCurrent}
                     onClick={() => p.onSelectRequest(r.id)}
-                    className="h-auto min-w-0 flex-1 flex-col items-stretch whitespace-normal text-left"
+                    className="h-auto min-w-0 flex-1 flex-col items-stretch whitespace-normal text-left max-md:h-auto"
                   >
                     <span className="block truncate text-muted-foreground">{line1}</span>
                     <span className="block truncate">{line2}</span>
                     <span className="block truncate">{line3}</span>
                   </Button>
-                  {target && (
+                  {target && !remote && (
                     <Button
                       type="button"
                       variant="ghost"
@@ -109,7 +111,8 @@ export function NeedsYou(p: {
           })}
         </ul>
       </div>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
+      <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto p-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] md:pl-4 ${p.selected === "" ? "max-md:hidden" : ""}`}>
+        {p.selected !== "" && <Button type="button" variant="ghost" size="sm" onClick={() => p.onSelectRequest("")} className="mb-2 max-md:-ml-3 md:hidden">{C.back}</Button>}
         {resolved ? (
           <div className="space-y-2">
             <p>{C.resolved}</p>

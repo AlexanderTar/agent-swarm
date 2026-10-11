@@ -5,6 +5,7 @@ import { C, ROLE_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { type AgentAction, agentActions, displayState, isFinished } from "../logic/agentActions";
 import { agentActionToast } from "../logic/toasts";
+import { useSession } from "../state/session";
 import type { AgentEndpoint, AgentNode } from "../types";
 import { AgentIcon } from "./icons";
 import { StateDot } from "./StatusLabel";
@@ -25,6 +26,7 @@ const ACTION_ICON: Record<AgentEndpoint, LucideIcon> = {
 export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: number }) {
   const { connected, live } = useConnection();
   const toast = useToast();
+  const { remote } = useSession();
   const act = useMutation(
     (api, action: AgentEndpoint, body?: object) => api.agentAction(agent.name, action, body),
     ["agents", "item:"],
@@ -73,7 +75,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         </span>
       </div>
       <div className="flex shrink-0 gap-1">
-        {agentActions(agent).map((a) => {
+        {agentActions(agent).filter((a) => !(remote && a.endpoint === "terminal")).map((a) => {
           const inFlight = a.endpoint === requested;
           const label = inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label;
           const Icon = inFlight || a.label === C.pausing ? LoaderCircle : ACTION_ICON[a.endpoint];

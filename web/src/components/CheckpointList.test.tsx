@@ -1,9 +1,24 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderWithDaemon } from "../test/render";
 import { CheckpointList } from "./CheckpointList";
 
 describe("CheckpointList (§16.9)", () => {
+  it("stacks the row parts below sm", async () => {
+    renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={[]} />, { events: false });
+    const row = await screen.findByRole("button", { name: /Form renders/ });
+    expect(row).toHaveClass("max-sm:flex-col", "max-sm:items-start", "max-md:h-auto", "max-md:min-h-11");
+  });
+
+  it("lets the advice title wrap instead of clipping", async () => {
+    renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={["login-form-coder"]} />, { events: false });
+    const rows = await screen.findAllByRole("group");
+    const title = within(rows.find((r) => /Advice/.test(r.textContent ?? ""))!).getByRole("button");
+    expect(title).toHaveClass("max-md:h-auto", "max-md:min-h-11", "max-md:whitespace-normal", "max-md:justify-start", "max-md:text-left");
+    for (const c of ["whitespace-normal", "justify-start", "text-left"]) expect(title).not.toHaveClass(c); // phone/tablet only
+    expect(title).not.toHaveClass("h-auto"); // desktop keeps size sm's h-7 (1440 pixel-identical)
+  });
+
   it("lists checkpoints and advice newest first with expandable details", async () => {
     const { user } = renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={["login-form-coder"]} />, { events: false });
     const rows = await screen.findAllByRole("group");

@@ -16,6 +16,11 @@ function lower(h: IncomingMessage["headers"]): Record<string, string> {
   return out;
 }
 
+// While /__mock/remote?on=1 is set the mock plays a tunnel/LAN origin: /api/auth/me reports it, the
+// board API wants the session cookie instead of the Bearer token, and login accepts one account.
+const SESSION_COOKIE = "swarm_session=mock";
+const LOGIN = { email: "me@example.com", password: "correct-horse-battery" };
+
 export function mockDaemon(): Plugin {
   return {
     name: "swarm-mock-daemon",
@@ -23,6 +28,7 @@ export function mockDaemon(): Plugin {
     configureServer(server) {
       if (process.env.SWARM_MOCK !== "1") return;
       let current: Promise<MockDaemon> | undefined;
+      let remote = false;
       const daemon = () =>
         (current ??= server.ssrLoadModule("/src/mock/daemon.ts").then((m) => (m.createMockDaemon as () => MockDaemon)()));
 
@@ -35,6 +41,10 @@ export function mockDaemon(): Plugin {
           return void res.end("ok");
         }
         const d = await daemon();
+        if (url.startsWith("/__mock/remote")) {
+          remote = new URL(url, "http://mock.test").searchParams.get("on") === "1";
+          return void res.end("ok");
+        }
         if (url === "/__mock/disconnect") return void (d.disconnect(), res.end("ok"));
         if (url === "/__mock/reconnect") return void (d.reconnect(), res.end("ok"));
         if (d.offline) {
@@ -42,6 +52,35 @@ export function mockDaemon(): Plugin {
           return void res.end();
         }
         const headers = lower(req.headers);
+        const json = (status: number, body?: unknown) => {
+          res.statusCode = status;
+          res.setHeader("Content-Type", "application/json");
+          res.end(body === undefined ? "" : JSON.stringify(body));
+        };
+        const signedIn = (headers.cookie ?? "").split(/;\s*/).includes(SESSION_COOKIE);
+        if (url === "/api/auth/me") {
+          return json(200, remote ? { origin: "tunnel", authenticated: signedIn, ...(signedIn && { email: LOGIN.email }) } : { origin: "local", authenticated: true });
+        }
+        if (url === "/api/auth/login" && req.method === "POST") {
+          const body = JSON.parse((await readBody(req)) || "{}") as { email?: string; password?: string };
+          if (body.email === "limited@example.com") {
+            res.setHeader("Retry-After", "540");
+            return json(429, { error: { code: "rate_limited", message: "Too many login attempts. Try again later." } });
+          }
+          if (body.email !== LOGIN.email || body.password !== LOGIN.password) {
+            return json(401, { error: { code: "unauthorized", message: "Wrong email or password." } });
+          }
+          res.setHeader("Set-Cookie", `${SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Lax`);
+          return json(204);
+        }
+        if (url === "/api/auth/logout" && req.method === "POST") {
+          res.setHeader("Set-Cookie", "swarm_session=; Path=/; Max-Age=0");
+          return json(204);
+        }
+        if (remote) {
+          if (!signedIn) return json(401, { error: { code: "unauthorized", message: "Sign in." } });
+          headers.authorization = `Bearer ${d.db.token}`; // the cookie stands in for the token
+        }
         if (url.startsWith("/api/events")) {
           if (headers.authorization !== `Bearer ${d.db.token}`) {
             res.statusCode = 401;

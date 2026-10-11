@@ -32,14 +32,17 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/lan"
 	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
 	"github.com/AlexanderTar/agent-swarm/internal/notify"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/spawn"
+	"github.com/AlexanderTar/agent-swarm/internal/tunnel"
 	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
 	"github.com/AlexanderTar/agent-swarm/internal/usagegate"
+	"github.com/AlexanderTar/agent-swarm/internal/webauth"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 	"github.com/AlexanderTar/agent-swarm/web"
 )
@@ -151,6 +154,8 @@ type daemon struct {
 	api *httpapi.Server
 	rt  *runtime.Store
 	up  *usagesvc.Poller
+	tn  *tunnel.Manager
+	lan *lan.Manager
 }
 
 // openDaemon prepares the home folder, opens the database and wires every service.
@@ -311,12 +316,20 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	hookH := &hook.Handler{DB: d, RT: rt, Adapters: rt.Adapters, Now: now, Log: cfg.Log, Advisor: adv,
 		WorktreesDir: filepath.Join(cfg.Home, "worktrees")}
 
-	api := httpapi.New(httpapi.Deps{Version: version, Token: token, DB: d, Events: ev,
+	// the manager needs the handler and the handler needs the manager, so the
+	// handler is filled in once the API exists
+	tn := &tunnel.Manager{DB: d, SecretPath: filepath.Join(cfg.Home, "run", "tunnel.secret"), Now: now, Log: cfg.Log}
+	lm := &lan.Manager{DB: d, Registrar: &lan.DNSSD{Log: cfg.Log}, Now: now, Log: cfg.Log,
+		PrimaryIP: func() (net.IP, error) { return lan.PrimaryIPv4(ctx, execx.Run) }}
+	api := httpapi.New(httpapi.Deps{Version: version, Tunnel: tn, LAN: lm, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
-		Run: execx.Run, After: time.After, Web: web.Handler(web.Dist)})
+		Auth: webauth.New(d, now),
+		Run:  execx.Run, After: time.After, Web: web.Handler(web.Dist)})
+	tn.Handler = api.Handler()
+	lm.Handler = tn.Handler
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
-		rt: rt, up: up}, nil
+		rt: rt, up: up, tn: tn, lan: lm}, nil
 }
 
 func serve(ctx context.Context, cfg daemonConfig) error {
@@ -376,7 +389,18 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 		bg.Go(func() { defer running.Add(-1); loop(loopCtx) })
 	}
 
-	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	if err := dm.tn.Start(loopCtx); err != nil {
+		cfg.Log("tunnel: %v", err)
+	}
+	defer dm.tn.Stop()
+	// the LAN listener shares the loopback listener's port, on the LAN address
+	dm.lan.Port = ln.Addr().(*net.TCPAddr).Port
+	if err := dm.lan.Start(loopCtx); err != nil {
+		cfg.Log("lan: %v", err)
+	}
+	defer dm.lan.Stop()
+	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second,
+		ConnContext: httpapi.ConnContext(httpapi.ListenerLoopback)}
 	if cfg.Ready != nil {
 		cfg.Ready(ln.Addr().String())
 	}

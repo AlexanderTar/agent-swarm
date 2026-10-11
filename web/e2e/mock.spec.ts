@@ -1,4 +1,17 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { noHorizontalOverflow } from "./helpers";
+
+// Desktop-only checks (32px density, mouse drag, side-by-side inbox) skip on the touch projects, which
+// cover the same flows through Move to…, the Filters popover and the no-overflow checks below.
+const desktopOnly = (testInfo: TestInfo, why: string) => test.skip(testInfo.project.name !== "mock", why);
+
+// Below sm the header has no New orchestrator button; it lives in the New item menu.
+async function openNewOrchestrator(page: Page) {
+  const button = page.getByRole("button", { name: "New orchestrator", exact: true });
+  if (await button.isVisible()) return button.click();
+  await page.getByRole("button", { name: "New item" }).click();
+  await page.getByRole("menuitem", { name: "New orchestrator" }).click();
+}
 
 test.beforeEach(async ({ request }) => {
   await request.get("/__mock/reset");
@@ -21,22 +34,62 @@ test("Details and form sheets use their separate narrow breakpoints", async ({ p
   }
 });
 
-test("form sheet controls fit a narrow viewport", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+for (const width of [375, 390]) test(`form sheet controls fit a narrow viewport at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
   await page.goto("/");
   const newItem = await page.getByRole("button", { name: "New item" }).boundingBox();
-  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(390);
-  await page.getByRole("button", { name: "New orchestrator" }).click();
+  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(width);
+  await openNewOrchestrator(page);
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   await page.screenshot({ animations: "disabled" });
   const model = sheet.getByRole("combobox", { name: "Model", exact: true });
   const modelBox = await model.boundingBox();
   const rescanBox = await sheet.getByRole("button", { name: "Rescan" }).boundingBox();
   expect(modelBox?.width).toBeGreaterThanOrEqual(160);
-  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(390);
+  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(width);
+  // Intent: label above the control, every option inside the sheet.
+  const sheetBox = (await sheet.boundingBox())!;
+  const label = await sheet.getByText("Intent", { exact: true }).boundingBox();
+  const group = sheet.getByRole("radiogroup", { name: "Intent" });
+  const groupBox = (await group.boundingBox())!;
+  expect(groupBox.y).toBeGreaterThanOrEqual(label!.y + label!.height - 1);
+  expect(groupBox.x).toBeLessThanOrEqual(label!.x + 1);
+  for (const radio of await group.getByRole("radio").all()) {
+    const box = (await radio.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(sheetBox.x + sheetBox.width - 8);
+  }
+  // Footer: helper text on its own line, buttons full width and stacked.
+  const cancel = (await sheet.getByRole("button", { name: "Cancel", exact: true }).boundingBox())!;
+  const submit = (await sheet.getByRole("button", { name: /^(Start|Queue)/ }).boundingBox())!;
+  expect(cancel.width).toBeGreaterThan(300);
+  expect(submit.width).toBeGreaterThan(300);
+  // Primary action first, Cancel last in the stack.
+  expect(cancel.y).toBeGreaterThanOrEqual(submit.y + submit.height - 1);
 });
 
-test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }) => {
+test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/hierarchy?item=TASK-101");
+  const details = page.getByRole("dialog", { name: "TASK-101" });
+  await details.getByRole("tab", { name: "Checkpoints" }).click();
+  const row = details.getByRole("group").first().getByRole("button").first();
+  await expect(row).toBeVisible();
+  const [time, summary] = [row.locator("span").nth(0), row.locator("span").last()];
+  const t = (await time.boundingBox())!;
+  const s = (await summary.boundingBox())!;
+  expect(s.y).toBeGreaterThanOrEqual(t.y + t.height - 1);
+  // Every part stays inside the bordered group, and the advice title wraps instead of clipping.
+  const group = (await details.getByRole("group").first().boundingBox())!;
+  for (const box of [t, s, (await row.locator("span").nth(2).boundingBox())!]) expect(box.y + box.height).toBeLessThanOrEqual(group.y + group.height);
+  for (const advice of await details.getByRole("button", { name: /^Advice/ }).all()) {
+    const { scrollWidth, clientWidth } = await advice.evaluate((e) => ({ scrollWidth: e.scrollWidth, clientWidth: e.clientWidth }));
+    expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+  }
+  await noHorizontalOverflow(page);
+});
+
+test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "32px density is desktop-only");
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(11, 11, 14)");
@@ -95,7 +148,8 @@ test("foundation controls keep dark palette, contrast and density under a light 
   expect(darkColors).toEqual(lightColors);
 });
 
-test("hierarchy, filters and view switching keep the selection", async ({ page }) => {
+test("hierarchy, filters and view switching keep the selection", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mobile", "Details covers the header on phones; see the Filters popover test");
   await page.goto("/#/hierarchy?item=TASK-102");
   await expect(page.getByRole("treeitem", { name: /^EPIC-12 / })).toBeVisible();
   await expect(page.getByTestId("details-panel")).toContainText("Persist session");
@@ -103,6 +157,20 @@ test("hierarchy, filters and view switching keep the selection", async ({ page }
   await expect(page).toHaveURL(/#\/kanban\?item=TASK-102$/);
   await page.getByRole("searchbox", { name: "Search name or key…" }).fill("session");
   await expect(page.getByText("1 matches")).toBeVisible();
+});
+
+test("phone filters live in a popover with a count and the match total", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/hierarchy");
+  await expect(page.getByRole("combobox", { name: "Type" })).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Search name or key…" }).fill("session");
+  await page.getByRole("button", { name: "Filters" }).click();
+  await page.getByRole("combobox", { name: "Type" }).click();
+  await page.getByRole("option", { name: "Tasks" }).click();
+  await expect(page).toHaveURL(/type=task/);
+  await expect(page.getByText(/\d+ matches/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Filters, 2 active" })).toBeVisible();
 });
 
 async function drag(page: import("@playwright/test").Page, from: string, to: string) {
@@ -116,7 +184,8 @@ async function drag(page: import("@playwright/test").Page, from: string, to: str
   return async () => page.mouse.up();
 }
 
-test("dragging an allowed card shows Updating… and settles", async ({ page }) => {
+test("dragging an allowed card shows Updating… and settles", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "mouse drag; touch uses Move to…");
   await page.goto("/#/kanban");
   const drop = await drag(page, "card-TASK-103", "cell-EPIC-12-blocked");
   await drop();
@@ -125,13 +194,112 @@ test("dragging an allowed card shows Updating… and settles", async ({ page }) 
   await expect(page.getByText("Moved TASK-103 to Blocked")).toBeVisible();
 });
 
-test("dragging to a refused column shows the lock, returns the card and toasts", async ({ page }) => {
+test("dragging to a refused column shows the lock, returns the card and toasts", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "mouse drag; touch uses Move to…");
   await page.goto("/#/kanban");
   const drop = await drag(page, "card-TASK-101", "cell-EPIC-12-ready");
   await expect(page.getByTestId("cell-EPIC-12-ready")).toContainText("Couldn't update status. The item remains In progress.");
   await drop();
   await expect(page.getByText("Couldn't update status. The item remains In progress.").last()).toBeVisible();
   await expect(page.getByTestId("cell-EPIC-12-in_progress").getByTestId("card-TASK-101")).toBeVisible();
+});
+
+test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  const ready = page.getByTestId("col-ready");
+  await expect(ready).toBeVisible();
+  const viewport = page.viewportSize()!.width;
+  const box = await ready.boundingBox();
+  expect(Math.round(box!.width)).toBe(Math.round(viewport * 0.85));
+  await expect(ready.locator("xpath=../../..")).toHaveCSS("scroll-snap-type", /x mandatory/);
+  const done = page.getByTestId("col-done");
+  await done.scrollIntoViewIfNeeded();
+  await expect(done.getByText(/^Done · \d+$/)).toBeVisible();
+  const more = page.getByTestId("card-TASK-103").getByRole("button", { name: "Move to… TASK-103" });
+  await more.scrollIntoViewIfNeeded();
+  const moreBox = await more.boundingBox();
+  expect(moreBox!.width).toBeGreaterThanOrEqual(44);
+  expect(moreBox!.height).toBeGreaterThanOrEqual(44);
+  await more.click();
+  await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
+  await expect(page.getByTestId("cell-EPIC-12-blocked").getByTestId("card-TASK-103")).toBeVisible();
+  await noHorizontalOverflow(page);
+});
+
+test("kanban lane headers wrap inside the screen and collapsed names are not cut on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  const viewport = page.viewportSize()!.width;
+  const lane = page.getByTestId("lane-EPIC-12").getByRole("button").first();
+  await expect(lane).toBeVisible();
+  const laneBox = (await lane.boundingBox())!;
+  expect(laneBox.width).toBeLessThanOrEqual(viewport);
+  expect(await lane.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  for (const s of ["draft", "done", "cancelled"]) {
+    const col = page.getByTestId(`col-${s}`);
+    await col.scrollIntoViewIfNeeded();
+    expect(await col.evaluate((e) => e.scrollWidth <= e.clientWidth), s).toBe(true);
+    await expect(col).toContainText("·");
+  }
+  const card = page.getByTestId("card-TASK-101");
+  const cell = (await page.getByTestId("cell-EPIC-12-in_progress").boundingBox())!;
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.width).toBeGreaterThan(cell.width - 28);
+});
+
+test("kanban lane header text stays inside its button and every lane header is on screen after load on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+  const lanes = await page.locator('[data-testid^="lane-"]').all();
+  for (const l of lanes) {
+    const btn = l.getByRole("button").first();
+    const fits = await btn.evaluate((b) => {
+      const r = b.getBoundingClientRect();
+      const kids = [...b.children].map((c) => c.getBoundingClientRect().bottom);
+      return { h: r.height, ok: Math.max(...kids) <= r.bottom + 0.5 };
+    });
+    expect(fits.h).toBeGreaterThanOrEqual(44);
+    expect(fits.ok).toBe(true);
+  }
+  for (const width of [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    await page.reload();
+    await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+    for (const l of await page.locator('[data-testid^="lane-"]').all()) {
+      const box = (await l.getByRole("button").first().boundingBox())!;
+      expect(box.x, `${width}`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${width}`).toBeLessThanOrEqual(width + 0.5);
+    }
+  }
+});
+
+test("kanban lane headers stay on screen at every horizontal scroll offset and after reload below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "below md only");
+  const onScreen = async (width: number, label: string) => {
+    for (const l of await page.locator('[data-testid^="lane-"]').all()) {
+      const box = (await l.getByRole("button").first().boundingBox())!;
+      expect(box.x, label).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, label).toBeLessThanOrEqual(width + 0.5);
+    }
+  };
+  for (const width of testInfo.project.name === "tablet" ? [767, 700] : [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+    for (const s of ["draft", "ready", "in_progress", "blocked", "done", "cancelled"]) {
+      const col = page.getByTestId(`col-${s}`);
+      await col.evaluate((e) => e.scrollIntoView({ inline: "start", block: "nearest" }));
+      await page.waitForTimeout(300);
+      await onScreen(width, `${width} scrolled to ${s}`);
+      await page.reload();
+      await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+      await page.waitForTimeout(300);
+      await onScreen(width, `${width} reloaded at ${s}`);
+    }
+  }
 });
 
 test("Move to… works from the keyboard", async ({ page }) => {
@@ -165,6 +333,33 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   await expect(page.getByText("Already resolved.")).toBeVisible();
 });
 
+test("phone inbox lists full height, opens a review full-width and Back returns", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below md)");
+  await page.goto("/#/inbox");
+  const list = page.getByRole("list", { name: "Needs you" });
+  await expect(list).toBeVisible();
+  const view = await page.getByTestId("view").boundingBox();
+  const listBox = await list.boundingBox();
+  expect(listBox!.height).toBeGreaterThan(300);
+  // The row button must grow with its three lines instead of squeezing them to nothing.
+  const lines = await list.getByRole("button", { name: /Waiting for your input/ }).first().locator("span").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+  for (const h of lines) expect(h).toBeGreaterThanOrEqual(16);
+  await expect(page.getByRole("button", { name: "← Back" })).toBeHidden();
+  await list.getByRole("button", { name: /Waiting for your input/ }).first().click();
+  await expect(page).toHaveURL(/req=/);
+  await expect(list).toBeHidden();
+  const back = page.getByRole("button", { name: "← Back" });
+  await expect(back).toBeVisible();
+  const backBox = await back.boundingBox();
+  expect(backBox!.height).toBeGreaterThanOrEqual(44);
+  const review = await page.getByRole("heading", { level: 2 }).last().boundingBox();
+  expect(review!.x + review!.width).toBeLessThanOrEqual(view!.x + view!.width);
+  await noHorizontalOverflow(page);
+  await back.click();
+  await expect(page).not.toHaveURL(/req=/);
+  await expect(list).toBeVisible();
+});
+
 test("epic review fits and works at 390px", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/inbox?req=req_accept");
@@ -183,12 +378,13 @@ test("epic review fits and works at 390px", async ({ page }) => {
   await changes.focus();
   await expect(changes).toBeFocused();
   await changes.click();
-  await expect(page.getByRole("textbox", { name: "Comment" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Comment", exact: true })).toBeVisible();
   await accept.click();
   await expect(page.getByText("Already resolved.")).toBeVisible();
 });
 
-test("desktop inbox keeps its list beside the selected review", async ({ page }) => {
+test("desktop inbox keeps its list beside the selected review", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "desktop layout");
   await page.goto("/#/inbox?req=req_accept");
   await page.getByRole("radio", { name: "Approvals" }).click();
   const list = page.getByRole("list", { name: "Needs you" });
@@ -197,10 +393,14 @@ test("desktop inbox keeps its list beside the selected review", async ({ page })
   const listBox = await list.boundingBox();
   const titleBox = await title.boundingBox();
   expect(listBox && titleBox && listBox.x + listBox.width).toBeLessThan(titleBox?.x ?? 0);
+  // The list pane is not capped to the phone's max-h-48 (192px) on desktop.
+  const pane = await list.locator("xpath=..").boundingBox();
+  expect(pane!.height).toBeGreaterThan(300);
   await page.screenshot({ path: "test-results/needs-you-desktop.png", animations: "disabled" });
 });
 
-test("the dependency graph renders and expands a hop", async ({ page }) => {
+test("the dependency graph renders and expands a hop", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "Details covers the graph below 1100px; P8 covers Dependencies on phones");
   await page.goto("/#/dependencies?item=TASK-104");
   await expect(page.getByTestId("node-TASK-98")).toBeVisible();
   await page.getByRole("radio", { name: "Neighbourhood" }).click();
@@ -225,7 +425,7 @@ test("losing the connection shows the banner and disables moves", async ({ page,
 
 test("a new spike is created and selected", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "New orchestrator" }).click();
+  await openNewOrchestrator(page);
   await page.getByRole("textbox", { name: "Name" }).fill("Offline sync");
   await page.getByRole("button", { name: /orchestrator$/ }).click();
   await expect(page).toHaveURL(/item=SPIKE-\d+/);
@@ -257,7 +457,55 @@ test("toast uses the popover surface in the browser", async ({ page }) => {
   expect(await toast.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(23, 23, 29)");
 });
 
-test("Hierarchy icon controls have 32px hit areas within 30px rows", async ({ page }) => {
+test("hierarchy rows fold status under the title and are 44px tall on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/hierarchy");
+  await expect(page.getByTestId("view")).toBeVisible();
+  await expect(page.getByText("WORK ITEM")).toBeHidden();
+  const row = page.getByRole("treeitem", { name: /^TASK-102 / });
+  const rowBox = await row.boundingBox();
+  expect(rowBox!.height).toBeGreaterThanOrEqual(44);
+  const key = await row.getByText("TASK-102", { exact: true }).boundingBox();
+  const title = await row.locator("span.truncate").boundingBox();
+  const status = await row.getByText("Blocked", { exact: true }).boundingBox();
+  expect(status!.y).toBeGreaterThanOrEqual(title!.y + title!.height - 2);
+  expect(key!.height).toBeLessThan(24);
+  // The folded status pill lines up under the type icon, for leaves and for rows with a chevron.
+  for (const k of ["TASK-102", "EPIC-12"]) {
+    const r = page.getByRole("treeitem", { name: new RegExp(`^${k} `) });
+    const icon = (await r.getByRole("img", { name: /^(Epic|Story|Task|Bug|Spike|Chore)$/ }).first().boundingBox())!;
+    const pill = (await r.getByText(/^(Blocked|In progress|Ready|Draft|Done|In review)$/).first().boundingBox())!;
+    expect(Math.abs(pill.x - icon.x), k).toBeLessThanOrEqual(4);
+  }
+  await noHorizontalOverflow(page);
+});
+
+test("hierarchy rows are at least 44px tall between sm and md too", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "touch layout");
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.goto("/#/hierarchy");
+  await expect(page.getByTestId("view")).toBeVisible();
+  const box = (await page.getByRole("treeitem", { name: /^TASK-102 / }).boundingBox())!;
+  expect(box.height).toBeGreaterThanOrEqual(44);
+});
+
+test("dependencies opens on the graph, not Details, and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout");
+  await page.goto("/#/dependencies");
+  const details = page.getByRole("dialog", { name: /^(EPIC|BUG|STORY|TASK)-\d+$/ });
+  await expect(page.getByRole("button", { name: "Fit" })).toBeVisible();
+  await page.waitForTimeout(600);
+  await expect(details).toHaveCount(0);
+  expect(page.url()).not.toContain("item=");
+  const bar = page.getByRole("button", { name: "Fit" }).locator("xpath=..");
+  const box = await bar.boundingBox();
+  expect(box!.height).toBeLessThanOrEqual(64);
+  expect(await bar.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  await noHorizontalOverflow(page);
+});
+
+test("Hierarchy icon controls have 32px hit areas within 30px rows", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "32px hit areas are desktop-only");
   await page.goto("/#/hierarchy");
   const row = page.getByRole("treeitem", { name: /^EPIC-12 / });
   const expand = row.getByRole("button", { name: "Collapse EPIC-12" });
@@ -319,7 +567,7 @@ test("artifact wraps long text in a bounded scroller and keeps close keyboard fo
   await expect(dialog).toBeVisible();
   const close = dialog.getByRole("button", { name: "Close" });
   await expect(close).not.toBeFocused();
-  expect(await dialog.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(900);
+  expect(await dialog.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(page.viewportSize()!.height);
   const scroller = dialog.locator('[data-artifact-content]');
   await expect(scroller).toBeVisible();
   const dimensions = await scroller.evaluate(el => ({ width: el.clientWidth, scrollWidth: el.scrollWidth, height: el.clientHeight, scrollHeight: el.scrollHeight }));
@@ -407,7 +655,8 @@ for (const start of [false, true]) {
       });
       await page.setViewportSize({ width, height: 844 });
       await page.goto(start ? "/#/hierarchy?item=EPIC-12" : "/");
-      await page.getByRole("button", { name: start ? "Start orchestrator" : "New orchestrator", exact: true }).click();
+      if (start) await page.getByRole("button", { name: "Start orchestrator", exact: true }).click();
+      else await openNewOrchestrator(page);
       const sheet = page.getByRole("dialog", { name: start ? "Start orchestrator" : "New orchestrator", exact: true });
       await expect(sheet).toBeVisible();
       await expect.poll(async () => Math.round((await sheet.boundingBox())!.x)).toBe(width === 1440 ? 540 : 0);
@@ -471,3 +720,127 @@ for (const width of [1440, 390]) {
     }
   });
 }
+
+for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
+  test(`${view} view has no horizontal page overflow`, async ({ page }) => {
+    await page.goto(`/#/${view}`);
+    await expect(page.getByTestId("view")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Agent Swarm" })).toBeVisible();
+    await page.waitForTimeout(500);
+    await noHorizontalOverflow(page);
+  });
+}
+
+for (const width of [375, 430, 768]) {
+  for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
+    test(`${view} view has no horizontal page overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/#/${view}`);
+      await expect(page.getByTestId("view")).toBeVisible();
+      await page.waitForTimeout(400);
+      await noHorizontalOverflow(page);
+    });
+  }
+  for (const [name, hash] of [["New item", "New item"], ["New orchestrator", "New orchestrator"]] as const) {
+    test(`${name} sheet has no horizontal overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/");
+      if (hash === "New orchestrator") await openNewOrchestrator(page);
+      else {
+        await page.getByRole("button", { name: "New item" }).click();
+        await page.getByRole("menuitem", { name: "Task" }).click();
+      }
+      await expect(page.getByRole("dialog", { name: name === "New item" ? "New item" : "New orchestrator" })).toBeVisible();
+      await noHorizontalOverflow(page);
+    });
+  }
+}
+
+for (const width of [375, 390, 430]) {
+  test(`the phone header fits its tabs, search and Filters popover at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    const header = page.getByRole("banner");
+    await expect(header.getByRole("button", { name: "Filters" })).toBeVisible();
+    expect((await header.boundingBox())?.height).toBeLessThanOrEqual(140);
+    const list = (await header.getByRole("tablist").boundingBox())!;
+    const needsYou = (await header.getByRole("button", { name: /^Needs you/ }).boundingBox())!;
+    const tabs = header.getByRole("tab");
+    for (let i = 0; i < await tabs.count(); i++) {
+      const box = (await tabs.nth(i).boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(list.x - 0.5);
+      expect(box.x + box.width).toBeLessThanOrEqual(list.x + list.width + 0.5);
+      expect(box.x + box.width).toBeLessThanOrEqual(needsYou.x);
+    }
+    const search = header.getByRole("searchbox");
+    expect((await search.boundingBox())!.width).toBeGreaterThanOrEqual(170);
+    // the placeholder must fit the field whole, focused or not: a focused input drops the ellipsis and hard-cuts a glyph
+    const overflow = () => search.evaluate((el: HTMLInputElement) => {
+      const cs = getComputedStyle(el);
+      const probe = document.createElement("span");
+      probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+      probe.textContent = el.placeholder;
+      document.body.append(probe);
+      const textWidth = probe.getBoundingClientRect().width;
+      probe.remove();
+      const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      return textWidth - room;
+    });
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await search.focus();
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await search.blur();
+    await header.getByRole("button", { name: "Filters" }).click();
+    const panel = (await page.getByRole("dialog", { name: "Filters" }).boundingBox())!;
+    expect(panel.x).toBeGreaterThanOrEqual(16);
+    expect(panel.x + panel.width).toBeLessThanOrEqual(width - 16);
+    await noHorizontalOverflow(page);
+  });
+}
+
+// Below md every touch control is at least 44x44 (DS "Mobile / touch"). The tablet project is 768 wide,
+// which is md, so it is checked at 700 to stay below the breakpoint.
+test("touch targets are at least 44x44 below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "touch layout");
+  if (testInfo.project.name === "tablet") await page.setViewportSize({ width: 700, height: 900 });
+  const expect44 = async (locator: ReturnType<Page["locator"]>, what: string) => {
+    // Layout size, not getBoundingClientRect: menus and listboxes scale in while they open.
+    const boxes = await locator.evaluateAll((els) => els.map((e) => ({ w: (e as HTMLElement).offsetWidth, h: (e as HTMLElement).offsetHeight })));
+    expect(boxes.length, `${what} present`).toBeGreaterThan(0);
+    for (const b of boxes) {
+      expect(b.w, `${what} width`).toBeGreaterThanOrEqual(44);
+      expect(b.h, `${what} height`).toBeGreaterThanOrEqual(44);
+    }
+  };
+
+  await page.goto("/#/hierarchy");
+  const row = page.getByRole("treeitem", { name: /^EPIC-12 / });
+  await expect44(row.getByRole("button", { name: "3", exact: true }), "agents-count");
+  await row.getByRole("button", { name: "Add child to EPIC-12" }).click();
+  await expect44(page.getByRole("menuitem"), "menu item");
+  await page.keyboard.press("Escape");
+
+  await page.goto("/#/dependencies?item=TASK-104");
+  const details = page.getByRole("dialog", { name: "TASK-104" });
+  await expect(details).toBeVisible();
+  await details.getByRole("button", { name: "Close" }).first().click();
+  await expect44(page.getByRole("radio"), "segmented item");
+  await expect44(page.getByRole("button", { name: /^[−+]$/ }), "zoom button");
+  await page.getByRole("radio", { name: "Neighbourhood" }).click();
+  await page.getByRole("combobox", { name: "Hops" }).click();
+  await expect44(page.getByRole("option"), "select option");
+});
+
+// The RepoPicker option rows are touch targets below md (New orchestrator sheet, Confirm repositories).
+test("RepoPicker option rows are at least 44px tall below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "touch layout");
+  if (testInfo.project.name === "tablet") await page.setViewportSize({ width: 700, height: 900 });
+  await page.goto("/");
+  await openNewOrchestrator(page);
+  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+  const options = sheet.getByRole("option");
+  await expect(options.first()).toBeVisible();
+  const heights = await options.evaluateAll((els) => els.map((e) => (e as HTMLElement).offsetHeight));
+  expect(heights.length).toBeGreaterThan(0);
+  for (const h of heights) expect(h).toBeGreaterThanOrEqual(44);
+});

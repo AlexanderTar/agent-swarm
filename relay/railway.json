@@ -1,0 +1,13 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "relay/Dockerfile"
+  },
+  "deploy": {
+    "healthcheckPath": "/healthz",
+    "restartPolicyType": "ALWAYS",
+    "numReplicas": 1,
+    "overlapSeconds": 0
+  }
+}

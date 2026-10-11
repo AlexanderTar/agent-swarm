@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createApi, errorText } from "./api";
 import { ConnectionBanner, ItemsErrorBanner, OutsideViewBanner } from "./components/Banners";
 import { Header } from "./components/Header";
@@ -10,11 +10,13 @@ import { useAgents, useItems, useRequests } from "./data/queries";
 import { needsYou } from "./logic/inbox";
 import { filterItems, isFilterActive, outsideView } from "./logic/tree";
 import { Details } from "./panels/Details";
+import { Login } from "./panels/Login";
 import { NeedsYou } from "./panels/NeedsYou";
 import { NewItemSheet } from "./panels/NewItemSheet";
 import { NewSpikeSheet } from "./panels/NewSpikeSheet";
 import { Review } from "./panels/Review";
 import { SpawnSheet } from "./panels/SpawnSheet";
+import { SessionProvider } from "./state/session";
 import { filterOf, useBoardUrl } from "./state/url";
 import type { Item, ItemType } from "./types";
 import { Dependencies } from "./views/Dependencies";
@@ -97,7 +99,7 @@ export function App() {
   const outside = showDetails && outsideView(url.item, all, filter, url.view, url.level);
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-dvh flex-col">
       {conn.state === "closed" && <ConnectionBanner onRetry={conn.retry} />}
       {items.error ? <ItemsErrorBanner message={errorText(items.error)} onRetry={items.reload} /> : null}
       <Header
@@ -138,12 +140,27 @@ export function App() {
 }
 
 export default function Root() {
-  const api = useMemo(() => createApi(), []);
+  const [auth, setAuth] = useState<"loading" | "login" | "ready">("loading");
+  const [who, setWho] = useState<{ remote: boolean; email?: string }>({ remote: false });
+  const api = useMemo(() => createApi({ onUnauthenticated: () => setAuth("login") }), []);
+  const load = useCallback(() => {
+    // If /api/auth/me itself fails the board renders anyway and shows its own connection errors.
+    api.session().then((s) => {
+      setWho({ remote: s.origin !== "local", email: s.email });
+      setAuth(s.authenticated ? "ready" : "login");
+    }, () => setAuth("ready"));
+  }, [api]);
+  useEffect(load, [load]);
+  if (auth === "loading") return null;
+  if (auth === "login") return <Login login={api.login} onSignedIn={load} />;
+  const signOut = () => void api.logout().then(() => setAuth("login"), () => setAuth("login"));
   return (
-    <DataProvider api={api}>
-      <ToastProvider>
-        <App />
-      </ToastProvider>
-    </DataProvider>
+    <SessionProvider value={{ ...who, signOut }}>
+      <DataProvider api={api}>
+        <ToastProvider>
+          <App />
+        </ToastProvider>
+      </DataProvider>
+    </SessionProvider>
   );
 }

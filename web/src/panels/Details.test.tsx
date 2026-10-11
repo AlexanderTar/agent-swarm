@@ -5,6 +5,7 @@ import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import { comboText, pickOption } from "../test/select";
+import { SessionProvider } from "../state/session";
 import type { DetailsProps } from "../views/props";
 import { Details } from "./Details";
 
@@ -171,6 +172,27 @@ describe("Details panel (§16.9)", () => {
     await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
     await user.click(screen.getByRole("button", { name: "builder" }));
     await waitFor(() => expect(d.calls).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/agents/builder/terminal" })));
+  });
+  it("shows a workflow run's agent as plain text in remote mode, with no terminal to open", async () => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/TASK-103", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 2, escalation: "", runs: [
+        { step: "build", role: "coder", agent: "builder", state: "active", verdict: "", sha: "", round: 2, findings: [] },
+      ] },
+      crew: [{ agent: "builder", role: "coder", step: "build", state: "active" }],
+    } });
+    const { user } = renderWithDaemon(
+      <SessionProvider value={{ remote: true, signOut: () => {} }}>
+        <Details itemKey="TASK-103" connected onClose={vi.fn()} onSelect={vi.fn()} onReview={vi.fn()} onStartOrchestrator={vi.fn()} />
+      </SessionProvider>,
+      { daemon: d, events: false },
+    );
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
+    expect(screen.getAllByText("builder").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "builder" })).not.toBeInTheDocument();
   });
   it.each([{ failed: false, reconnect: false }, { failed: true, reconnect: false }, { failed: false, reconnect: true }, { failed: true, reconnect: true }])
   ("suppresses workflow terminal completion after disconnect (failed: $failed, reconnect: $reconnect)", async ({ failed, reconnect }) => {

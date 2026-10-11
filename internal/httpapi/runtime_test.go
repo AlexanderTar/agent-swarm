@@ -343,7 +343,7 @@ func TestAgentsRoutesRequireTheDaemonToken(t *testing.T) {
 	s, _ := newRuntimeServer(t)
 	for _, p := range []string{"/api/state", "/api/agents"} {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		s.Handler().ServeHTTP(rec, localReq("GET", p, nil))
 		if rec.Code != 401 {
 			t.Errorf("%s without a token = %d", p, rec.Code)
 		}

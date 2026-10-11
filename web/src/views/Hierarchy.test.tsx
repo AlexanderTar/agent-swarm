@@ -39,6 +39,25 @@ describe("Hierarchy view (§16.6)", () => {
     expect(within(row("TASK-102")).getByText("Blocked")).toBeInTheDocument();
   });
 
+  it("folds the columns below sm: status under the title, rows at least 44px", () => {
+    setup();
+    expect(screen.getByText("WORK ITEM").parentElement).toHaveClass("max-sm:hidden");
+    const r = row("TASK-102");
+    expect(r).toHaveClass("max-sm:grid-cols-[1fr_auto]", "max-md:h-auto", "max-md:min-h-11");
+    const status = within(r).getByText("Blocked").parentElement!;
+    expect(status).toHaveClass("max-sm:col-start-1", "max-sm:row-start-2", "max-sm:pl-[calc(var(--indent)+42px)]");
+    expect(within(r).getByText("TASK-102").parentElement).toHaveClass("max-sm:whitespace-nowrap");
+  });
+
+  it("reserves the same trailing slots below sm on rows with and without Add child", () => {
+    setup();
+    const slots = (key: string) => Array.from(row(key).lastElementChild!.children).map((c) => c.className);
+    // TASK-102 is a task (no Add child button); EPIC-12 has one. The agents, needs-you and add slots exist on both.
+    expect(slots("EPIC-12")).toHaveLength(3);
+    expect(slots("TASK-102")).toEqual(slots("EPIC-12"));
+    expect(slots("TASK-102")[2]).toContain("max-sm:w-11");
+  });
+
   it("shows agent counts with a tooltip that open the Agents section", async () => {
     const { user, props } = setup();
     const count = within(row("EPIC-12")).getByRole("button", { name: "3" });

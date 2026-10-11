@@ -103,7 +103,7 @@ describe("Sheet", () => {
     render(<Sheet title="A long sheet title that could reach the close button" subtitle="Helpful context" onClose={vi.fn()}>body</Sheet>);
     const dialog = screen.getByRole("dialog", { name: /A long sheet title/ });
     expect(dialog).toHaveAccessibleDescription("Helpful context");
-    expect(dialog.querySelector("[data-slot=sheet-header]")).toHaveClass("pr-16");
+    expect(dialog.querySelector("[data-slot=sheet-header]")).toHaveClass("pr-[max(4rem,calc(env(safe-area-inset-right)_+_3.5rem))]");
   });
 
   it("wraps a long unbroken title before the Close target", () => {
