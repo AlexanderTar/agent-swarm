@@ -25,5 +25,6 @@ describe("app icon", () => {
     const png = readFileSync("public/apple-touch-icon.png");
     expect(png.subarray(1, 4).toString()).toBe("PNG");
     expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([180, 180]); // IHDR width, height
+    expect(png[25]).toBe(2); // IHDR colour type 2 = RGB: iOS fills alpha with black, so the square must be opaque
   });
 });
