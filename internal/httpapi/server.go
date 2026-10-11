@@ -30,6 +30,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/agent-swarm/internal/webauth"
 )
 
 type Deps struct {
@@ -55,6 +56,9 @@ type Deps struct {
 	// which only `make dev --dev` and a test's devDaemon pass; the launchd
 	// job never does. It gates nothing else.
 	Dev bool
+	// Auth is the web login and its cookie sessions. With it set, HasCredentials
+	// defaults to Auth.HasCredentials.
+	Auth *webauth.Store
 	// HasCredentials reports whether a web login exists. Until it does, lan and
 	// tunnel callers get the "run swarm auth set" 503. Nil counts as false.
 	HasCredentials func(context.Context) bool
@@ -133,12 +137,15 @@ func New(d Deps) *Server {
 	if d.Log == nil {
 		d.Log = log.Printf
 	}
+	if d.HasCredentials == nil && d.Auth != nil {
+		d.HasCredentials = func(ctx context.Context) bool { ok, _ := d.Auth.HasCredentials(ctx); return ok }
+	}
 	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
 	if d.MCP != nil {
 		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
 	}
 	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
-		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.bugRoutes(), s.agentIORoutes(), s.devRoutes())
+		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.authRoutes(), s.bugRoutes(), s.agentIORoutes(), s.devRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
@@ -190,8 +197,7 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 		}
 		switch rt.auth {
 		case authDaemon:
-			// the daemon token never leaves this Mac
-			if tok := bearer(r); origin != OriginLocal || tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) != 1 {
+			if !s.daemonAuthorized(r, origin) {
 				s.writeErr(w, errUnauthorized)
 				return
 			}
@@ -203,6 +209,18 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 		}
 		rt.h(w, r)
 	}
+}
+
+// daemonAuthorized is the check behind authDaemon routes. The daemon token never
+// leaves this Mac, so it is honoured only from local; lan and tunnel callers
+// present the login cookie instead.
+func (s *Server) daemonAuthorized(r *http.Request, origin Origin) bool {
+	if origin != OriginLocal {
+		_, ok := s.cookieSession(r)
+		return ok
+	}
+	tok := bearer(r)
+	return tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) == 1
 }
 
 // sessionCaller is what a session token resolves to (P2 T34).

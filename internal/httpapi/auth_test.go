@@ -1,0 +1,216 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/webauth"
+)
+
+const (
+	testEmail    = "me@example.com"
+	testPassword = "correct horse battery"
+)
+
+// authEnv is a server with a login set. Its store uses bcrypt's minimum cost for speed.
+func authEnv(t *testing.T) (*env, *webauth.Store) {
+	t.Helper()
+	withOwnIPs(t, "192.168.1.20")
+	var store *webauth.Store
+	e := newEnv(t, func(d *Deps) { store = webauth.New(d.DB, time.Now).WithCost(4); d.Auth = store })
+	if err := store.SetCredentials(bg, testEmail, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	return e, store
+}
+
+func serve(e *env, r *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, r)
+	return rec
+}
+
+// asRemote re-targets a request onto the lan or tunnel connection remoteReq models.
+func asRemote(origin Origin, method, path, body string) *http.Request {
+	r := remoteReq(origin, method, path, "")
+	if body != "" {
+		r2 := httptest.NewRequest(method, path, strings.NewReader(body))
+		r2.RemoteAddr, r2.Host, r2.Header = r.RemoteAddr, r.Host, r.Header
+		r2.Header.Set("Content-Type", "application/json")
+		r = r2.WithContext(r.Context())
+	}
+	// a browser on the same origin sends this on a write
+	if method != "GET" && method != "HEAD" {
+		r.Header.Set("Origin", "http://"+r.Host)
+	}
+	return r
+}
+
+func loginBody(email, pw string) string {
+	b, _ := json.Marshal(map[string]string{"email": email, "password": pw})
+	return string(b)
+}
+
+// login signs in from origin and returns the session cookie.
+func login(t *testing.T, e *env, origin Origin) *http.Cookie {
+	t.Helper()
+	rec := serve(e, asRemote(origin, "POST", "/api/auth/login", loginBody(testEmail, testPassword)))
+	if rec.Code != 204 {
+		t.Fatalf("login = %d %s", rec.Code, rec.Body)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "swarm_session" {
+			return c
+		}
+	}
+	t.Fatal("login set no swarm_session cookie")
+	return nil
+}
+
+func withCookie(r *http.Request, c *http.Cookie) *http.Request {
+	r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	return r
+}
+
+func TestAuthRoutes(t *testing.T) {
+	e, store := authEnv(t)
+
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		t.Run(string(origin), func(t *testing.T) {
+			// bad logins are 401 and set no cookie
+			for _, body := range []string{loginBody(testEmail, "wrong password!!"), loginBody("x@y.co", testPassword), `{}`} {
+				rec := serve(e, asRemote(origin, "POST", "/api/auth/login", body))
+				wantErr(t, rec.Code, rec.Body.Bytes(), 401, "unauthorized", "Wrong email or password.")
+				if len(rec.Result().Cookies()) != 0 {
+					t.Fatalf("a failed login set a cookie: %v", rec.Result().Cookies())
+				}
+			}
+
+			// me before login
+			rec := serve(e, asRemote(origin, "GET", "/api/auth/me", ""))
+			if rec.Code != 200 || rec.Body.String() != "{\"authenticated\":false,\"origin\":\""+string(origin)+"\"}\n" {
+				t.Fatalf("me = %d %q", rec.Code, rec.Body)
+			}
+
+			// login: 204 and a cookie with the right attributes
+			rec = serve(e, asRemote(origin, "POST", "/api/auth/login", loginBody(" ME@example.com ", testPassword)))
+			if rec.Code != 204 {
+				t.Fatalf("login = %d %s", rec.Code, rec.Body)
+			}
+			cs := rec.Result().Cookies()
+			if len(cs) != 1 {
+				t.Fatalf("cookies = %v", cs)
+			}
+			c := cs[0]
+			wantSecure := origin == OriginTunnel
+			if c.Name != "swarm_session" || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Path != "/" ||
+				c.Secure != wantSecure || c.MaxAge != 30*24*3600 || len(c.Value) < 43 {
+				t.Fatalf("cookie = %+v; want HttpOnly SameSite=Lax Path=/ Secure=%v MaxAge=30d", c, wantSecure)
+			}
+			if strings.Contains(rec.Body.String(), c.Value) {
+				t.Fatal("the token must only travel in the cookie")
+			}
+
+			// me with the cookie
+			rec = serve(e, withCookie(asRemote(origin, "GET", "/api/auth/me", ""), c))
+			var me struct {
+				Origin        string
+				Authenticated bool
+				Email         string
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || me.Origin != string(origin) || !me.Authenticated || me.Email != testEmail {
+				t.Fatalf("me = %s", rec.Body)
+			}
+
+			// logout clears the cookie and revokes the session
+			rec = serve(e, withCookie(asRemote(origin, "POST", "/api/auth/logout", ""), c))
+			cs = rec.Result().Cookies()
+			if rec.Code != 204 || len(cs) != 1 || cs[0].Name != "swarm_session" || cs[0].MaxAge >= 0 || cs[0].Value != "" ||
+				!cs[0].HttpOnly || cs[0].Secure != wantSecure {
+				t.Fatalf("logout = %d %+v", rec.Code, cs)
+			}
+			if _, ok := store.LookupSession(bg, c.Value); ok {
+				t.Fatal("logout must delete the session")
+			}
+			rec = serve(e, withCookie(asRemote(origin, "GET", "/api/settings", ""), c))
+			wantErr(t, rec.Code, rec.Body.Bytes(), 401, "unauthorized", "Missing or invalid token.")
+		})
+	}
+
+	// this Mac needs no login
+	rec := serve(e, localReq("GET", "/api/auth/me", nil))
+	if rec.Code != 200 || rec.Body.String() != "{\"authenticated\":true,\"origin\":\"local\"}\n" {
+		t.Fatalf("local me = %d %q", rec.Code, rec.Body)
+	}
+}
+
+func TestCookieAuthAcceptedOnAllowedRoutesOnly(t *testing.T) {
+	e, _ := authEnv(t)
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		c := login(t, e, origin)
+		// a normal route accepts the cookie in place of the daemon token
+		if rec := serve(e, withCookie(asRemote(origin, "GET", "/api/settings", ""), c)); rec.Code != 200 {
+			t.Errorf("%s: settings with cookie = %d %s", origin, rec.Code, rec.Body)
+		}
+		// no cookie, a forged cookie and a cookie on a write without matching Origin... (see CSRF test) all fail
+		if rec := serve(e, asRemote(origin, "GET", "/api/settings", "")); rec.Code != 401 {
+			t.Errorf("%s: settings without cookie = %d", origin, rec.Code)
+		}
+		if rec := serve(e, withCookie(asRemote(origin, "GET", "/api/settings", ""), &http.Cookie{Name: "swarm_session", Value: "forged"})); rec.Code != 401 {
+			t.Errorf("%s: forged cookie = %d", origin, rec.Code)
+		}
+		// a daemon token in the Bearer slot is still not accepted remotely
+		if rec := serve(e, withCookie(remoteReq(origin, "GET", "/api/settings", "not-the-token"), c)); rec.Code != 200 {
+			t.Errorf("%s: a stray Bearer must not override a valid cookie, got %d", origin, rec.Code)
+		}
+		// local-only routes stay invisible even with a valid cookie
+		for _, p := range []string{"/api/bootstrap", "/api/bugs", "/api/kb/status"} {
+			rec := serve(e, withCookie(asRemote(origin, "GET", p, ""), c))
+			wantErr(t, rec.Code, rec.Body.Bytes(), 404, "not_found", "Unknown API route.")
+		}
+	}
+	// a cookie from a local origin is not how this Mac authenticates: it needs the daemon token
+	c := login(t, e, OriginLAN)
+	r := localReq("GET", "/api/settings", nil)
+	r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	if rec := serve(e, r); rec.Code != 401 {
+		t.Fatalf("local with only a cookie = %d, want 401", rec.Code)
+	}
+}
+
+func TestEventsStreamAcceptsSessionCookie(t *testing.T) {
+	e, _ := authEnv(t)
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		c := login(t, e, origin)
+		r := withCookie(asRemote(origin, "GET", "/api/events", ""), c)
+		ctx, cancel := context.WithTimeout(r.Context(), 150*time.Millisecond) // the stream never ends on its own
+		rec := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(rec, r.WithContext(ctx))
+		cancel()
+		if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/event-stream" {
+			t.Errorf("%s: events with only the cookie = %d %s", origin, rec.Code, rec.Header().Get("Content-Type"))
+		}
+		if rec := serve(e, asRemote(origin, "GET", "/api/events", "")); rec.Code != 401 {
+			t.Errorf("%s: events without a cookie = %d, want 401", origin, rec.Code)
+		}
+	}
+}
+
+func TestRemoteHasCredentialsComesFromTheStore(t *testing.T) {
+	withOwnIPs(t, "192.168.1.20")
+	var store *webauth.Store
+	e := newEnv(t, func(d *Deps) { store = webauth.New(d.DB, time.Now).WithCost(4); d.Auth = store })
+	rec := serve(e, asRemote(OriginTunnel, "GET", "/api/auth/me", ""))
+	wantErr(t, rec.Code, rec.Body.Bytes(), 503, "setup_required", "")
+	if err := store.SetCredentials(bg, testEmail, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	if rec := serve(e, asRemote(OriginTunnel, "GET", "/api/auth/me", "")); rec.Code != 200 {
+		t.Fatalf("me after SetCredentials = %d %s", rec.Code, rec.Body)
+	}
+}

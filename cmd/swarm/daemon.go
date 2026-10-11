@@ -40,6 +40,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/spawn"
 	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
 	"github.com/AlexanderTar/agent-swarm/internal/usagegate"
+	"github.com/AlexanderTar/agent-swarm/internal/webauth"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 	"github.com/AlexanderTar/agent-swarm/web"
 )
@@ -314,7 +315,8 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	api := httpapi.New(httpapi.Deps{Version: version, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
-		Run: execx.Run, After: time.After, Web: web.Handler(web.Dist)})
+		Auth: webauth.New(d, now),
+		Run:  execx.Run, After: time.After, Web: web.Handler(web.Dist)})
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
 		rt: rt, up: up}, nil
 }

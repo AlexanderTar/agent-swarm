@@ -167,3 +167,6 @@ func (s *Store) SessionCount(ctx context.Context) (int, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_sessions WHERE expires_at > ?`, db.Millis(s.now())).Scan(&n)
 	return n, err
 }
+
+// WithCost sets the bcrypt cost; tests use bcrypt.MinCost so a hash isn't 250 ms.
+func (s *Store) WithCost(cost int) *Store { s.cost = cost; return s }
