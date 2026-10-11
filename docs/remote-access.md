@@ -5,9 +5,20 @@ relay, from the LAN through `swarm.local`, or locally as today.
 
 ## Deployment record (TASK-873)
 
-- Relay domain: filled on first deploy (see "Deploy the relay" below).
-- Railway's client-IP header: filled on first deploy (`X-Real-IP` or the
-  right-most `X-Forwarded-For` hop; the relay already handles both).
+- Relay domain: `relay-production-7911.up.railway.app` (project `Agent
+  Swarm`, service `relay`, workspace **My Projects**).
+- Tunnel URL: `wss://relay-production-7911.up.railway.app/_tunnel`
+  (the value `scripts/relay-bootstrap.sh --tunnel-url` prints).
+- Railway's client-IP header: **`X-Real-IP`**. Verified live: with the
+  per-client login budget exhausted (5×401 then 429), a bad login
+  carrying a spoofed `X-Real-IP: 1.2.3.4` still got 429, so the edge
+  overwrote it with the real client IP; Railway's docs likewise list
+  `X-Real-IP` (and not `X-Forwarded-For`) as the client-remote-IP
+  header. The relay's first branch handles it.
+- Icons: the `relay` service carries the Agent Swarm icon
+  (`apps/menubar/Resources/AppIconLayers/Composed-1024.png`); Railway's
+  GraphQL has no project icon field, so the project has none. The
+  project description is "Agent Swarm remote access relay".
 
 ## Prereqs
 
@@ -41,7 +52,7 @@ One-time setup on the Mac (local only):
 
 ```sh
 swarm auth set        # email + password (12+ chars); enables remote access
-swarm tunnel enable --url 'wss://<domain>/_tunnel'
+swarm tunnel enable --url 'wss://<domain>'   # base URL: no /_tunnel path
 swarm lan enable      # optional: serve the LAN IP, advertise swarm.local
 ```
 
@@ -75,15 +86,11 @@ swarm auth logout-all   # revoke every remote session
 ## Which client-IP header Railway sets
 
 The relay picks the caller IP as `X-Real-IP`, else the right-most
-`X-Forwarded-For` hop, else the peer. To confirm which one Railway's
-edge actually sets, tunnel a scratch daemon through the live relay and
-compare the login rate-limit client (or a test echo of the received
-`X-Forwarded-For`) against the phone's public IP: when only `X-Real-IP`
-is present it wins; when only `X-Forwarded-For` arrives the right-most
-hop wins. Record the winner in the Deployment record above. If neither
-header arrives, remote access still works (peer fallback) but per-client
-rate limiting degrades to the global cap; file a task for a coder, since
-relay header handling is Go code.
+`X-Forwarded-For` hop, else the peer. Live against this deployment the
+winner is **`X-Real-IP`** (see the Deployment record above for the
+experiment). If Railway ever stops sending it, remote access still works
+(peer fallback) but per-client rate limiting degrades to the global cap;
+file a task for a coder, since relay header handling is Go code.
 
 ## Troubleshooting
 
@@ -94,8 +101,9 @@ relay header handling is Go code.
   (it re-syncs the variable) and `swarm tunnel disable && swarm
   tunnel enable`.
 - `curl https://<domain>/healthz` must return 200 even with no tunnel;
-  otherwise check `railway logs --service relay` and the service config
-  path (`relay/railway.json`: Dockerfile builder, `/healthz` check).
+  otherwise check `railway logs --service relay` and the service build
+  settings (Dockerfile `relay/Dockerfile`, `/healthz` check, as the
+  bootstrap applies from `relay/railway.json`).
 - Local-only routes (`/api/bootstrap`, `/mcp`, `/hook/*`, `/api/tunnel`,
   `/api/lan`, …) answer 404 off the Mac by design, as does the daemon
   Bearer [REDACTED] presented remotely (401).

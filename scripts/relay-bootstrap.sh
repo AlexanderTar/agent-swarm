@@ -30,6 +30,7 @@
 set -euo pipefail
 
 PROJECT_NAME="${RELAY_PROJECT_NAME:-Agent Swarm}"
+PROJECT_DESCRIPTION="${RELAY_PROJECT_DESCRIPTION:-Agent Swarm remote access relay}"
 SERVICE_NAME="${RELAY_SERVICE_NAME:-relay}"
 ICON_URL="${RELAY_ICON_URL:-https://raw.githubusercontent.com/AlexanderTar/agent-swarm/main/apps/menubar/Resources/AppIconLayers/Composed-1024.png}"
 WORKSPACE_NAME="${RAILWAY_WORKSPACE:-My Projects}"
@@ -105,6 +106,18 @@ log "project '$PROJECT_NAME': $PROJECT_ID"
 if [ "$MODE" = "project-id" ]; then
   printf '%s\n' "$PROJECT_ID"
   exit 0
+fi
+
+# 2b. Project description (read-compare-set; projects have no icon field).
+if [ "$MODE" = "apply" ]; then
+  HAVE_DESC="$(gql "$(jq -n --arg pid "$PROJECT_ID" -r \
+      '"query { project(id: \($pid|@json)) { description } }"')" | jq -r '.project.description // empty')"
+  if [ "$HAVE_DESC" != "$PROJECT_DESCRIPTION" ]; then
+    doc="$(jq -n --arg pid "$PROJECT_ID" --arg desc "$PROJECT_DESCRIPTION" -r \
+      '"mutation { projectUpdate(id: \($pid|@json), input: {description: \($desc|@json)}) { id } }"')"
+    gql "$doc" | jq -e '.projectUpdate.id' >/dev/null || die "projectUpdate description failed"
+    log "project description set"
+  fi
 fi
 
 # 3. Resolve the environment id (defaultEnvironmentName "production").
