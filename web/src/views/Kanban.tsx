@@ -244,7 +244,7 @@ export function Kanban(p: KanbanProps) {
       <div
         ref={scroller}
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
-        className="h-full overflow-auto max-sm:snap-x max-sm:snap-mandatory"
+        className="h-full overflow-auto pl-[max(0px,env(safe-area-inset-left))] pr-[max(0px,env(safe-area-inset-right))] max-sm:snap-x max-sm:snap-mandatory"
       >
         <div className="max-md:w-max max-md:min-w-full">
         <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">

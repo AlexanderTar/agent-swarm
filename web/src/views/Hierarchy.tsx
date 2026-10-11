@@ -69,7 +69,7 @@ export function Hierarchy(p: HierarchyProps) {
   };
 
   return (
-    <div className="p-2">
+    <div className="py-2 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]">
       <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 max-sm:hidden text-[11px] uppercase tracking-wide text-muted-foreground">
         <span>WORK ITEM</span>
         <span>STATUS</span>

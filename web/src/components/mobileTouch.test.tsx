@@ -107,3 +107,42 @@ describe("responsive shell", () => {
     vi.restoreAllMocks();
   });
 });
+
+// iPhone landscape puts the notch beside the content, so every view body and the Details sheet pad
+// left and right by max(<pad>, inset). jsdom can't resolve env(), so the class strings are asserted.
+describe("view bodies and the Details sheet respect the left and right safe-area insets", () => {
+  const inset = (el: Element | null | undefined, pad: string) => {
+    expect(el, "container").toBeTruthy();
+    expect(el!.className).toContain(`pl-[max(${pad},env(safe-area-inset-left))]`);
+    expect(el!.className).toContain(`pr-[max(${pad},env(safe-area-inset-right))]`);
+  };
+
+  it("Hierarchy", async () => {
+    renderWithDaemon(<App />, { hash: "#/hierarchy" });
+    inset((await screen.findByRole("tree")).parentElement, "0.5rem");
+  });
+
+  it("Kanban scroller", async () => {
+    renderWithDaemon(<App />, { hash: "#/kanban" });
+    inset((await screen.findByTestId("col-draft")).closest(".overflow-auto"), "0px");
+  });
+
+  it("NeedsYou list", async () => {
+    renderWithDaemon(<App />, { hash: "#/inbox" });
+    inset((await screen.findByRole("list", { name: "Needs you" })).parentElement, "0.75rem");
+  });
+
+  it("Dependencies toolbar", async () => {
+    renderWithDaemon(<App />, { hash: "#/dependencies" });
+    inset((await screen.findByRole("button", { name: "Fit" })).parentElement, "0.75rem");
+  });
+
+  it("Details sheet header, body and footer", () => {
+    render(<Sheet title="T" onClose={() => {}} footer={<span>f</span>}>body</Sheet>);
+    const header = document.querySelector("[data-slot=sheet-header]")!;
+    expect(header.className).toContain("pl-[max(1.25rem,env(safe-area-inset-left))]");
+    expect(header.className).toContain("env(safe-area-inset-right)");
+    inset(header.nextElementSibling, "1.25rem");
+    inset(document.querySelector("[data-slot=sheet-footer]"), "1.25rem");
+  });
+});

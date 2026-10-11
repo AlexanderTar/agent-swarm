@@ -46,13 +46,13 @@ export function Sheet(p: {
             {p.subtitle && <SheetDescription className="sr-only">{p.subtitle}</SheetDescription>}
           </>
         ) : (
-          <SheetHeader className="border-b border-border px-5 py-4 pr-16">
+          <SheetHeader className="border-b border-border py-4 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(4rem,calc(env(safe-area-inset-right)+3.5rem))]">
             <SheetTitle className="break-words text-[15px] font-semibold">{p.title}</SheetTitle>
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
         )}
-        <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
-        {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 max-sm:flex-col-reverse max-sm:items-stretch border-t border-border px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{p.footer}</SheetFooter>}
+        <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto py-4 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))]">{p.children}</div>
+        {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 max-sm:flex-col-reverse max-sm:items-stretch border-t border-border py-3 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">{p.footer}</SheetFooter>}
       </SheetContent>
     </UiSheet>
   );

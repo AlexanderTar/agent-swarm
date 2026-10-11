@@ -110,7 +110,7 @@ function Graph(p: DependenciesProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:[&>*]:shrink-0">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border py-2 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-nowrap max-md:overflow-x-auto max-md:[&>*]:shrink-0">
         <span>{C.scope}</span>
         <Segmented
           label={C.scope}

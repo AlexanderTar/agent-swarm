@@ -54,7 +54,7 @@ export function NeedsYou(p: {
 
   return (
     <div className="flex h-full min-h-0 flex-col md:flex-row">
-      <div className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border p-3 max-md:flex-1 md:w-[280px] md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
+      <div className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border py-3 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-1 md:w-[280px] md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
