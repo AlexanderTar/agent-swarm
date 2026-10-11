@@ -91,4 +91,19 @@ describe("responsive shell", () => {
     expect(toaster()).toHaveAttribute("data-y-position", "bottom");
     vi.restoreAllMocks();
   });
+
+  it("keeps Sonner's default desktop offset (24px) and applies the safe-area insets to phone toasts", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
+      ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    render(<Toaster />);
+    act(() => { sonner.error("offsets"); });
+    await waitFor(() => expect(document.querySelector("[data-sonner-toaster]")).toBeInTheDocument());
+    const style = (document.querySelector("[data-sonner-toaster]") as HTMLElement).style;
+    expect(style.getPropertyValue("--offset-left")).toBe("max(24px, env(safe-area-inset-left))");
+    expect(style.getPropertyValue("--offset-bottom")).toBe("max(24px, env(safe-area-inset-bottom))");
+    expect(style.getPropertyValue("--mobile-offset-top")).toBe("max(16px, env(safe-area-inset-top))");
+    expect(style.getPropertyValue("--mobile-offset-left")).toBe("max(16px, env(safe-area-inset-left))");
+    expect(style.getPropertyValue("--mobile-offset-right")).toBe("max(16px, env(safe-area-inset-right))");
+    vi.restoreAllMocks();
+  });
 });

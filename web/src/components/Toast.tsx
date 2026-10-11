@@ -38,13 +38,19 @@ export const useToast = (): ToastFn => {
   );
 };
 
+// Sonner's own gutters (24px, 16px at <=600px) unless a device inset is larger.
+const inset = (px: number) => Object.fromEntries(
+  (["top", "right", "bottom", "left"] as const).map((side) => [side, `max(${px}px, env(safe-area-inset-${side}))`]),
+);
+
 export function Toaster() {
   const narrow = useMediaQuery("(max-width: 639px)");
   return (
     <SonnerToaster
       theme="dark"
       position={narrow ? "top-center" : "bottom-left"}
-      offset={{ top: "max(0.5rem, env(safe-area-inset-top))", left: "max(1rem, env(safe-area-inset-left))", bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+      offset={inset(24)}
+      mobileOffset={inset(16)}
       visibleToasts={3}
       toastOptions={{
         style: { "--normal-bg": "var(--popover)" } as CSSProperties,
