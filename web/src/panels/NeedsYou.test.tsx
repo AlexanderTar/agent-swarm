@@ -59,6 +59,8 @@ describe("NeedsYou inbox (§16.11)", () => {
     const reviewPane = screen.getByText("review:req_accept").parentElement!.parentElement!;
     // The 280px list column's right edge is interior at md+, so only the left inset applies there.
     expect(listPane).toHaveClass("pl-[max(0.75rem,env(safe-area-inset-left))]", "md:pr-3");
+    // The column grows by the left inset so the 224px Segmented still fits (underscores: lightningcss drops calc() without spaces).
+    expect(listPane).toHaveClass("md:w-[calc(280px_+_env(safe-area-inset-left))]");
     // The detail pane touches the right screen edge at md+ and the list on its left.
     expect(reviewPane).toHaveClass("pr-[max(1rem,env(safe-area-inset-right))]", "md:pl-4");
   });

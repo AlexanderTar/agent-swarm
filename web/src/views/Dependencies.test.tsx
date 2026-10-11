@@ -99,7 +99,9 @@ describe("Dependencies view (§16.8)", () => {
   it("shows the empty state and picks a start item", async () => {
     const onSelect = vi.fn();
     const a = renderWithDaemon(<Host selected="TASK-110" />, { events: false });
-    expect(await screen.findByText("No dependencies for this item.")).toBeInTheDocument();
+    const empty = await screen.findByText("No dependencies for this item.");
+    // Desktop matches main: the empty state is the message alone, no anchor key/title line.
+    expect(empty.parentElement!.querySelectorAll("p")).toHaveLength(1);
     a.unmount();
     renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith("EPIC-12"));

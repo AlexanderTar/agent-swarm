@@ -158,7 +158,7 @@ function Graph(p: DependenciesProps) {
       {g && !touching ? (
         <div className="p-8 text-center">
           <p>{C.noDeps}</p>
-          {idx.byKey.get(anchor) && <p className="mt-1 text-muted-foreground"><Key>{anchor}</Key> {idx.byKey.get(anchor)!.title}</p>}
+          {phone && idx.byKey.get(anchor) && <p className="mt-1 text-muted-foreground"><Key>{anchor}</Key> {idx.byKey.get(anchor)!.title}</p>}
         </div>
       ) : (
         <div className="min-h-[400px] flex-1">
