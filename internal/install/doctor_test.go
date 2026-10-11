@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -166,6 +167,35 @@ func TestDoctorFailures(t *testing.T) {
 		got := byName(t, e.d.Checks(bg))[c.name]
 		if got.OK || got.Detail != c.detail {
 			t.Errorf("%s: %+v, want %q", c.name, got, c.detail)
+		}
+	}
+}
+
+// the tunnel row appears only when a probe is wired, so the base list stays ten
+func TestDoctorTunnelRow(t *testing.T) {
+	cases := map[string]struct {
+		info TunnelInfo
+		err  error
+		ok   bool
+		want string
+	}{
+		"disabled":   {TunnelInfo{State: "disabled"}, nil, true, "Off. Turn it on with swarm tunnel enable."},
+		"connected":  {TunnelInfo{State: "connected", PublicURL: "https://r.example"}, nil, true, "Connected to https://r.example."},
+		"connecting": {TunnelInfo{State: "connecting", PublicURL: "https://r.example"}, nil, true, "Connecting to https://r.example."},
+		"error":      {TunnelInfo{State: "error", PublicURL: "https://r.example", LastError: "relay rejected the secret (401)"}, nil, false, "relay rejected the secret (401)"},
+		"daemon off": {TunnelInfo{}, errors.New("down"), true, "Not checked: the daemon isn't running."},
+	}
+	for name, c := range cases {
+		e := newDoctorEnv(t)
+		e.d.Tunnel = func(context.Context) (TunnelInfo, error) { return c.info, c.err }
+		var row *Check
+		for _, ch := range e.d.Checks(bg) {
+			if ch.Name == "Tunnel" {
+				row = &ch
+			}
+		}
+		if row == nil || row.OK != c.ok || !strings.Contains(row.Detail, c.want) {
+			t.Errorf("%s: row = %+v, want ok=%v containing %q", name, row, c.ok, c.want)
 		}
 	}
 }

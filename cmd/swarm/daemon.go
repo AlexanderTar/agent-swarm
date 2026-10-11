@@ -38,6 +38,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/spawn"
+	"github.com/AlexanderTar/agent-swarm/internal/tunnel"
 	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
 	"github.com/AlexanderTar/agent-swarm/internal/usagegate"
 	"github.com/AlexanderTar/agent-swarm/internal/webauth"
@@ -152,6 +153,7 @@ type daemon struct {
 	api *httpapi.Server
 	rt  *runtime.Store
 	up  *usagesvc.Poller
+	tn  *tunnel.Manager
 }
 
 // openDaemon prepares the home folder, opens the database and wires every service.
@@ -312,13 +314,17 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	hookH := &hook.Handler{DB: d, RT: rt, Adapters: rt.Adapters, Now: now, Log: cfg.Log, Advisor: adv,
 		WorktreesDir: filepath.Join(cfg.Home, "worktrees")}
 
-	api := httpapi.New(httpapi.Deps{Version: version, Token: token, DB: d, Events: ev,
+	// the manager needs the handler and the handler needs the manager, so the
+	// handler is filled in once the API exists
+	tn := &tunnel.Manager{DB: d, SecretPath: filepath.Join(cfg.Home, "run", "tunnel.secret"), Now: now, Log: cfg.Log}
+	api := httpapi.New(httpapi.Deps{Version: version, Tunnel: tn, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
 		Auth: webauth.New(d, now),
 		Run:  execx.Run, After: time.After, Web: web.Handler(web.Dist)})
+	tn.Handler = api.Handler()
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
-		rt: rt, up: up}, nil
+		rt: rt, up: up, tn: tn}, nil
 }
 
 func serve(ctx context.Context, cfg daemonConfig) error {
@@ -378,6 +384,10 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 		bg.Go(func() { defer running.Add(-1); loop(loopCtx) })
 	}
 
+	if err := dm.tn.Start(loopCtx); err != nil {
+		cfg.Log("tunnel: %v", err)
+	}
+	defer dm.tn.Stop()
 	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second,
 		ConnContext: httpapi.ConnContext(httpapi.ListenerLoopback)}
 	if cfg.Ready != nil {

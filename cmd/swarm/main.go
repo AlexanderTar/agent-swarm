@@ -44,13 +44,15 @@ Commands:
   confirm-repos REQ PATH... [--comment TEXT]
   request-changes REQ COMMENT
   auth set|status|logout-all       the email and password for remote (lan, tunnel) access
+  tunnel enable [--url wss://RELAY] | disable | status   reach the board through the relay (needs swarm auth set)
   usage [--refresh]
   cleanup [--dry-run] [--no-grace]  remove finished agents' work dirs, orphan work dirs and reclaimable worktrees
   dev-seed                          load the contract fixture keys (make dev only)
   version
 
 Every command takes --home DIR (default $SWARM_HOME or ~/.swarm).
-Client commands take --url URL (default $SWARM_URL or http://127.0.0.1:7777).
+Client commands take --url URL (default $SWARM_URL or http://127.0.0.1:7777);
+swarm tunnel takes --daemon URL for that, since its --url is the relay.
 Flags go before arguments: swarm repos --home DIR add PATH.
 `
 
@@ -129,6 +131,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdRequestChanges(args[1:], stdout, stderr)
 	case "auth":
 		return cmdAuth(args[1:], stdin, stdout, stderr)
+	case "tunnel":
+		return cmdTunnel(args[1:], stdout, stderr)
 	case "usage":
 		return cmdUsage(args[1:], stdout, stderr)
 	case "cleanup":

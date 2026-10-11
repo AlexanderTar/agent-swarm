@@ -1,0 +1,11 @@
+# keeps `docker build -f relay/Dockerfile .` and `railway up .` uploads small
+.git
+node_modules
+web/node_modules
+web/dist
+*.db*
+*.profraw
+graphify-out
+trajectory-*.json
+testdata
+apps
