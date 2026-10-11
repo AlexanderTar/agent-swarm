@@ -12,7 +12,9 @@
 #   - Finds or creates service `relay` in the production environment.
 #   - Generates ~/.swarm/run/tunnel.secret (0600) when missing and sets it
 #     as the service's RELAY_SECRET (via stdin, never on argv).
-#   - Points the service config at relay/railway.json.
+#   - Applies the relay/railway.json build settings (Dockerfile path,
+#     /healthz check, restart policy) as service instance settings
+#     (Railway no longer accepts a config-file pointer).
 #   - Creates the generated Railway domain and prints the wss:// tunnel URL.
 #
 # Query modes (read-only, for Make and docs tooling):
@@ -170,13 +172,19 @@ if ! set_variable_cli; then
 fi
 log "RELAY_SECRET set on service '$SERVICE_NAME'"
 
-# 7. Point the service config at relay/railway.json so `railway up .` from
-# the repo root builds relay/Dockerfile with the /healthz check.
+# 7. Build settings mirroring relay/railway.json (DOCKERFILE builder,
+# relay/Dockerfile, /healthz check, ALWAYS restart, no overlap).
+# Railway deprecated config-as-code files, so railwayConfigFile is refused;
+# the same values go in as instance settings instead.
 doc="$(jq -n --arg sid "$SERVICE_ID" --arg eid "$ENV_ID" -r \
-  '"mutation { serviceInstanceUpdate(serviceId: \($sid|@json), environmentId: \($eid|@json), input: {railwayConfigFile: \"relay/railway.json\"}) { id railwayConfigFile } }"')"
-HAVE_CFG="$(gql "$doc" | jq -r '.serviceInstanceUpdate.railwayConfigFile')"
-[ "$HAVE_CFG" = "$CONFIG_PATH" ] || die "service config path is '$HAVE_CFG', expected '$CONFIG_PATH'"
-log "service config: $CONFIG_PATH"
+  '"mutation { serviceInstanceUpdate(serviceId: \($sid|@json), environmentId: \($eid|@json), input: {dockerfilePath: \"relay/Dockerfile\", healthcheckPath: \"/healthz\", restartPolicyType: ALWAYS, overlapSeconds: 0, numReplicas: 1}) }"')"
+gql "$doc" | jq -e '.serviceInstanceUpdate == true' >/dev/null \
+  || die "serviceInstanceUpdate build settings failed"
+HAVE="$(gql "$(jq -n --arg sid "$SERVICE_ID" -r \
+    '"query { service(id: \($sid|@json)) { serviceInstances { edges { node { environmentId dockerfilePath healthcheckPath } } } } }"')" \
+  | jq -r --arg eid "$ENV_ID" '.service.serviceInstances.edges[].node | select(.environmentId == $eid) | "\(.dockerfilePath) \(.healthcheckPath)"')"
+[ "$HAVE" = "relay/Dockerfile /healthz" ] || die "build settings read back as '$HAVE'"
+log "service config: $CONFIG_PATH (as instance settings)"
 
 # 8. Generated domain: CLI first, GraphQL serviceDomainCreate fallback.
 find_domain_cli() {
@@ -202,6 +210,11 @@ if [ -z "$DOMAIN" ] && [ "$MODE" = "apply" ]; then
     DOMAIN="$(gql "$doc" | jq -r '.serviceDomainCreate.domain')"
   fi
 fi
+# serviceDomainCreate returns the domain with a scheme prefix; the CLI and
+# the domains query return it bare. Normalize to the bare host either way.
+DOMAIN="${DOMAIN#https://}"
+DOMAIN="${DOMAIN#http://}"
+DOMAIN="${DOMAIN%%/*}"
 case "$DOMAIN" in
   *.up.railway.app) ;;
   *) die "no *.up.railway.app domain on service '$SERVICE_NAME'" ;;
