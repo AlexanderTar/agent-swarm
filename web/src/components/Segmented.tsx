@@ -19,7 +19,7 @@ export function Segmented<T extends string>(p: {
       onValueChange={(v) => { if (v) p.onChange(v as T); }}
     >
       {p.options.map((o) => (
-        <ToggleGroupItem key={o.value} value={o.value} className="h-7 px-3 data-[state=on]:bg-accent data-[state=on]:text-foreground">
+        <ToggleGroupItem key={o.value} value={o.value} className="h-7 px-3 max-md:h-11 max-md:min-w-11 data-[state=on]:bg-accent data-[state=on]:text-foreground">
           {o.label}
         </ToggleGroupItem>
       ))}

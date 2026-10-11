@@ -133,6 +133,7 @@ export function Hierarchy(p: HierarchyProps) {
                     type="button"
                     variant="ghost"
                     size="xs"
+                    className="max-md:min-w-11"
                     title={T.agentsTooltip(it.active_agents)}
                     onClick={(e) => {
                       e.stopPropagation();

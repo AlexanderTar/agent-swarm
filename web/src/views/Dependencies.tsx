@@ -126,8 +126,8 @@ function Graph(p: DependenciesProps) {
         </label>
         <Button type="button" variant="outline" disabled={scope !== "neighbourhood"} onClick={() => setHops((n) => n + 1)}>{C.expandHop}</Button>
         <Button type="button" variant="outline" onClick={() => void rf.fitView()}>{C.fit}</Button>
-        <Button type="button" variant="outline" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
-        <Button type="button" variant="outline" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>
+        <Button type="button" variant="outline" className="max-md:size-11" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
+        <Button type="button" variant="outline" className="max-md:size-11" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>
         <Button type="button" variant="outline" onClick={() => { setHops(1); void rf.fitView(); }}>{C.reset}</Button>
         <Input
           type="search"

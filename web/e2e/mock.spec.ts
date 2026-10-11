@@ -799,3 +799,36 @@ for (const width of [375, 390, 430]) {
     await noHorizontalOverflow(page);
   });
 }
+
+// Below md every touch control is at least 44x44 (DS "Mobile / touch"). The tablet project is 768 wide,
+// which is md, so it is checked at 700 to stay below the breakpoint.
+test("touch targets are at least 44x44 below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "touch layout");
+  if (testInfo.project.name === "tablet") await page.setViewportSize({ width: 700, height: 900 });
+  const expect44 = async (locator: ReturnType<Page["locator"]>, what: string) => {
+    // Layout size, not getBoundingClientRect: menus and listboxes scale in while they open.
+    const boxes = await locator.evaluateAll((els) => els.map((e) => ({ w: (e as HTMLElement).offsetWidth, h: (e as HTMLElement).offsetHeight })));
+    expect(boxes.length, `${what} present`).toBeGreaterThan(0);
+    for (const b of boxes) {
+      expect(b.w, `${what} width`).toBeGreaterThanOrEqual(44);
+      expect(b.h, `${what} height`).toBeGreaterThanOrEqual(44);
+    }
+  };
+
+  await page.goto("/#/hierarchy");
+  const row = page.getByRole("treeitem", { name: /^EPIC-12 / });
+  await expect44(row.getByRole("button", { name: "3", exact: true }), "agents-count");
+  await row.getByRole("button", { name: "Add child to EPIC-12" }).click();
+  await expect44(page.getByRole("menuitem"), "menu item");
+  await page.keyboard.press("Escape");
+
+  await page.goto("/#/dependencies?item=TASK-104");
+  const details = page.getByRole("dialog", { name: "TASK-104" });
+  await expect(details).toBeVisible();
+  await details.getByRole("button", { name: "Close" }).first().click();
+  await expect44(page.getByRole("radio"), "segmented item");
+  await expect44(page.getByRole("button", { name: /^[−+]$/ }), "zoom button");
+  await page.getByRole("radio", { name: "Neighbourhood" }).click();
+  await page.getByRole("combobox", { name: "Hops" }).click();
+  await expect44(page.getByRole("option"), "select option");
+});
