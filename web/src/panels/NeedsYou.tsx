@@ -52,7 +52,7 @@ export function NeedsYou(p: {
 
   return (
     <div className="flex h-full min-h-0 flex-col md:flex-row">
-      <div className="max-h-48 w-full shrink-0 space-y-2 overflow-y-auto border-b border-border p-3 md:max-h-none md:w-[280px] md:border-b-0 md:border-r">
+      <div className={`max-h-48 w-full shrink-0 space-y-2 overflow-y-auto border-b border-border p-3 max-md:max-h-none max-md:flex-1 md:w-[280px] md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -109,7 +109,8 @@ export function NeedsYou(p: {
           })}
         </ul>
       </div>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
+      <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto p-4 ${p.selected === "" ? "max-md:hidden" : ""}`}>
+        {p.selected !== "" && <Button type="button" variant="ghost" size="sm" onClick={() => p.onSelectRequest("")} className="mb-2 md:hidden">{C.back}</Button>}
         {resolved ? (
           <div className="space-y-2">
             <p>{C.resolved}</p>

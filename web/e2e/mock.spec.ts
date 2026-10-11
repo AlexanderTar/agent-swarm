@@ -219,6 +219,30 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   await expect(page.getByText("Already resolved.")).toBeVisible();
 });
 
+test("phone inbox lists full height, opens a review full-width and Back returns", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below md)");
+  await page.goto("/#/inbox");
+  const list = page.getByRole("list", { name: "Needs you" });
+  await expect(list).toBeVisible();
+  const view = await page.getByTestId("view").boundingBox();
+  const listBox = await list.boundingBox();
+  expect(listBox!.height).toBeGreaterThan(300);
+  await expect(page.getByRole("button", { name: "← Back" })).toBeHidden();
+  await list.getByRole("button", { name: /Waiting for your input/ }).first().click();
+  await expect(page).toHaveURL(/req=/);
+  await expect(list).toBeHidden();
+  const back = page.getByRole("button", { name: "← Back" });
+  await expect(back).toBeVisible();
+  const backBox = await back.boundingBox();
+  expect(backBox!.height).toBeGreaterThanOrEqual(44);
+  const review = await page.getByRole("heading", { level: 2 }).last().boundingBox();
+  expect(review!.x + review!.width).toBeLessThanOrEqual(view!.x + view!.width);
+  await noHorizontalOverflow(page);
+  await back.click();
+  await expect(page).not.toHaveURL(/req=/);
+  await expect(list).toBeVisible();
+});
+
 test("epic review fits and works at 390px", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/inbox?req=req_accept");
