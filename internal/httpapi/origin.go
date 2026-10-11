@@ -104,6 +104,8 @@ var localOnlyPaths = map[string]bool{
 	"/api/agents/{name}/replacement":     true,
 	"/api/dev/seed":                      true,
 	"/api/bugs":                          true,
+	"/api/auth/credentials":              true,
+	"/api/auth/sessions":                 true,
 }
 
 func localOnlyRoute(rt route) bool {

@@ -56,8 +56,8 @@ type Deps struct {
 	// which only `make dev --dev` and a test's devDaemon pass; the launchd
 	// job never does. It gates nothing else.
 	Dev bool
-	// Auth is the web login and its cookie sessions. With it set, HasCredentials
-	// defaults to Auth.HasCredentials.
+	// Auth is the web login and its cookie sessions; nil means a store over DB.
+	// HasCredentials defaults to Auth.HasCredentials.
 	Auth *webauth.Store
 	// HasCredentials reports whether a web login exists. Until it does, lan and
 	// tunnel callers get the "run swarm auth set" 503. Nil counts as false.
@@ -137,6 +137,9 @@ func New(d Deps) *Server {
 	}
 	if d.Log == nil {
 		d.Log = log.Printf
+	}
+	if d.Auth == nil && d.DB != nil {
+		d.Auth = webauth.New(d.DB, time.Now)
 	}
 	if d.HasCredentials == nil && d.Auth != nil {
 		d.HasCredentials = func(ctx context.Context) bool { ok, _ := d.Auth.HasCredentials(ctx); return ok }

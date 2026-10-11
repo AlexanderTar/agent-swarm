@@ -362,3 +362,112 @@ func TestCookieWritesNeedAMatchingOrigin(t *testing.T) {
 		t.Fatal("local Bearer writes need no Origin")
 	}
 }
+
+func TestCredentialsRoutesAreLocalOnlyAndNeedTheDaemonToken(t *testing.T) {
+	e, store := authEnv(t)
+	c := login(t, e, OriginLAN)
+	routes := []struct{ method, path, body string }{
+		{"PUT", "/api/auth/credentials", `{"email":"new@example.com","password":"a brand new password"}`},
+		{"GET", "/api/auth/credentials", ""},
+		{"DELETE", "/api/auth/sessions", ""},
+	}
+	for _, rt := range routes {
+		// no daemon token: 401 locally
+		r := localReq(rt.method, rt.path, strings.NewReader(rt.body))
+		if rec := serve(e, r); rec.Code != 401 {
+			t.Errorf("%s %s without the token = %d, want 401", rt.method, rt.path, rec.Code)
+		}
+		// remote: 404, with a valid cookie and even with the daemon token
+		for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+			for _, tok := range []string{"", daemonToken} {
+				r := withCookie(asRemote(origin, rt.method, rt.path, rt.body), c)
+				if tok != "" {
+					r.Header.Set("Authorization", "Bearer "+tok)
+				}
+				rec := serve(e, r)
+				wantErr(t, rec.Code, rec.Body.Bytes(), 404, "not_found", "Unknown API route.")
+			}
+		}
+	}
+	if !store.Verify(bg, testEmail, testPassword) {
+		t.Fatal("a refused request changed the login")
+	}
+	if _, ok := store.LookupSession(bg, c.Value); !ok {
+		t.Fatal("a refused request revoked a session")
+	}
+}
+
+func TestCredentialsRoutes(t *testing.T) {
+	e, store := authEnv(t)
+	c := login(t, e, OriginLAN)
+	local := func(method, path, body string) *httptest.ResponseRecorder {
+		r := localReq(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+daemonToken)
+		return serve(e, r)
+	}
+
+	rec := local("GET", "/api/auth/credentials", "")
+	if rec.Code != 200 || rec.Body.String() != "{\"configured\":true,\"email\":\""+testEmail+"\",\"sessions\":1}\n" {
+		t.Fatalf("status = %d %q", rec.Code, rec.Body)
+	}
+
+	// a short password is refused and changes nothing
+	rec = local("PUT", "/api/auth/credentials", `{"email":"new@example.com","password":"short"}`)
+	wantErr(t, rec.Code, rec.Body.Bytes(), 400, "bad_request", "The password must be at least 12 characters.")
+	if !store.Verify(bg, testEmail, testPassword) {
+		t.Fatal("a refused PUT changed the login")
+	}
+
+	// a good PUT replaces the login and signs everyone out
+	rec = local("PUT", "/api/auth/credentials", `{"email":"new@example.com","password":"a brand new password"}`)
+	if rec.Code != 204 {
+		t.Fatalf("PUT = %d %s", rec.Code, rec.Body)
+	}
+	if !store.Verify(bg, "new@example.com", "a brand new password") || store.Verify(bg, testEmail, testPassword) {
+		t.Fatal("PUT did not replace the login")
+	}
+	if rec := serve(e, withCookie(asRemote(OriginLAN, "GET", "/api/settings", ""), c)); rec.Code != 401 {
+		t.Fatalf("old cookie after reset = %d, want 401", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "brand new") {
+		t.Fatal("password echoed")
+	}
+
+	// logout-all
+	c2 := login2(t, e)
+	if n, _ := store.SessionCount(bg); n != 1 {
+		t.Fatalf("sessions = %d, want 1", n)
+	}
+	if rec := local("DELETE", "/api/auth/sessions", ""); rec.Code != 204 {
+		t.Fatalf("DELETE = %d", rec.Code)
+	}
+	if _, ok := store.LookupSession(bg, c2.Value); ok {
+		t.Fatal("logout-all left a session")
+	}
+	if rec := local("GET", "/api/auth/credentials", ""); !strings.Contains(rec.Body.String(), `"sessions":0`) {
+		t.Fatalf("status after logout-all = %s", rec.Body)
+	}
+}
+
+// login2 signs in with the credentials TestCredentialsRoutes set.
+func login2(t *testing.T, e *env) *http.Cookie {
+	t.Helper()
+	rec := serve(e, asRemote(OriginTunnel, "POST", "/api/auth/login", loginBody("new@example.com", "a brand new password")))
+	if rec.Code != 204 {
+		t.Fatalf("login = %d %s", rec.Code, rec.Body)
+	}
+	return rec.Result().Cookies()[0]
+}
+
+func TestCredentialsStatusWhenNoLoginIsSet(t *testing.T) {
+	withOwnIPs(t, "192.168.1.20")
+	e := newEnv(t, func(d *Deps) { d.Auth = webauth.New(d.DB, time.Now).WithCost(4) })
+	rec := serve(e, func() *http.Request {
+		r := localReq("GET", "/api/auth/credentials", nil)
+		r.Header.Set("Authorization", "Bearer "+daemonToken)
+		return r
+	}())
+	if rec.Code != 200 || rec.Body.String() != "{\"configured\":false,\"sessions\":0}\n" {
+		t.Fatalf("status = %d %q", rec.Code, rec.Body)
+	}
+}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"math"
 	"net"
 	"net/http"
@@ -21,6 +22,10 @@ func (s *Server) authRoutes() []route {
 		{"POST", "/api/auth/login", authNone, s.login},
 		{"POST", "/api/auth/logout", authNone, s.logout},
 		{"GET", "/api/auth/me", authNone, s.me},
+		// swarm auth set|status|logout-all: the daemon owns the DB, so the CLI goes through it
+		{"PUT", "/api/auth/credentials", authDaemon, s.setCredentials},
+		{"GET", "/api/auth/credentials", authDaemon, s.credentialsStatus},
+		{"DELETE", "/api/auth/sessions", authDaemon, s.logoutAll},
 	}
 }
 
@@ -124,4 +129,41 @@ func clientIP(r *http.Request, origin Origin) string {
 func sameOrigin(r *http.Request) bool {
 	u, err := url.Parse(r.Header.Get("Origin"))
 	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
+}
+
+func (s *Server) setCredentials(w http.ResponseWriter, r *http.Request) {
+	var body struct{ Email, Password string }
+	if err := readJSON(r, &body); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	if err := s.Auth.SetCredentials(r.Context(), body.Email, body.Password); err != nil {
+		if errors.Is(err, webauth.ErrWeakPassword) {
+			err = apiErr(http.StatusBadRequest, "bad_request", "The password must be at least 12 characters.")
+		}
+		s.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) credentialsStatus(w http.ResponseWriter, r *http.Request) {
+	n, err := s.Auth.SessionCount(r.Context())
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	out := map[string]any{"configured": false, "sessions": n}
+	if email, ok := s.Auth.Email(r.Context()); ok {
+		out["configured"], out["email"] = true, email
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) logoutAll(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.DeleteAllSessions(r.Context()); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
