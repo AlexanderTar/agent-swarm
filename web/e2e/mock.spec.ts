@@ -165,6 +165,29 @@ test("dragging to a refused column shows the lock, returns the card and toasts",
   await expect(page.getByTestId("cell-EPIC-12-in_progress").getByTestId("card-TASK-101")).toBeVisible();
 });
 
+test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  const ready = page.getByTestId("col-ready");
+  await expect(ready).toBeVisible();
+  const viewport = page.viewportSize()!.width;
+  const box = await ready.boundingBox();
+  expect(Math.round(box!.width)).toBe(Math.round(viewport * 0.85));
+  await expect(ready.locator("xpath=../..")).toHaveCSS("scroll-snap-type", /x mandatory/);
+  const done = page.getByTestId("col-done");
+  await done.scrollIntoViewIfNeeded();
+  await expect(done.getByText("Done", { exact: true })).toBeVisible();
+  const more = page.getByTestId("card-TASK-103").getByRole("button", { name: "Move to… TASK-103" });
+  await more.scrollIntoViewIfNeeded();
+  const moreBox = await more.boundingBox();
+  expect(moreBox!.width).toBeGreaterThanOrEqual(44);
+  expect(moreBox!.height).toBeGreaterThanOrEqual(44);
+  await more.click();
+  await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
+  await expect(page.getByTestId("cell-EPIC-12-blocked").getByTestId("card-TASK-103")).toBeVisible();
+  await noHorizontalOverflow(page);
+});
+
 test("Move to… works from the keyboard", async ({ page }) => {
   await page.goto("/#/kanban");
   // the card itself picks up "Move to… TASK-110" in its own accessible name (dnd-kit gives it

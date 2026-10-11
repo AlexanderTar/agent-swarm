@@ -95,12 +95,12 @@ function Card(p: {
 function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string | null; empty: boolean; children: ReactNode }) {
   // Locked cells stay droppable: the drop runs move(), which returns the card with the §17.3 toast.
   const drop = useDroppable({ id: p.id });
-  if (p.collapsed) return <div data-testid={p.testId} className="w-[44px] shrink-0" />;
+  if (p.collapsed) return <div data-testid={p.testId} className="w-[44px] shrink-0 max-sm:w-[112px] max-sm:snap-start" />;
   return (
     <div
       ref={drop.setNodeRef}
       data-testid={p.testId}
-      className={`w-[280px] shrink-0 space-y-2 p-3 ${drop.isOver ? "ring-1 ring-ring" : ""}`}
+      className={`w-[280px] shrink-0 space-y-2 p-3 max-sm:w-[85vw] max-sm:snap-start ${drop.isOver ? "ring-1 ring-ring" : ""}`}
     >
       {p.lock !== null && (
         <p className="flex items-center gap-1 text-[12px] text-muted-foreground"><Lock aria-hidden className="size-3" />{p.lock}</p>
@@ -233,7 +233,7 @@ export function Kanban(p: KanbanProps) {
       <div
         ref={scroller}
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
-        className="h-full overflow-auto"
+        className="h-full overflow-auto max-sm:snap-x max-sm:snap-mandatory"
       >
         <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
           {cols.map((s) => {
@@ -248,10 +248,10 @@ export function Kanban(p: KanbanProps) {
                 data-collapsed={collapsed}
                 title={t.tooltip}
                 onClick={() => toggleCol(s)}
-                className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate" : "w-[280px]"}`}
+                className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate max-sm:w-[112px]" : "w-[280px] max-sm:w-[85vw]"} max-sm:snap-start`}
               >
-                {collapsed ? String(counts.get(s)?.shown ?? 0) : t.text}
-                {collapsed && <span className="sr-only">{t.text}</span>}
+                {collapsed && <span className="sr-only max-sm:not-sr-only max-sm:truncate">{STATUS_LABEL[s]}</span>}
+                {collapsed ? <span className="max-sm:ml-1">{counts.get(s)?.shown ?? 0}</span> : t.text}
               </Button>
             );
           })}

@@ -90,6 +90,19 @@ describe("Kanban view (§16.7)", () => {
     expect(within(cell("BUG-7", "blocked")).getByText("No items")).toBeInTheDocument();
   });
 
+  it("snaps 85vw columns below sm and names collapsed headers", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const ready = await screen.findByTestId("col-ready");
+    const scroller = ready.parentElement!.parentElement!;
+    expect(scroller).toHaveClass("max-sm:snap-x", "max-sm:snap-mandatory");
+    expect(ready).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
+    expect(cell("EPIC-12", "ready")).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
+    const done = screen.getByTestId("col-done");
+    expect(within(done).getByText("Done")).toHaveClass("max-sm:not-sr-only");
+    expect(done).toHaveClass("max-sm:w-[112px]");
+    expect(cell("EPIC-12", "done")).toHaveClass("max-sm:w-[112px]");
+  });
+
   it("shows every conditional card line", async () => {
     renderWithDaemon(<Host />, { events: false });
     await screen.findByTestId("card-TASK-101");
