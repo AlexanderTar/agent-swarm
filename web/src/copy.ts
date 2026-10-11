@@ -67,6 +67,19 @@ export const C = {
   waivedRow: (gate: string, reason: string) => `Waived: ${gate} — ${reason}`,
   overrideRow: (status: string, reason: string) => `Overridden to ${status} — ${reason}`,
   appTitle: "Agent Swarm",
+  signInTitle: "Sign in",
+  signInHint: "Sign in to open the board.",
+  email: "Email",
+  password: "Password",
+  signIn: "Sign in",
+  signingIn: "Signing in…",
+  signOut: "Sign out",
+  wrongLogin: "Wrong email or password.",
+  tooManyAttempts: (seconds?: number) => {
+    if (seconds === undefined) return "Too many attempts. Try again later.";
+    const m = Math.ceil(seconds / 60);
+    return `Too many attempts. Try again in ${m} ${m === 1 ? "minute" : "minutes"}.`;
+  },
   needsYou: "Needs you",
   newOrchestrator: "New orchestrator",
   newChore: "New chore",

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createApi, errorText } from "./api";
 import { ConnectionBanner, ItemsErrorBanner, OutsideViewBanner } from "./components/Banners";
 import { Header } from "./components/Header";
@@ -10,6 +10,7 @@ import { useAgents, useItems, useRequests } from "./data/queries";
 import { needsYou } from "./logic/inbox";
 import { filterItems, isFilterActive, outsideView } from "./logic/tree";
 import { Details } from "./panels/Details";
+import { Login } from "./panels/Login";
 import { NeedsYou } from "./panels/NeedsYou";
 import { NewItemSheet } from "./panels/NewItemSheet";
 import { NewSpikeSheet } from "./panels/NewSpikeSheet";
@@ -138,7 +139,14 @@ export function App() {
 }
 
 export default function Root() {
-  const api = useMemo(() => createApi(), []);
+  const [auth, setAuth] = useState<"loading" | "login" | "ready">("loading");
+  const api = useMemo(() => createApi({ onUnauthenticated: () => setAuth("login") }), []);
+  useEffect(() => {
+    // If /api/auth/me itself fails the board renders anyway and shows its own connection errors.
+    api.session().then((s) => setAuth(s.authenticated ? "ready" : "login"), () => setAuth("ready"));
+  }, [api]);
+  if (auth === "loading") return null;
+  if (auth === "login") return <Login login={api.login} onSignedIn={() => setAuth("ready")} />;
   return (
     <DataProvider api={api}>
       <ToastProvider>
