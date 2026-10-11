@@ -20,7 +20,7 @@ export interface AgentFieldsValue {
 }
 
 const WORKER_ROLES: SettingsRole[] = ["coder", "reviewer", "ui_reviewer", "designer", "researcher", "debugger", "mechanical"];
-const ROW = "grid min-w-0 grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)_40px_minmax(0,1fr)]";
+const ROW = "grid min-w-0 grid-cols-[72px_minmax(0,1fr)] max-sm:grid-cols-1 items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)_40px_minmax(0,1fr)]";
 const DEFAULT = "__default";
 
 function Pick(p: { id: string; label: string; value: string; options: Option[]; onChange(v: string): void; disabled?: boolean; placeholder?: string; agent?: boolean }) {

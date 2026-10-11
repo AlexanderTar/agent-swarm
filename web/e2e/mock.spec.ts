@@ -63,7 +63,8 @@ for (const width of [375, 390]) test(`form sheet controls fit a narrow viewport 
   const submit = (await sheet.getByRole("button", { name: /^(Start|Queue)/ }).boundingBox())!;
   expect(cancel.width).toBeGreaterThan(300);
   expect(submit.width).toBeGreaterThan(300);
-  expect(submit.y).toBeGreaterThanOrEqual(cancel.y + cancel.height - 1);
+  // Primary action first, Cancel last in the stack.
+  expect(cancel.y).toBeGreaterThanOrEqual(submit.y + submit.height - 1);
 });
 
 test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
@@ -77,6 +78,13 @@ test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
   const t = (await time.boundingBox())!;
   const s = (await summary.boundingBox())!;
   expect(s.y).toBeGreaterThanOrEqual(t.y + t.height - 1);
+  // Every part stays inside the bordered group, and the advice title wraps instead of clipping.
+  const group = (await details.getByRole("group").first().boundingBox())!;
+  for (const box of [t, s, (await row.locator("span").nth(2).boundingBox())!]) expect(box.y + box.height).toBeLessThanOrEqual(group.y + group.height);
+  for (const advice of await details.getByRole("button", { name: /^Advice/ }).all()) {
+    const { scrollWidth, clientWidth } = await advice.evaluate((e) => ({ scrollWidth: e.scrollWidth, clientWidth: e.clientWidth }));
+    expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+  }
   await noHorizontalOverflow(page);
 });
 

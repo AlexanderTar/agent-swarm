@@ -12,7 +12,9 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     const group = within(sheet).getByRole("radiogroup", { name: "Intent" });
     expect(group).toHaveClass("max-sm:flex-wrap");
     expect(group.parentElement).toHaveClass("max-sm:grid-cols-1");
-    expect(within(sheet).getByRole("button", { name: "Cancel" }).parentElement).toHaveClass("max-sm:flex-col", "max-sm:items-stretch");
+    expect(within(sheet).getByRole("button", { name: "Cancel" }).parentElement).toHaveClass("max-sm:flex-col-reverse", "max-sm:items-stretch");
+    // Agent rows stack label over control too, not just Intent.
+    expect(within(sheet).getByRole("combobox", { name: "Agent" }).parentElement).toHaveClass("max-sm:grid-cols-1");
   });
 
   it("previews the agent name, validates it and switches the intent caption", async () => {

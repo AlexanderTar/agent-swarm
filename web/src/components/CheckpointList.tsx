@@ -21,7 +21,7 @@ function Lines({ title, lines }: { title: string; lines: string[] }) {
 function CheckpointRow({ c }: { c: Checkpoint }) {
   return (
     <Collapsible role="group" className="rounded border border-border p-2">
-      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left max-sm:flex-col max-sm:items-start max-sm:gap-0.5">
+      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left max-md:h-auto max-sm:flex-col max-sm:items-start max-sm:gap-0.5">
         <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
         <span>{c.agent_name ?? ""}</span>{" "}
         <span className="rounded bg-muted px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
@@ -79,7 +79,7 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
           <CheckpointRow key={e.checkpoint.id} c={e.checkpoint} />
         ) : (
           <Collapsible key={e.advice.id} role="group" className="rounded border border-border p-2">
-            <CollapsibleTrigger asChild><Button variant="ghost" size="sm">{adviceTitle(e.advice)}</Button></CollapsibleTrigger>
+            <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto justify-start whitespace-normal text-left max-md:h-auto">{adviceTitle(e.advice)}</Button></CollapsibleTrigger>
             <CollapsibleContent>
             <p className="mt-2 font-medium">{e.advice.question}</p>
             <p>{e.advice.answer ?? e.advice.error ?? ""}</p>
