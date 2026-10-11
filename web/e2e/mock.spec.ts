@@ -416,7 +416,23 @@ test("hierarchy rows fold status under the title and are 44px tall on phones", a
   const status = await row.getByText("Blocked", { exact: true }).boundingBox();
   expect(status!.y).toBeGreaterThanOrEqual(title!.y + title!.height - 2);
   expect(key!.height).toBeLessThan(24);
+  // The folded status pill lines up under the type icon, for leaves and for rows with a chevron.
+  for (const k of ["TASK-102", "EPIC-12"]) {
+    const r = page.getByRole("treeitem", { name: new RegExp(`^${k} `) });
+    const icon = (await r.getByRole("img", { name: /^(Epic|Story|Task|Bug|Spike|Chore)$/ }).first().boundingBox())!;
+    const pill = (await r.getByText(/^(Blocked|In progress|Ready|Draft|Done|In review)$/).first().boundingBox())!;
+    expect(Math.abs(pill.x - icon.x), k).toBeLessThanOrEqual(4);
+  }
   await noHorizontalOverflow(page);
+});
+
+test("hierarchy rows are at least 44px tall between sm and md too", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "touch layout");
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.goto("/#/hierarchy");
+  await expect(page.getByTestId("view")).toBeVisible();
+  const box = (await page.getByRole("treeitem", { name: /^TASK-102 / }).boundingBox())!;
+  expect(box.height).toBeGreaterThanOrEqual(44);
 });
 
 test("dependencies Details stays closed after Close and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {

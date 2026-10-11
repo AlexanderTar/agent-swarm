@@ -43,9 +43,9 @@ describe("Hierarchy view (§16.6)", () => {
     setup();
     expect(screen.getByText("WORK ITEM").parentElement).toHaveClass("max-sm:hidden");
     const r = row("TASK-102");
-    expect(r).toHaveClass("max-sm:grid-cols-[1fr_auto]", "max-sm:h-auto", "max-sm:min-h-11");
+    expect(r).toHaveClass("max-sm:grid-cols-[1fr_auto]", "max-md:h-auto", "max-md:min-h-11");
     const status = within(r).getByText("Blocked").parentElement!;
-    expect(status).toHaveClass("max-sm:col-start-1", "max-sm:row-start-2");
+    expect(status).toHaveClass("max-sm:col-start-1", "max-sm:row-start-2", "max-sm:pl-[calc(var(--indent)+42px)]");
     expect(within(r).getByText("TASK-102").parentElement).toHaveClass("max-sm:whitespace-nowrap");
   });
 
