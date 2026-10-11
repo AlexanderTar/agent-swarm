@@ -258,6 +258,9 @@ test("phone inbox lists full height, opens a review full-width and Back returns"
   const view = await page.getByTestId("view").boundingBox();
   const listBox = await list.boundingBox();
   expect(listBox!.height).toBeGreaterThan(300);
+  // The row button must grow with its three lines instead of squeezing them to nothing.
+  const lines = await list.getByRole("button", { name: /Waiting for your input/ }).first().locator("span").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+  for (const h of lines) expect(h).toBeGreaterThanOrEqual(16);
   await expect(page.getByRole("button", { name: "← Back" })).toBeHidden();
   await list.getByRole("button", { name: /Waiting for your input/ }).first().click();
   await expect(page).toHaveURL(/req=/);
@@ -307,6 +310,9 @@ test("desktop inbox keeps its list beside the selected review", async ({ page },
   const listBox = await list.boundingBox();
   const titleBox = await title.boundingBox();
   expect(listBox && titleBox && listBox.x + listBox.width).toBeLessThan(titleBox?.x ?? 0);
+  // The list pane is not capped to the phone's max-h-48 (192px) on desktop.
+  const pane = await list.locator("xpath=..").boundingBox();
+  expect(pane!.height).toBeGreaterThan(300);
   await page.screenshot({ path: "test-results/needs-you-desktop.png", animations: "disabled" });
 });
 

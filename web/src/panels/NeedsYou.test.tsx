@@ -35,7 +35,9 @@ describe("NeedsYou inbox (§16.11)", () => {
     const list = await screen.findByRole("list", { name: "Needs you" });
     const listPane = list.parentElement!;
     const reviewPane = screen.getByText("review:req_accept").parentElement!.parentElement!;
-    expect(listPane).toHaveClass("max-md:flex-1", "max-md:max-h-none");
+    expect(listPane).toHaveClass("max-md:flex-1");
+    expect(listPane.className).not.toMatch(/max-h/);
+    expect(within(list).getAllByRole("button", { name: /Waiting for your input/ })[0]).toHaveClass("max-md:h-auto");
     expect(listPane).not.toHaveClass("max-md:hidden");
     expect(reviewPane).toHaveClass("max-md:hidden");
     expect(screen.queryByRole("button", { name: "← Back" })).not.toBeInTheDocument();
