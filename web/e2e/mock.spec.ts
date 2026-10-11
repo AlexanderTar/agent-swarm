@@ -131,7 +131,7 @@ test("phone filters live in a popover with a count and the match total", async (
   await expect(page).toHaveURL(/type=task/);
   await expect(page.getByText(/\d+ matches/)).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Filters, 1 active" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Filters, 2 active" })).toBeVisible();
 });
 
 async function drag(page: import("@playwright/test").Page, from: string, to: string) {
