@@ -46,7 +46,7 @@ export function Sheet(p: {
             {p.subtitle && <SheetDescription className="sr-only">{p.subtitle}</SheetDescription>}
           </>
         ) : (
-          <SheetHeader className="border-b border-border py-4 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(4rem,calc(env(safe-area-inset-right)+3.5rem))]">
+          <SheetHeader className="border-b border-border py-4 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(4rem,calc(env(safe-area-inset-right)_+_3.5rem))]">
             <SheetTitle className="break-words text-[15px] font-semibold">{p.title}</SheetTitle>
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
