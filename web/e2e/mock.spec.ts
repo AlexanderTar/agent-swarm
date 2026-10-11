@@ -155,7 +155,8 @@ test("dragging an allowed card shows Updating… and settles", async ({ page }, 
   await expect(page.getByText("Moved TASK-103 to Blocked")).toBeVisible();
 });
 
-test("dragging to a refused column shows the lock, returns the card and toasts", async ({ page }) => {
+test("dragging to a refused column shows the lock, returns the card and toasts", async ({ page }, testInfo) => {
+  desktopOnly(testInfo, "mouse drag; touch uses Move to…");
   await page.goto("/#/kanban");
   const drop = await drag(page, "card-TASK-101", "cell-EPIC-12-ready");
   await expect(page.getByTestId("cell-EPIC-12-ready")).toContainText("Couldn't update status. The item remains In progress.");
@@ -532,7 +533,21 @@ for (const width of [375, 390, 430]) {
       expect(box.x + box.width).toBeLessThanOrEqual(list.x + list.width + 0.5);
       expect(box.x + box.width).toBeLessThanOrEqual(needsYou.x);
     }
-    expect((await header.getByRole("searchbox").boundingBox())!.width).toBeGreaterThanOrEqual(170);
+    const search = header.getByRole("searchbox");
+    expect((await search.boundingBox())!.width).toBeGreaterThanOrEqual(170);
+    // a placeholder wider than the field must end in an ellipsis, never a half-cut glyph
+    const clipped = await search.evaluate((el: HTMLInputElement) => {
+      const cs = getComputedStyle(el);
+      const probe = document.createElement("span");
+      probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+      probe.textContent = el.placeholder;
+      document.body.append(probe);
+      const textWidth = probe.getBoundingClientRect().width;
+      probe.remove();
+      const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      return textWidth > room && cs.textOverflow !== "ellipsis";
+    });
+    expect(clipped).toBe(false);
     await header.getByRole("button", { name: "Filters" }).click();
     const panel = (await page.getByRole("dialog", { name: "Filters" }).boundingBox())!;
     expect(panel.x).toBeGreaterThanOrEqual(16);

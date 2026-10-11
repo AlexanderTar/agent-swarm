@@ -148,7 +148,7 @@ function NarrowHeader(p: HeaderProps) {
       <div className="flex items-center gap-2">
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute left-2 top-3.5 size-4 text-muted-foreground" />
-          <Input type="search" aria-label={C.search} placeholder={C.search} value={url.q} onChange={(e) => setUrl({ q: e.target.value })} className="w-full pl-8" />
+          <Input type="search" aria-label={C.search} placeholder={C.search} value={url.q} onChange={(e) => setUrl({ q: e.target.value })} className="w-full text-ellipsis pl-8" />
         </div>
         <FiltersPopover {...p} />
         <NewItemMenu onNewSpike={p.onNewSpike} onNewItem={p.onNewItem} orchestratorItem />
