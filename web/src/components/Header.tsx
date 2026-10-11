@@ -7,6 +7,7 @@ import { useMediaQuery } from "../state/media";
 import type { BoardUrl } from "../state/url";
 import { ITEM_STATUSES } from "../types";
 import type { CardLevel, Grouping, ItemStatus, ItemType, View } from "../types";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
@@ -80,12 +81,12 @@ function FiltersPopover(p: HeaderProps) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" aria-label={active > 0 ? T.filtersActive(active) : C.filters}>
-          <ListFilter className="size-4" />{C.filters}
-          {active > 0 && <span className="rounded-full bg-primary px-1.5 text-xs text-primary-foreground">{active}</span>}
+        <Button type="button" variant="outline" size="icon" className="relative shrink-0" aria-label={active > 0 ? T.filtersActive(active) : C.filters}>
+          <ListFilter className="size-4" />
+          {active > 0 && <Badge className="absolute -right-1.5 -top-1.5 h-4 min-w-4 px-1">{active}</Badge>}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" aria-label={C.filters} className="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-3">
+      <PopoverContent align="end" collisionPadding={16} aria-label={C.filters} className="flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-3">
         <TypeStatus url={p.url} setUrl={p.setUrl} fieldClass={stacked} triggerClass={full} />
         {p.url.view === "kanban" && <LevelGroup url={p.url} setUrl={p.setUrl} fieldClass={stacked} triggerClass={full} />}
         {p.matches !== null && (
@@ -101,11 +102,12 @@ function FiltersPopover(p: HeaderProps) {
 
 const SAFE_AREA = "pt-[max(0.5rem,env(safe-area-inset-top))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]";
 
-function NeedsYouButton({ count, onClick, className }: { count: number; onClick(): void; className?: string }) {
+// `compact` shows only the dot and count; the accessible name keeps the full label.
+function NeedsYouButton({ count, onClick, className, compact }: { count: number; onClick(): void; className?: string; compact?: boolean }) {
   return (
-    <Button type="button" variant="secondary" className={className} onClick={onClick}>
+    <Button type="button" variant="secondary" className={cn("shrink-0", className)} aria-label={compact ? T.needsYouButton(count) : undefined} onClick={onClick}>
       {count > 0 && <span data-dot className="size-1.5 rounded-full bg-warning" />}
-      {T.needsYouButton(count)}
+      {compact ? count : T.needsYouButton(count)}
     </Button>
   );
 }
@@ -141,7 +143,7 @@ function NarrowHeader(p: HeaderProps) {
       <h1 className="sr-only">{C.appTitle}</h1>
       <div className="flex items-center gap-2">
         <ViewTabs url={url} setUrl={setUrl} className="min-w-0 flex-1" />
-        <NeedsYouButton count={p.needsYou} onClick={() => setUrl({ view: "inbox" })} />
+        <NeedsYouButton compact count={p.needsYou} onClick={() => setUrl({ view: "inbox" })} />
       </div>
       <div className="flex items-center gap-2">
         <div className="relative min-w-0 flex-1">

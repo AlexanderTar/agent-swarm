@@ -42,7 +42,7 @@ describe("Header filters below sm", () => {
     narrow(true);
     setup({ type: "task", status: "done" });
     const button = screen.getByRole("button", { name: "Filters, 2 active" });
-    expect(within(button).getByText("2")).toBeInTheDocument();
+    expect(within(button).getByText("2")).toHaveAttribute("data-slot", "badge");
   });
 
   it("has no badge without active filters", () => {
