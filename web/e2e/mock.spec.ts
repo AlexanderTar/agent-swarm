@@ -516,11 +516,27 @@ for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
   });
 }
 
-test("the header stays within 140px at 390px wide", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/#/kanban");
-  const header = page.getByRole("banner");
-  await expect(header.getByRole("button", { name: "Filters" })).toBeVisible();
-  expect((await header.boundingBox())?.height).toBeLessThanOrEqual(140);
-  await noHorizontalOverflow(page);
-});
+for (const width of [375, 390, 430]) {
+  test(`the phone header fits its tabs, search and Filters popover at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    const header = page.getByRole("banner");
+    await expect(header.getByRole("button", { name: "Filters" })).toBeVisible();
+    expect((await header.boundingBox())?.height).toBeLessThanOrEqual(140);
+    const list = (await header.getByRole("tablist").boundingBox())!;
+    const needsYou = (await header.getByRole("button", { name: /^Needs you/ }).boundingBox())!;
+    const tabs = header.getByRole("tab");
+    for (let i = 0; i < await tabs.count(); i++) {
+      const box = (await tabs.nth(i).boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(list.x - 0.5);
+      expect(box.x + box.width).toBeLessThanOrEqual(list.x + list.width + 0.5);
+      expect(box.x + box.width).toBeLessThanOrEqual(needsYou.x);
+    }
+    expect((await header.getByRole("searchbox").boundingBox())!.width).toBeGreaterThanOrEqual(170);
+    await header.getByRole("button", { name: "Filters" }).click();
+    const panel = (await page.getByRole("dialog", { name: "Filters" }).boundingBox())!;
+    expect(panel.x).toBeGreaterThanOrEqual(16);
+    expect(panel.x + panel.width).toBeLessThanOrEqual(width - 16);
+    await noHorizontalOverflow(page);
+  });
+}
