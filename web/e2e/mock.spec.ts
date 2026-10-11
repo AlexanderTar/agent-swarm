@@ -535,8 +535,8 @@ for (const width of [375, 390, 430]) {
     }
     const search = header.getByRole("searchbox");
     expect((await search.boundingBox())!.width).toBeGreaterThanOrEqual(170);
-    // a placeholder wider than the field must end in an ellipsis, never a half-cut glyph
-    const clipped = await search.evaluate((el: HTMLInputElement) => {
+    // the placeholder must fit the field whole, focused or not: a focused input drops the ellipsis and hard-cuts a glyph
+    const overflow = () => search.evaluate((el: HTMLInputElement) => {
       const cs = getComputedStyle(el);
       const probe = document.createElement("span");
       probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
@@ -545,9 +545,12 @@ for (const width of [375, 390, 430]) {
       const textWidth = probe.getBoundingClientRect().width;
       probe.remove();
       const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-      return textWidth > room && cs.textOverflow !== "ellipsis";
+      return textWidth - room;
     });
-    expect(clipped).toBe(false);
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await search.focus();
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await search.blur();
     await header.getByRole("button", { name: "Filters" }).click();
     const panel = (await page.getByRole("dialog", { name: "Filters" }).boundingBox())!;
     expect(panel.x).toBeGreaterThanOrEqual(16);
