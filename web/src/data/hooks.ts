@@ -28,6 +28,7 @@ export function DataProvider(p: { api: Api; children: ReactNode; events?: boolea
     const h = connectEvents({
       url: "/api/events",
       headers: api.authHeaders,
+      onUnauthorized: api.unauthorized,
       backoffMs,
       // contracts §7.1/onEvent contract: this must never throw — a throw aborts the SSE read loop
       // and replays the same event on reconnect (see sse.ts). keysForEvent is a pure switch and

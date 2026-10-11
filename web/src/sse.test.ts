@@ -38,8 +38,10 @@ function harness(backoffMs: number[] = [0], onEvent?: (e: BoardEvent) => void) {
   const streams: ReturnType<typeof streamResponse>[] = [];
   const requests: Record<string, string>[] = [];
   const signals: (AbortSignal | undefined)[] = [];
+  const credentials: (RequestCredentials | undefined)[] = [];
   const fetchFn = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     requests.push(init?.headers as Record<string, string>);
+    credentials.push(init?.credentials);
     signals.push(init?.signal ?? undefined);
     const s = streamResponse();
     streams.push(s);
@@ -58,7 +60,7 @@ function harness(backoffMs: number[] = [0], onEvent?: (e: BoardEvent) => void) {
     onState: (s) => states.push(s),
     backoffMs,
   });
-  return { streams, requests, signals, events, states, handle };
+  return { streams, requests, signals, credentials, events, states, handle };
 }
 
 describe("connectEvents", () => {
@@ -74,6 +76,20 @@ describe("connectEvents", () => {
     h.streams[0]?.push('id: 7\nevent: agent.changed\ndata: {"name":"a","root_key":"EPIC-1"}\n\n');
     await vi.waitFor(() => expect(h.events).toEqual([{ seq: 7, type: "agent.changed", data: { name: "a", root_key: "EPIC-1" } }]));
     h.handle.close();
+  });
+
+  it("sends the session cookie with the stream request", async () => {
+    const h = harness();
+    await vi.waitFor(() => expect(h.credentials[0]).toBe("same-origin"));
+    h.handle.close();
+  });
+
+  it("reports a 401 so the board can go back to Login", async () => {
+    const onUnauthorized = vi.fn();
+    const fetchFn = vi.fn(async () => new Response("no", { status: 401 })) as unknown as typeof fetch;
+    const handle = connectEvents({ url: "/e", headers: async () => ({}), fetchFn, onEvent: () => {}, onState: () => {}, onUnauthorized, backoffMs: [60_000] });
+    await vi.waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+    handle.close();
   });
 
   it("reconnects with Last-Event-ID after the stream ends", async () => {

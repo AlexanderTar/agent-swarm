@@ -471,6 +471,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
     const method = req.method.toUpperCase();
     d.calls.push({ method, path: url.pathname + url.search, body: req.body });
     if (method === "GET" && url.pathname === "/api/bootstrap") return ok({ token: db.token });
+    if (method === "GET" && url.pathname === "/api/auth/me") return ok({ origin: "local", authenticated: true });
     const o = overrides.get(`${method} ${url.pathname}`);
     let hit: RegExpExecArray | null = null;
     let fn: Route[2] | undefined;

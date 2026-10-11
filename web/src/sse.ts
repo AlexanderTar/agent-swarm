@@ -50,6 +50,8 @@ export interface EventsOptions {
   fetchFn?: typeof fetch;
   onEvent: (e: BoardEvent) => void;
   onState: (s: ConnState) => void;
+  /** The server refused the stream's credentials (401). The stream still retries on its backoff. */
+  onUnauthorized?: () => void;
   backoffMs?: readonly number[];
 }
 
@@ -73,7 +75,8 @@ export function connectEvents(o: EventsOptions): EventsHandle {
     try {
       const headers: Record<string, string> = { ...(await o.headers()), Accept: "text/event-stream" };
       if (lastId !== null) headers["Last-Event-ID"] = lastId;
-      const res = await fetchFn(o.url, { headers, signal: ctrl.signal });
+      const res = await fetchFn(o.url, { headers, credentials: "same-origin", signal: ctrl.signal });
+      if (res.status === 401) o.onUnauthorized?.();
       if (!res.ok || !res.body) throw new Error(`events: HTTP ${res.status}`);
       failures = 0;
       o.onState("open");
