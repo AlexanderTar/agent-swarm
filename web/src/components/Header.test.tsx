@@ -71,6 +71,23 @@ describe("Header filters below sm", () => {
     expect(setUrl).toHaveBeenCalledWith({ q: "", type: "", status: "" });
   });
 
+  it("moves New orchestrator into the New item menu", async () => {
+    narrow(true);
+    const onNewSpike = vi.fn();
+    const user = userEvent.setup();
+    render(<Header url={DEFAULT_URL} setUrl={() => {}} matches={null} needsYou={0} onNewSpike={onNewSpike} onNewItem={() => {}} />);
+    expect(screen.queryByRole("button", { name: "New orchestrator" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New item" }));
+    await user.click(await screen.findByRole("menuitem", { name: "New orchestrator" }));
+    expect(onNewSpike).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the app title for screen readers", () => {
+    narrow(true);
+    setup();
+    expect(screen.getByRole("heading", { name: "Agent Swarm" })).toHaveClass("sr-only");
+  });
+
   it("keeps the view tabs outside the popover", () => {
     narrow(true);
     setup();
@@ -83,6 +100,7 @@ describe("Header at sm and up", () => {
     narrow(false);
     setup({ view: "kanban" });
     expect(screen.queryByRole("button", { name: /^Filters/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New orchestrator" })).toBeInTheDocument();
     for (const name of ["Type", "Status", "Card level", "Group by"]) expect(screen.getByRole("combobox", { name })).toBeInTheDocument();
   });
 });
