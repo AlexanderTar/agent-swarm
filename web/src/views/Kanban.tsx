@@ -111,6 +111,17 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
   );
 }
 
+// Touch uses the Move to… menu, so only mouse and pen pointers may start a drag; otherwise a swipe
+// on a card can start one that sticks until reload.
+const pointerDown = PointerSensor.activators[0]!;
+export class MousePenSensor extends PointerSensor {
+  static activators = [{
+    eventName: pointerDown.eventName,
+    handler: (e: Parameters<typeof pointerDown.handler>[0], o: Parameters<typeof pointerDown.handler>[1]) =>
+      e.nativeEvent.pointerType !== "touch" && pointerDown.handler(e, o),
+  }];
+}
+
 export function Kanban(p: KanbanProps) {
   const toast = useToast();
   const { live } = useConnection();
@@ -124,7 +135,7 @@ export function Kanban(p: KanbanProps) {
     ["items", "item:", "graph:"],
   );
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(MousePenSensor, { activationConstraint: { distance: 4 } }),
     // F8: Space alone starts a keyboard drag; Enter is freed up for card selection instead of also
     // starting one (§16.7: "Space to pick up, arrows to move, Enter to drop, Esc to cancel").
     useSensor(KeyboardSensor, { keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space", "Enter"] } }),
@@ -235,7 +246,7 @@ export function Kanban(p: KanbanProps) {
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
         className="h-full overflow-auto max-sm:snap-x max-sm:snap-mandatory"
       >
-        <div className="max-sm:w-max max-sm:min-w-full">
+        <div className="max-md:w-max max-md:min-w-full">
         <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
           {cols.map((s) => {
             const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
@@ -260,7 +271,7 @@ export function Kanban(p: KanbanProps) {
         {lanes.map((l) => {
           const collapsed = group === "root" && laneCollapsed(l);
           return (
-            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border max-sm:min-w-full">
+            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border max-md:min-w-full">
               {group === "root" && (
                 <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-md:h-auto max-md:min-h-11 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}

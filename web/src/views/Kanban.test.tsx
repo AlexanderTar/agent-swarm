@@ -6,7 +6,7 @@ import { createMockDaemon } from "../mock/daemon";
 import { seed } from "../mock/fixtures";
 import { renderWithDaemon } from "../test/render";
 import type { CardLevel, Filter, Grouping } from "../types";
-import { Kanban } from "./Kanban";
+import { Kanban, MousePenSensor } from "./Kanban";
 
 const none: Filter = { q: "", type: "", status: "" };
 
@@ -104,8 +104,8 @@ describe("Kanban view (§16.7)", () => {
     expect(card("TASK-101")).toHaveClass("max-sm:w-full");
     const lane = within(screen.getByTestId("lane-EPIC-12")).getAllByRole("button")[0]!;
     expect(lane).toHaveClass("max-sm:max-w-[100vw]", "max-sm:flex-wrap", "max-sm:whitespace-normal", "max-md:h-auto", "max-md:min-h-11");
-    expect(screen.getByTestId("lane-EPIC-12")).toHaveClass("max-sm:min-w-full"); // spans the scroll width so the sticky header can travel
-    expect(screen.getByTestId("col-ready").parentElement!.parentElement).toHaveClass("max-sm:w-max", "max-sm:min-w-full");
+    expect(screen.getByTestId("lane-EPIC-12")).toHaveClass("max-md:min-w-full"); // spans the scroll width so the sticky header can travel
+    expect(screen.getByTestId("col-ready").parentElement!.parentElement).toHaveClass("max-md:w-max", "max-md:min-w-full");
   });
 
   it("shows every conditional card line", async () => {
@@ -334,4 +334,15 @@ describe("Kanban view (§16.7)", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Move to… TASK-103" })).toBeDisabled());
     expect(card("TASK-103")).toHaveAttribute("aria-disabled", "true");
   });
+
+  it("only mouse and pen pointers can start a drag; touch never does (Move to… replaces it)", () => {
+    const { handler } = MousePenSensor.activators[0]!;
+    for (const [pointerType, starts] of [["mouse", true], ["pen", true], ["touch", false]] as const) {
+      const onActivation = vi.fn();
+      const ok = handler({ nativeEvent: { pointerType, isPrimary: true, button: 0 } } as never, { onActivation } as never);
+      expect(ok, pointerType).toBe(starts);
+      expect(onActivation.mock.calls.length, pointerType).toBe(starts ? 1 : 0);
+    }
+  });
+
 });

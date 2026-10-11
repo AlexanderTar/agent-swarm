@@ -276,8 +276,8 @@ test("kanban lane header text stays inside its button and every lane header is o
   }
 });
 
-test("kanban lane headers stay on screen at every horizontal scroll offset and after reload on phones", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+test("kanban lane headers stay on screen at every horizontal scroll offset and after reload below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "below md only");
   const onScreen = async (width: number, label: string) => {
     for (const l of await page.locator('[data-testid^="lane-"]').all()) {
       const box = (await l.getByRole("button").first().boundingBox())!;
@@ -285,7 +285,7 @@ test("kanban lane headers stay on screen at every horizontal scroll offset and a
       expect(box.x + box.width, label).toBeLessThanOrEqual(width + 0.5);
     }
   };
-  for (const width of [390, 375]) {
+  for (const width of testInfo.project.name === "tablet" ? [767, 700] : [390, 375]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto("/#/kanban");
     await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
