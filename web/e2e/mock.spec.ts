@@ -227,6 +227,27 @@ test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px 
   await noHorizontalOverflow(page);
 });
 
+test("kanban lane headers wrap inside the screen and collapsed names are not cut on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  const viewport = page.viewportSize()!.width;
+  const lane = page.getByTestId("lane-EPIC-12").getByRole("button").first();
+  await expect(lane).toBeVisible();
+  const laneBox = (await lane.boundingBox())!;
+  expect(laneBox.width).toBeLessThanOrEqual(viewport);
+  expect(await lane.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  for (const s of ["draft", "done", "cancelled"]) {
+    const col = page.getByTestId(`col-${s}`);
+    await col.scrollIntoViewIfNeeded();
+    expect(await col.evaluate((e) => e.scrollWidth <= e.clientWidth), s).toBe(true);
+    await expect(col).toContainText("·");
+  }
+  const card = page.getByTestId("card-TASK-101");
+  const cell = (await page.getByTestId("cell-EPIC-12-in_progress").boundingBox())!;
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.width).toBeGreaterThan(cell.width - 28);
+});
+
 test("Move to… works from the keyboard", async ({ page }) => {
   await page.goto("/#/kanban");
   // the card itself picks up "Move to… TASK-110" in its own accessible name (dnd-kit gives it

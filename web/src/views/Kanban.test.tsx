@@ -99,8 +99,11 @@ describe("Kanban view (§16.7)", () => {
     expect(cell("EPIC-12", "ready")).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
     const done = screen.getByTestId("col-done");
     expect(within(done).getByText("Done")).toHaveClass("max-sm:not-sr-only");
-    expect(done).toHaveClass("max-sm:w-[112px]");
-    expect(cell("EPIC-12", "done")).toHaveClass("max-sm:w-[112px]");
+    expect(done).toHaveClass("max-sm:w-[132px]", "max-sm:normal-case");
+    expect(cell("EPIC-12", "done")).toHaveClass("max-sm:w-[132px]");
+    expect(card("TASK-101")).toHaveClass("max-sm:w-full");
+    const lane = within(screen.getByTestId("lane-EPIC-12")).getAllByRole("button")[0]!;
+    expect(lane).toHaveClass("max-sm:max-w-[100vw]", "max-sm:flex-wrap", "max-sm:whitespace-normal");
   });
 
   it("shows every conditional card line", async () => {
