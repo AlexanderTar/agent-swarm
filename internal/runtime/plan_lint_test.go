@@ -200,3 +200,51 @@ func TestTreeWarnsWhenOneUnitLacksTestStep(t *testing.T) {
 		t.Fatalf("warnings=%v", w)
 	}
 }
+
+func strp(s string) *string { return &s }
+
+func TestTreeRejectsFreeTextTddExempt(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Children[0].TddExempt = strp("any free text")
+	lintErrors(t, tree, "Task t: tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
+}
+
+func TestTreeRejectsEmptyTddExempt(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Children[0].TddExempt = strp("")
+	lintErrors(t, tree, "Task t: tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
+}
+
+func TestTreeAcceptsKnownTddExempt(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Children[0].TddExempt = strp("docs")
+	tree.Children[0].Children[0].Workflow = &workflow.Spec{Template: "tdd-reviewed"}
+	errs, _ := lintTree(tree)
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "tdd_exempt") {
+			t.Fatalf("unexpected tdd_exempt error: %v", e)
+		}
+	}
+}
+
+func TestTreeRejectsTddExemptOnStory(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].TddExempt = strp("docs")
+	lintErrors(t, tree, "Story s: Only tasks can be TDD-exempt.")
+}
+
+func TestRegisterPlanRefusesFreeTextTddExempt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, "chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bad exempt", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	body := strings.Replace(planBody, `"tdd_exempt":null`, `"tdd_exempt":"any free text"`, 1)
+	_, err = s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, body), "")
+	if err == nil || !strings.Contains(err.Error(), "Task t1: tdd_exempt must be one of") {
+		t.Fatalf("err = %v", err)
+	}
+}

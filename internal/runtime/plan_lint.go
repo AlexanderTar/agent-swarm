@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
@@ -31,6 +32,13 @@ func lintTree(tree Tree) (errs []error, warnings []string) {
 		if n.Workflow != nil {
 			if err := workflow.Validate(level, *n.Workflow); err != nil {
 				errs = append(errs, fmt.Errorf("%s %s workflow: %w.", capType(n.Type), n.Ref, err))
+			}
+		}
+		if n.TddExempt != nil {
+			// "" is rejected too: Resolve below treats a non-nil pointer as
+			// exempt, but CreateTx skips validation for "".
+			if err := items.ValidateTddExempt(items.Type(n.Type), *n.TddExempt); err != nil {
+				errs = append(errs, fmt.Errorf("%s %s: %w", capType(n.Type), n.Ref, err))
 			}
 		}
 		if level != workflow.LevelTask && (len(n.Steps) > 0 || len(n.Units) > 0 || n.Solo != "" || len(n.Verify) > 0) {

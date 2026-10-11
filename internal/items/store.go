@@ -384,6 +384,19 @@ func validateText(title, brief string) error {
 	return nil
 }
 
+// ValidateTddExempt checks a tdd_exempt value for an item of type t: it must be
+// one of tddValues and only tasks may carry one. "" is rejected here; callers
+// that treat "" as "not exempt" skip the call.
+func ValidateTddExempt(t Type, v string) error {
+	if !slices.Contains(tddValues, v) {
+		return errf(CodeBadRequest, "tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
+	}
+	if t != Task {
+		return errf(CodeBadRequest, "Only tasks can be TDD-exempt.")
+	}
+	return nil
+}
+
 func validPriority(p int) error {
 	if p < 0 || p > 3 {
 		return errf(CodeBadRequest, "Priority must be between 0 and 3.")
@@ -433,11 +446,8 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 		return Item{}, errf(CodeBadRequest, "Only spikes have an intent.")
 	}
 	if in.TddExempt != "" {
-		if !slices.Contains(tddValues, in.TddExempt) {
-			return Item{}, errf(CodeBadRequest, "tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
-		}
-		if in.Type != Task {
-			return Item{}, errf(CodeBadRequest, "Only tasks can be TDD-exempt.")
+		if err := ValidateTddExempt(in.Type, in.TddExempt); err != nil {
+			return Item{}, err
 		}
 		if !by.isOrchestrator() && by.Kind != ActorDaemon {
 			return Item{}, errf(CodeBadRequest, "Only an orchestrator or a plan can set tdd_exempt.")
@@ -700,11 +710,8 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 			return Item{}, err
 		}
 		if it.TddExempt != "" {
-			if !slices.Contains(tddValues, it.TddExempt) {
-				return Item{}, errf(CodeBadRequest, "tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
-			}
-			if it.Type != Task {
-				return Item{}, errf(CodeBadRequest, "Only tasks can be TDD-exempt.")
+			if err := ValidateTddExempt(it.Type, it.TddExempt); err != nil {
+				return Item{}, err
 			}
 			if !by.isOrchestrator() && by.Kind != ActorDaemon {
 				return Item{}, errf(CodeBadRequest, "Only an orchestrator or a plan can set tdd_exempt.")
