@@ -216,6 +216,12 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`DROP TABLE bug_reports`); err != nil {
 		t.Fatal(err)
 	}
+	// 0032_web_auth.sql likewise uses plain CREATE TABLE.
+	for _, tbl := range []string{"web_sessions", "web_auth"} {
+		if _, err := raw.Exec(`DROP TABLE ` + tbl); err != nil {
+			t.Fatal(err)
+		}
+	}
 	raw.Close()
 
 	d, err = db.Open(ctx, path)
