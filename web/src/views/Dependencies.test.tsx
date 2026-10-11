@@ -1,4 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { useItems } from "../data/queries";
@@ -92,6 +93,36 @@ describe("Dependencies view (§16.8)", () => {
     a.unmount();
     renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith("EPIC-12"));
+  });
+
+  it("does not re-select a root after the selection is closed, and keeps the graph", async () => {
+    const onSelect = vi.fn();
+    function Closable() {
+      const [sel, setSel] = useState("");
+      const items = useItems();
+      if (!items.data) return null;
+      return (
+        <>
+          <button type="button" onClick={() => setSel("")}>Close details</button>
+          <Dependencies items={items.data.items} loaded filter={none} selected={sel} connected onSelect={(k) => { onSelect(k); setSel(k); }} />
+        </>
+      );
+    }
+    const { user } = renderWithDaemon(<Closable />, { events: false });
+    await screen.findByText("No dependencies for this item.");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith("EPIC-12");
+    await user.click(screen.getByRole("button", { name: "Close details" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("No dependencies for this item.")).toBeInTheDocument();
+  });
+
+  it("lays the toolbar out as one scroll row below md", async () => {
+    renderWithDaemon(<Host selected="TASK-102" />, { events: false });
+    await screen.findByTestId("node-TASK-104");
+    const bar = screen.getByRole("button", { name: "Fit" }).parentElement!;
+    expect(bar).toHaveClass("max-md:flex-nowrap", "max-md:overflow-x-auto");
   });
 
   it("surfaces a failed graph load with the daemon's reason and a working retry (standing rule)", async () => {

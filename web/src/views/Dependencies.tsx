@@ -52,19 +52,27 @@ function Graph(p: DependenciesProps) {
   const [picked, setPicked] = useState<GraphNode | null>(null);
   const [find, setFind] = useState("");
   const cache = useRef(new LayoutCache());
-  const graph = useGraph(p.selected || null, scope, hops);
+  // The graph stays on the last selection after Details is closed, and the start item is picked once:
+  // re-picking on every empty selection would reopen Details right after the user closes it.
+  const [anchor, setAnchor] = useState(p.selected);
+  const autoPicked = useRef(false);
+  const graph = useGraph(anchor || null, scope, hops);
   const idx = useMemo(() => buildIndex(p.items), [p.items]);
 
   useEffect(() => {
-    if (!p.selected && idx.roots[0]) p.onSelect(idx.roots[0].key);
-  }, [p.selected, idx, p.onSelect]);
+    if (p.selected) setAnchor(p.selected);
+    else if (!anchor && !autoPicked.current && idx.roots[0]) {
+      autoPicked.current = true;
+      p.onSelect(idx.roots[0].key);
+    }
+  }, [p.selected, anchor, idx, p.onSelect]);
   useEffect(() => setPicked(null), [p.selected]);
 
   const g = graph.data;
   const flow = useMemo(() => {
     if (!g) return null;
-    const rootKey = idx.byKey.get(p.selected)?.root_key ?? p.selected;
-    const cacheKey = scope === "root" ? `${rootKey}:root` : `${p.selected}:neighbourhood:${hops}`;
+    const rootKey = idx.byKey.get(anchor)?.root_key ?? anchor;
+    const cacheKey = scope === "root" ? `${rootKey}:root` : `${anchor}:neighbourhood:${hops}`;
     const storyOf = storyOfFn(idx.byKey, scope);
     const laid = cache.current.get(cacheKey, g, storyOf);
     const needsYou = new Set(p.items.filter((i) => i.open_requests > 0).map((i) => i.key));
@@ -74,9 +82,9 @@ function Graph(p: DependenciesProps) {
       needsYou,
       storyLabel: (k) => `${k} ${idx.byKey.get(k)?.title ?? ""}`,
     });
-  }, [g, idx, p.items, p.selected, p.filter, scope, hops]);
+  }, [g, idx, p.items, p.selected, anchor, p.filter, scope, hops]);
 
-  const touching = g?.edges.some((e) => e.from === p.selected || e.to === p.selected) ?? false;
+  const touching = g?.edges.some((e) => e.from === anchor || e.to === anchor) ?? false;
 
   const onFind = () => {
     const q = find.trim().toLowerCase();
@@ -102,7 +110,7 @@ function Graph(p: DependenciesProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:[&>*]:shrink-0">
         <span>{C.scope}</span>
         <Segmented
           label={C.scope}

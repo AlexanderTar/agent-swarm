@@ -20,7 +20,7 @@ export interface AgentFieldsValue {
 }
 
 const WORKER_ROLES: SettingsRole[] = ["coder", "reviewer", "ui_reviewer", "designer", "researcher", "debugger", "mechanical"];
-const ROW = "grid min-w-0 grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)_40px_minmax(0,1fr)]";
+const ROW = "grid min-w-0 grid-cols-[72px_minmax(0,1fr)] max-sm:grid-cols-1 items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)_40px_minmax(0,1fr)]";
 const DEFAULT = "__default";
 
 function Pick(p: { id: string; label: string; value: string; options: Option[]; onChange(v: string): void; disabled?: boolean; placeholder?: string; agent?: boolean }) {
@@ -82,7 +82,7 @@ export function AgentFields(p: {
         {(errors.agent || agentError || (choice.model ? errors.model : undefined)) && <p className="col-start-2 text-xs text-destructive @min-[700px]:col-span-5">{errors.agent || agentError || errors.model}</p>}
         {note && <p className="col-start-2 text-xs text-muted-foreground @min-[700px]:col-span-5">{note}</p>}
       </div>
-      <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)]">
+      <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] max-sm:grid-cols-1 items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)]">
         <Label htmlFor={`${id}-advisor`}>{C.advisor}</Label>
         <Pick agent id={`${id}-advisor`} label={C.advisor} value={advisor === "none" ? "none" : advisor.agent} options={advisorAgentOptions(p.settings.enabled_agents)} onChange={(v) => p.onChange({ ...p.value, advisor: changeAdvisorAgent(v as AgentKind | "none", p.settings, p.catalog) })} />
         <Label htmlFor={`${id}-advisor-model`}>{C.model}</Label>

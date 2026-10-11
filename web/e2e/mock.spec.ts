@@ -34,11 +34,11 @@ test("Details and form sheets use their separate narrow breakpoints", async ({ p
   }
 });
 
-test("form sheet controls fit a narrow viewport", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+for (const width of [375, 390]) test(`form sheet controls fit a narrow viewport at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
   await page.goto("/");
   const newItem = await page.getByRole("button", { name: "New item" }).boundingBox();
-  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(390);
+  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(width);
   await openNewOrchestrator(page);
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   await page.screenshot({ animations: "disabled" });
@@ -46,7 +46,46 @@ test("form sheet controls fit a narrow viewport", async ({ page }) => {
   const modelBox = await model.boundingBox();
   const rescanBox = await sheet.getByRole("button", { name: "Rescan" }).boundingBox();
   expect(modelBox?.width).toBeGreaterThanOrEqual(160);
-  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(390);
+  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(width);
+  // Intent: label above the control, every option inside the sheet.
+  const sheetBox = (await sheet.boundingBox())!;
+  const label = await sheet.getByText("Intent", { exact: true }).boundingBox();
+  const group = sheet.getByRole("radiogroup", { name: "Intent" });
+  const groupBox = (await group.boundingBox())!;
+  expect(groupBox.y).toBeGreaterThanOrEqual(label!.y + label!.height - 1);
+  expect(groupBox.x).toBeLessThanOrEqual(label!.x + 1);
+  for (const radio of await group.getByRole("radio").all()) {
+    const box = (await radio.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(sheetBox.x + sheetBox.width - 8);
+  }
+  // Footer: helper text on its own line, buttons full width and stacked.
+  const cancel = (await sheet.getByRole("button", { name: "Cancel", exact: true }).boundingBox())!;
+  const submit = (await sheet.getByRole("button", { name: /^(Start|Queue)/ }).boundingBox())!;
+  expect(cancel.width).toBeGreaterThan(300);
+  expect(submit.width).toBeGreaterThan(300);
+  // Primary action first, Cancel last in the stack.
+  expect(cancel.y).toBeGreaterThanOrEqual(submit.y + submit.height - 1);
+});
+
+test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/hierarchy?item=TASK-101");
+  const details = page.getByRole("dialog", { name: "TASK-101" });
+  await details.getByRole("tab", { name: "Checkpoints" }).click();
+  const row = details.getByRole("group").first().getByRole("button").first();
+  await expect(row).toBeVisible();
+  const [time, summary] = [row.locator("span").nth(0), row.locator("span").last()];
+  const t = (await time.boundingBox())!;
+  const s = (await summary.boundingBox())!;
+  expect(s.y).toBeGreaterThanOrEqual(t.y + t.height - 1);
+  // Every part stays inside the bordered group, and the advice title wraps instead of clipping.
+  const group = (await details.getByRole("group").first().boundingBox())!;
+  for (const box of [t, s, (await row.locator("span").nth(2).boundingBox())!]) expect(box.y + box.height).toBeLessThanOrEqual(group.y + group.height);
+  for (const advice of await details.getByRole("button", { name: /^Advice/ }).all()) {
+    const { scrollWidth, clientWidth } = await advice.evaluate((e) => ({ scrollWidth: e.scrollWidth, clientWidth: e.clientWidth }));
+    expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+  }
+  await noHorizontalOverflow(page);
 });
 
 test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }, testInfo) => {
@@ -165,6 +204,104 @@ test("dragging to a refused column shows the lock, returns the card and toasts",
   await expect(page.getByTestId("cell-EPIC-12-in_progress").getByTestId("card-TASK-101")).toBeVisible();
 });
 
+test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  const ready = page.getByTestId("col-ready");
+  await expect(ready).toBeVisible();
+  const viewport = page.viewportSize()!.width;
+  const box = await ready.boundingBox();
+  expect(Math.round(box!.width)).toBe(Math.round(viewport * 0.85));
+  await expect(ready.locator("xpath=../../..")).toHaveCSS("scroll-snap-type", /x mandatory/);
+  const done = page.getByTestId("col-done");
+  await done.scrollIntoViewIfNeeded();
+  await expect(done.getByText("Done", { exact: true })).toBeVisible();
+  const more = page.getByTestId("card-TASK-103").getByRole("button", { name: "Move to… TASK-103" });
+  await more.scrollIntoViewIfNeeded();
+  const moreBox = await more.boundingBox();
+  expect(moreBox!.width).toBeGreaterThanOrEqual(44);
+  expect(moreBox!.height).toBeGreaterThanOrEqual(44);
+  await more.click();
+  await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
+  await expect(page.getByTestId("cell-EPIC-12-blocked").getByTestId("card-TASK-103")).toBeVisible();
+  await noHorizontalOverflow(page);
+});
+
+test("kanban lane headers wrap inside the screen and collapsed names are not cut on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  const viewport = page.viewportSize()!.width;
+  const lane = page.getByTestId("lane-EPIC-12").getByRole("button").first();
+  await expect(lane).toBeVisible();
+  const laneBox = (await lane.boundingBox())!;
+  expect(laneBox.width).toBeLessThanOrEqual(viewport);
+  expect(await lane.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  for (const s of ["draft", "done", "cancelled"]) {
+    const col = page.getByTestId(`col-${s}`);
+    await col.scrollIntoViewIfNeeded();
+    expect(await col.evaluate((e) => e.scrollWidth <= e.clientWidth), s).toBe(true);
+    await expect(col).toContainText("·");
+  }
+  const card = page.getByTestId("card-TASK-101");
+  const cell = (await page.getByTestId("cell-EPIC-12-in_progress").boundingBox())!;
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.width).toBeGreaterThan(cell.width - 28);
+});
+
+test("kanban lane header text stays inside its button and every lane header is on screen after load on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/kanban");
+  await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+  const lanes = await page.locator('[data-testid^="lane-"]').all();
+  for (const l of lanes) {
+    const btn = l.getByRole("button").first();
+    const fits = await btn.evaluate((b) => {
+      const r = b.getBoundingClientRect();
+      const kids = [...b.children].map((c) => c.getBoundingClientRect().bottom);
+      return { h: r.height, ok: Math.max(...kids) <= r.bottom + 0.5 };
+    });
+    expect(fits.h).toBeGreaterThanOrEqual(44);
+    expect(fits.ok).toBe(true);
+  }
+  for (const width of [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    await page.reload();
+    await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+    for (const l of await page.locator('[data-testid^="lane-"]').all()) {
+      const box = (await l.getByRole("button").first().boundingBox())!;
+      expect(box.x, `${width}`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${width}`).toBeLessThanOrEqual(width + 0.5);
+    }
+  }
+});
+
+test("kanban lane headers stay on screen at every horizontal scroll offset and after reload below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "below md only");
+  const onScreen = async (width: number, label: string) => {
+    for (const l of await page.locator('[data-testid^="lane-"]').all()) {
+      const box = (await l.getByRole("button").first().boundingBox())!;
+      expect(box.x, label).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, label).toBeLessThanOrEqual(width + 0.5);
+    }
+  };
+  for (const width of testInfo.project.name === "tablet" ? [767, 700] : [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+    for (const s of ["draft", "ready", "in_progress", "blocked", "done", "cancelled"]) {
+      const col = page.getByTestId(`col-${s}`);
+      await col.evaluate((e) => e.scrollIntoView({ inline: "start", block: "nearest" }));
+      await page.waitForTimeout(300);
+      await onScreen(width, `${width} scrolled to ${s}`);
+      await page.reload();
+      await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+      await page.waitForTimeout(300);
+      await onScreen(width, `${width} reloaded at ${s}`);
+    }
+  }
+});
+
 test("Move to… works from the keyboard", async ({ page }) => {
   await page.goto("/#/kanban");
   // the card itself picks up "Move to… TASK-110" in its own accessible name (dnd-kit gives it
@@ -194,6 +331,33 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   await expect(page.getByText("A local queue of pending messages.")).toBeVisible();
   await page.getByRole("button", { name: "Approve section" }).click();
   await expect(page.getByText("Already resolved.")).toBeVisible();
+});
+
+test("phone inbox lists full height, opens a review full-width and Back returns", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below md)");
+  await page.goto("/#/inbox");
+  const list = page.getByRole("list", { name: "Needs you" });
+  await expect(list).toBeVisible();
+  const view = await page.getByTestId("view").boundingBox();
+  const listBox = await list.boundingBox();
+  expect(listBox!.height).toBeGreaterThan(300);
+  // The row button must grow with its three lines instead of squeezing them to nothing.
+  const lines = await list.getByRole("button", { name: /Waiting for your input/ }).first().locator("span").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+  for (const h of lines) expect(h).toBeGreaterThanOrEqual(16);
+  await expect(page.getByRole("button", { name: "← Back" })).toBeHidden();
+  await list.getByRole("button", { name: /Waiting for your input/ }).first().click();
+  await expect(page).toHaveURL(/req=/);
+  await expect(list).toBeHidden();
+  const back = page.getByRole("button", { name: "← Back" });
+  await expect(back).toBeVisible();
+  const backBox = await back.boundingBox();
+  expect(backBox!.height).toBeGreaterThanOrEqual(44);
+  const review = await page.getByRole("heading", { level: 2 }).last().boundingBox();
+  expect(review!.x + review!.width).toBeLessThanOrEqual(view!.x + view!.width);
+  await noHorizontalOverflow(page);
+  await back.click();
+  await expect(page).not.toHaveURL(/req=/);
+  await expect(list).toBeVisible();
 });
 
 test("epic review fits and works at 390px", async ({ page }) => {
@@ -229,6 +393,9 @@ test("desktop inbox keeps its list beside the selected review", async ({ page },
   const listBox = await list.boundingBox();
   const titleBox = await title.boundingBox();
   expect(listBox && titleBox && listBox.x + listBox.width).toBeLessThan(titleBox?.x ?? 0);
+  // The list pane is not capped to the phone's max-h-48 (192px) on desktop.
+  const pane = await list.locator("xpath=..").boundingBox();
+  expect(pane!.height).toBeGreaterThan(300);
   await page.screenshot({ path: "test-results/needs-you-desktop.png", animations: "disabled" });
 });
 
@@ -288,6 +455,55 @@ test("toast uses the popover surface in the browser", async ({ page }) => {
   const toast = page.locator("[data-sonner-toast]").last();
   await expect(toast).toBeVisible();
   expect(await toast.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(23, 23, 29)");
+});
+
+test("hierarchy rows fold status under the title and are 44px tall on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/hierarchy");
+  await expect(page.getByTestId("view")).toBeVisible();
+  await expect(page.getByText("WORK ITEM")).toBeHidden();
+  const row = page.getByRole("treeitem", { name: /^TASK-102 / });
+  const rowBox = await row.boundingBox();
+  expect(rowBox!.height).toBeGreaterThanOrEqual(44);
+  const key = await row.getByText("TASK-102", { exact: true }).boundingBox();
+  const title = await row.locator("span.truncate").boundingBox();
+  const status = await row.getByText("Blocked", { exact: true }).boundingBox();
+  expect(status!.y).toBeGreaterThanOrEqual(title!.y + title!.height - 2);
+  expect(key!.height).toBeLessThan(24);
+  // The folded status pill lines up under the type icon, for leaves and for rows with a chevron.
+  for (const k of ["TASK-102", "EPIC-12"]) {
+    const r = page.getByRole("treeitem", { name: new RegExp(`^${k} `) });
+    const icon = (await r.getByRole("img", { name: /^(Epic|Story|Task|Bug|Spike|Chore)$/ }).first().boundingBox())!;
+    const pill = (await r.getByText(/^(Blocked|In progress|Ready|Draft|Done|In review)$/).first().boundingBox())!;
+    expect(Math.abs(pill.x - icon.x), k).toBeLessThanOrEqual(4);
+  }
+  await noHorizontalOverflow(page);
+});
+
+test("hierarchy rows are at least 44px tall between sm and md too", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "touch layout");
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.goto("/#/hierarchy");
+  await expect(page.getByTestId("view")).toBeVisible();
+  const box = (await page.getByRole("treeitem", { name: /^TASK-102 / }).boundingBox())!;
+  expect(box.height).toBeGreaterThanOrEqual(44);
+});
+
+test("dependencies Details stays closed after Close and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout");
+  await page.goto("/#/dependencies");
+  const details = page.getByRole("dialog", { name: /^(EPIC|BUG|STORY|TASK)-\d+$/ });
+  await expect(details).toBeVisible();
+  await details.getByRole("button", { name: "Close" }).first().click();
+  await expect(details).toHaveCount(0);
+  await page.waitForTimeout(600);
+  await expect(details).toHaveCount(0);
+  expect(page.url()).not.toContain("item=");
+  const bar = page.getByRole("button", { name: "Fit" }).locator("xpath=..");
+  const box = await bar.boundingBox();
+  expect(box!.height).toBeLessThanOrEqual(64);
+  expect(await bar.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  await noHorizontalOverflow(page);
 });
 
 test("Hierarchy icon controls have 32px hit areas within 30px rows", async ({ page }, testInfo) => {
@@ -515,6 +731,31 @@ for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
     await page.waitForTimeout(500);
     await noHorizontalOverflow(page);
   });
+}
+
+for (const width of [375, 430, 768]) {
+  for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
+    test(`${view} view has no horizontal page overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/#/${view}`);
+      await expect(page.getByTestId("view")).toBeVisible();
+      await page.waitForTimeout(400);
+      await noHorizontalOverflow(page);
+    });
+  }
+  for (const [name, hash] of [["New item", "New item"], ["New orchestrator", "New orchestrator"]] as const) {
+    test(`${name} sheet has no horizontal overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/");
+      if (hash === "New orchestrator") await openNewOrchestrator(page);
+      else {
+        await page.getByRole("button", { name: "New item" }).click();
+        await page.getByRole("menuitem", { name: "Task" }).click();
+      }
+      await expect(page.getByRole("dialog", { name: name === "New item" ? "New item" : "New orchestrator" })).toBeVisible();
+      await noHorizontalOverflow(page);
+    });
+  }
 }
 
 for (const width of [375, 390, 430]) {

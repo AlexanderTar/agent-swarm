@@ -13,6 +13,7 @@ export function Segmented<T extends string>(p: {
       variant="outline"
       size="sm"
       aria-label={p.label}
+      className="max-sm:flex-wrap"
       value={p.value}
       disabled={p.disabled}
       onValueChange={(v) => { if (v) p.onChange(v as T); }}

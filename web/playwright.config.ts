@@ -2,7 +2,9 @@ import { existsSync } from "node:fs";
 import { chromium, defineConfig, devices } from "@playwright/test";
 
 const live = process.env.SWARM_E2E_LIVE === "1";
-const mockURL = "http://127.0.0.1:5174";
+// Parallel worktrees share the default port, so set SWARM_E2E_PORT to test your own tree.
+const mockPort = process.env.SWARM_E2E_PORT ?? "5174";
+const mockURL = `http://127.0.0.1:${mockPort}`;
 // Use the installed Chrome when the bundled Chromium has not been downloaded (as on a dev Mac).
 const channel = existsSync(chromium.executablePath()) ? undefined : "chrome";
 // The phone and tablet descriptors default to WebKit; the board is checked in Chromium.
@@ -21,7 +23,7 @@ export default defineConfig({
   webServer: live
     ? undefined
     : {
-        command: "SWARM_MOCK=1 pnpm exec vite --host 127.0.0.1 --port 5174 --strictPort",
+        command: `SWARM_MOCK=1 pnpm exec vite --host 127.0.0.1 --port ${mockPort} --strictPort`,
         url: mockURL,
         reuseExistingServer: !process.env.CI,
       },

@@ -58,7 +58,7 @@ function Card(p: {
         drag.listeners?.onKeyDown?.(e);
         if (e.key === "Enter" && !drag.isDragging) p.onSelect();
       }}
-      className="w-[256px] cursor-grab space-y-1 rounded-md border border-border bg-card p-2 shadow-sm"
+      className="w-[256px] max-sm:w-full cursor-grab space-y-1 rounded-md border border-border bg-card p-2 shadow-sm"
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <TypeIcon type={card.type} />
@@ -95,12 +95,12 @@ function Card(p: {
 function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string | null; empty: boolean; children: ReactNode }) {
   // Locked cells stay droppable: the drop runs move(), which returns the card with the §17.3 toast.
   const drop = useDroppable({ id: p.id });
-  if (p.collapsed) return <div data-testid={p.testId} className="w-[44px] shrink-0" />;
+  if (p.collapsed) return <div data-testid={p.testId} className="w-[44px] shrink-0 max-sm:w-[132px] max-sm:snap-start" />;
   return (
     <div
       ref={drop.setNodeRef}
       data-testid={p.testId}
-      className={`w-[280px] shrink-0 space-y-2 p-3 ${drop.isOver ? "ring-1 ring-ring" : ""}`}
+      className={`w-[280px] shrink-0 space-y-2 p-3 max-sm:w-[85vw] max-sm:snap-start ${drop.isOver ? "ring-1 ring-ring" : ""}`}
     >
       {p.lock !== null && (
         <p className="flex items-center gap-1 text-[12px] text-muted-foreground"><Lock aria-hidden className="size-3" />{p.lock}</p>
@@ -109,6 +109,17 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
       {p.children}
     </div>
   );
+}
+
+// Touch uses the Move to… menu, so only mouse and pen pointers may start a drag; otherwise a swipe
+// on a card can start one that sticks until reload.
+const pointerDown = PointerSensor.activators[0]!;
+export class MousePenSensor extends PointerSensor {
+  static activators = [{
+    eventName: pointerDown.eventName,
+    handler: (e: Parameters<typeof pointerDown.handler>[0], o: Parameters<typeof pointerDown.handler>[1]) =>
+      e.nativeEvent.pointerType !== "touch" && pointerDown.handler(e, o),
+  }];
 }
 
 export function Kanban(p: KanbanProps) {
@@ -124,7 +135,7 @@ export function Kanban(p: KanbanProps) {
     ["items", "item:", "graph:"],
   );
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(MousePenSensor, { activationConstraint: { distance: 4 } }),
     // F8: Space alone starts a keyboard drag; Enter is freed up for card selection instead of also
     // starting one (§16.7: "Space to pick up, arrows to move, Enter to drop, Esc to cancel").
     useSensor(KeyboardSensor, { keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space", "Enter"] } }),
@@ -233,8 +244,9 @@ export function Kanban(p: KanbanProps) {
       <div
         ref={scroller}
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
-        className="h-full overflow-auto"
+        className="h-full overflow-auto max-sm:snap-x max-sm:snap-mandatory"
       >
+        <div className="max-md:w-max max-md:min-w-full">
         <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
           {cols.map((s) => {
             const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
@@ -248,10 +260,10 @@ export function Kanban(p: KanbanProps) {
                 data-collapsed={collapsed}
                 title={t.tooltip}
                 onClick={() => toggleCol(s)}
-                className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate" : "w-[280px]"}`}
+                className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate max-sm:w-[132px] max-sm:normal-case max-sm:tracking-normal" : "w-[280px] max-sm:w-[85vw]"} max-sm:snap-start`}
               >
-                {collapsed ? String(counts.get(s)?.shown ?? 0) : t.text}
-                {collapsed && <span className="sr-only">{t.text}</span>}
+                {collapsed && <span className="sr-only max-sm:not-sr-only max-sm:truncate">{STATUS_LABEL[s]}</span>}
+                {collapsed ? <><span aria-hidden className="hidden max-sm:ml-1 max-sm:inline">·</span><span className="max-sm:ml-1">{counts.get(s)?.shown ?? 0}</span></> : t.text}
               </Button>
             );
           })}
@@ -259,9 +271,9 @@ export function Kanban(p: KanbanProps) {
         {lanes.map((l) => {
           const collapsed = group === "root" && laneCollapsed(l);
           return (
-            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border">
+            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border max-md:min-w-full">
               {group === "root" && (
-                <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2">
+                <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-md:h-auto max-md:min-h-11 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
                   {l.root ? <><Key>{l.root.key}</Key><span className="font-semibold">{l.root.title}</span></> : <span className="font-semibold">{C.unassignedLane}</span>}
                   <span className="font-normal text-muted-foreground">{collapsed && l.completedText ? l.completedText : l.header}</span>
@@ -301,6 +313,7 @@ export function Kanban(p: KanbanProps) {
             </section>
           );
         })}
+        </div>
       </div>
     </DndContext>
   );

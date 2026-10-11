@@ -31,6 +31,28 @@ function ConnectedHost() {
 }
 
 describe("NeedsYou inbox (§16.11)", () => {
+  it("below md the list fills the screen until a request is opened, then Back returns to it", async () => {
+    const { user } = renderWithDaemon(<Host />, { events: false });
+    const list = await screen.findByRole("list", { name: "Needs you" });
+    const listPane = list.parentElement!;
+    const reviewPane = screen.getByText("review:req_accept").parentElement!.parentElement!;
+    expect(listPane).toHaveClass("max-md:flex-1");
+    expect(listPane.className).not.toMatch(/max-h/);
+    expect(within(list).getAllByRole("button", { name: /Waiting for your input/ })[0]).toHaveClass("max-md:h-auto");
+    expect(listPane).not.toHaveClass("max-md:hidden");
+    expect(reviewPane).toHaveClass("max-md:hidden");
+    expect(screen.queryByRole("button", { name: "← Back" })).not.toBeInTheDocument();
+
+    await user.click(within(list).getAllByRole("button", { name: /Waiting for your input/ })[0]!);
+    expect(listPane).toHaveClass("max-md:hidden");
+    expect(reviewPane).not.toHaveClass("max-md:hidden");
+    const back = screen.getByRole("button", { name: "← Back" });
+    expect(back).toHaveClass("md:hidden");
+    await user.click(back);
+    expect(listPane).not.toHaveClass("max-md:hidden");
+    expect(reviewPane).toHaveClass("max-md:hidden");
+  });
+
   it("lists requests oldest first and shows the first one", async () => {
     const { user } = renderWithDaemon(<Host />, { events: false });
     const list = await screen.findByRole("list", { name: "Needs you" });

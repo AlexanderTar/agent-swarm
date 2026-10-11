@@ -26,6 +26,12 @@ describe("AgentFields (§16.3, §16.10)", () => {
     expect(screen.getByText("Defaults from Settings")).toBeInTheDocument();
   });
 
+  it("stacks the advisor row labels above controls below sm", () => {
+    render(<Host />);
+    const grid = screen.getByText("Advisor", { selector: "label" }).parentElement!;
+    expect(grid).toHaveClass("max-sm:grid-cols-1");
+  });
+
   it("splits advisor into agent and model", async () => {
     const user = userEvent.setup();
     render(<Host />);

@@ -57,7 +57,7 @@ function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[];
       onClose={p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-xs text-muted-foreground">{C.queuedCaption}</span>}
+          {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
           <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
           <Button disabled={!valid || !connected || start.pending} onClick={() => void submit()}>
             {failure.banner ? C.tryAgain : submitLabel(busy)}
