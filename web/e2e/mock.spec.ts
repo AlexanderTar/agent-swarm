@@ -248,7 +248,7 @@ test("kanban lane headers wrap inside the screen and collapsed names are not cut
   expect(cardBox.width).toBeGreaterThan(cell.width - 28);
 });
 
-test("kanban lane header text stays inside its button and the board opens on the first expanded column on phones", async ({ page }, testInfo) => {
+test("kanban lane header text stays inside its button and every lane header is on screen after load on phones", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
   await page.goto("/#/kanban");
   await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
@@ -263,9 +263,17 @@ test("kanban lane header text stays inside its button and the board opens on the
     expect(fits.h).toBeGreaterThanOrEqual(44);
     expect(fits.ok).toBe(true);
   }
-  const ready = (await page.getByTestId("col-ready").boundingBox())!;
-  expect(ready.x).toBeGreaterThanOrEqual(-1);
-  expect(ready.x).toBeLessThan(40);
+  for (const width of [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    await page.reload();
+    await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+    for (const l of await page.locator('[data-testid^="lane-"]').all()) {
+      const box = (await l.getByRole("button").first().boundingBox())!;
+      expect(box.x, `${width}`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${width}`).toBeLessThanOrEqual(width + 0.5);
+    }
+  }
 });
 
 test("Move to… works from the keyboard", async ({ page }) => {

@@ -160,10 +160,6 @@ export function Kanban(p: KanbanProps) {
   useEffect(() => {
     const pos = readJson(storage("localStorage"), SCROLL_KEY, { left: 0, top: 0 });
     scroller.current?.scrollTo?.(pos.left, pos.top);
-    // Phones: with no saved position, start at the first expanded column, not the collapsed stub.
-    if (!pos.left && window.matchMedia?.("(max-width: 639px)").matches) {
-      scroller.current?.querySelector('[data-testid^="col-"][data-collapsed="false"]')?.scrollIntoView?.({ inline: "start", block: "nearest" });
-    }
   }, [p.loaded]);
 
   async function move(card: Item, status: ItemStatus) {
