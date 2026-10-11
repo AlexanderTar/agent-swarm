@@ -53,6 +53,16 @@ describe("NeedsYou inbox (§16.11)", () => {
     expect(reviewPane).toHaveClass("max-md:hidden");
   });
 
+  it("pads the left inset on the list and the right inset on the detail pane at md and wider", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const listPane = (await screen.findByRole("list", { name: "Needs you" })).parentElement!;
+    const reviewPane = screen.getByText("review:req_accept").parentElement!.parentElement!;
+    // The 280px list column's right edge is interior at md+, so only the left inset applies there.
+    expect(listPane).toHaveClass("pl-[max(0.75rem,env(safe-area-inset-left))]", "md:pr-3");
+    // The detail pane touches the right screen edge at md+ and the list on its left.
+    expect(reviewPane).toHaveClass("pr-[max(1rem,env(safe-area-inset-right))]", "md:pl-4");
+  });
+
   it("lists requests oldest first and shows the first one", async () => {
     const { user } = renderWithDaemon(<Host />, { events: false });
     const list = await screen.findByRole("list", { name: "Needs you" });

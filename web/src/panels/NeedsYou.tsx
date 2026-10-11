@@ -54,7 +54,7 @@ export function NeedsYou(p: {
 
   return (
     <div className="flex h-full min-h-0 flex-col md:flex-row">
-      <div className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border py-3 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-1 md:w-[280px] md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
+      <div className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border py-3 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-1 md:w-[280px] md:pr-3 md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -111,7 +111,7 @@ export function NeedsYou(p: {
           })}
         </ul>
       </div>
-      <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto p-4 ${p.selected === "" ? "max-md:hidden" : ""}`}>
+      <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto p-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] md:pl-4 ${p.selected === "" ? "max-md:hidden" : ""}`}>
         {p.selected !== "" && <Button type="button" variant="ghost" size="sm" onClick={() => p.onSelectRequest("")} className="mb-2 max-md:-ml-3 md:hidden">{C.back}</Button>}
         {resolved ? (
           <div className="space-y-2">

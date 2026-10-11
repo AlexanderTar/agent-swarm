@@ -31,6 +31,15 @@ describe("Dependencies view (§16.8)", () => {
     expect(within(node("TASK-104")).getByLabelText("Needs you")).toBeInTheDocument();
   });
 
+  it("insets the legend from the left and right safe areas like the toolbar", async () => {
+    renderWithDaemon(<Host selected="TASK-102" />, { events: false });
+    await screen.findByTestId("node-TASK-104");
+    expect(screen.getByText("A → B: B waits for A")).toHaveClass(
+      "pl-[max(0.75rem,env(safe-area-inset-left))]",
+      "pr-[max(0.75rem,env(safe-area-inset-right))]",
+    );
+  });
+
   it("selects nodes and opens the root of an external node", async () => {
     const onSelect = vi.fn();
     const { user } = renderWithDaemon(<Host selected="TASK-102" onSelect={onSelect} />, { events: false });

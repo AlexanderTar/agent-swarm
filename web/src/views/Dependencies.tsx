@@ -146,7 +146,7 @@ function Graph(p: DependenciesProps) {
           <Button type="button" variant="link" onClick={() => p.onSelect(picked.root_key)}>{C.openRoot}</Button>
         )}
       </div>
-      <p className="px-3 py-1 text-muted-foreground">{C.depLegend}</p>
+      <p className="py-1 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] text-muted-foreground">{C.depLegend}</p>
       {g && !touching ? (
         <p className="p-8 text-center">{C.noDeps}</p>
       ) : (
