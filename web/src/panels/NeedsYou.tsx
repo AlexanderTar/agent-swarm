@@ -4,6 +4,7 @@ import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { agentActionToast } from "../logic/toasts";
+import { useSession } from "../state/session";
 import { useAgents, useRequests } from "../data/queries";
 import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
 import type { InboxFilter, Request } from "../types";
@@ -23,6 +24,7 @@ export function NeedsYou(p: {
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
   const { live } = useConnection();
+  const { remote } = useSession();
   const toast = useToast();
   const seen = useRef(new Map<string, Request>());
   for (const r of requests.data ?? []) seen.current.set(r.id, r);
@@ -87,7 +89,7 @@ export function NeedsYou(p: {
                     <span className="block truncate">{line2}</span>
                     <span className="block truncate">{line3}</span>
                   </Button>
-                  {target && (
+                  {target && !remote && (
                     <Button
                       type="button"
                       variant="ghost"

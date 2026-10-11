@@ -6,6 +6,7 @@ import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import type { InboxFilter } from "../types";
+import { SessionProvider } from "../state/session";
 import { NeedsYou } from "./NeedsYou";
 
 function Host(p: { initial?: string; connected?: boolean; onViewItem?: (k: string) => void }) {
@@ -132,5 +133,13 @@ describe("NeedsYou inbox (§16.11)", () => {
     d.db.requests = [];
     renderWithDaemon(<Host />, { daemon: d, events: false });
     await waitFor(() => expect(screen.getAllByText("Nothing needs your attention.").length).toBeGreaterThan(0));
+  });
+});
+
+describe("NeedsYou in remote mode", () => {
+  it("lists requests without the per-row terminal buttons", async () => {
+    renderWithDaemon(<SessionProvider value={{ remote: true, signOut: () => {} }}><Host /></SessionProvider>, { events: false });
+    expect(await within(await screen.findByRole("list", { name: "Needs you" })).findAllByRole("listitem")).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Open agent terminal" })).not.toBeInTheDocument();
   });
 });
