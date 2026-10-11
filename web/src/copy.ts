@@ -76,6 +76,7 @@ export const C = {
   status: "Status",
   all: "All",
   clearFilters: "Clear filters",
+  filters: "Filters",
   hierarchy: "Hierarchy",
   kanban: "Kanban",
   dependencies: "Dependencies",
@@ -285,6 +286,7 @@ export const T = {
   reposNoLonger: (n: number) =>
     `${n} selected ${n === 1 ? "repository is" : "repositories are"} no longer available.`,
   matches: (n: number) => `${n} matches`,
+  filtersActive: (n: number) => `Filters, ${n} active`,
   startedFrom: (key: string) => `Started from ${key}`,
   agentName: (kebab: string) => `Agent name: ${kebab}`,
   selected: (names: string) => `Selected: ${names}`,
