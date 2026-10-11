@@ -4,6 +4,12 @@ import { renderWithDaemon } from "../test/render";
 import { CheckpointList } from "./CheckpointList";
 
 describe("CheckpointList (§16.9)", () => {
+  it("stacks the row parts below sm", async () => {
+    renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={[]} />, { events: false });
+    const row = await screen.findByRole("button", { name: /Form renders/ });
+    expect(row).toHaveClass("max-sm:flex-col", "max-sm:items-start");
+  });
+
   it("lists checkpoints and advice newest first with expandable details", async () => {
     const { user } = renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={["login-form-coder"]} />, { events: false });
     const rows = await screen.findAllByRole("group");

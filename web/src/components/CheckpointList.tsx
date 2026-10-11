@@ -21,7 +21,7 @@ function Lines({ title, lines }: { title: string; lines: string[] }) {
 function CheckpointRow({ c }: { c: Checkpoint }) {
   return (
     <Collapsible role="group" className="rounded border border-border p-2">
-      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left">
+      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left max-sm:flex-col max-sm:items-start max-sm:gap-0.5">
         <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
         <span>{c.agent_name ?? ""}</span>{" "}
         <span className="rounded bg-muted px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}

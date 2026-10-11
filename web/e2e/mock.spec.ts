@@ -34,11 +34,11 @@ test("Details and form sheets use their separate narrow breakpoints", async ({ p
   }
 });
 
-test("form sheet controls fit a narrow viewport", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+for (const width of [375, 390]) test(`form sheet controls fit a narrow viewport at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
   await page.goto("/");
   const newItem = await page.getByRole("button", { name: "New item" }).boundingBox();
-  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(390);
+  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(width);
   await openNewOrchestrator(page);
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   await page.screenshot({ animations: "disabled" });
@@ -46,7 +46,38 @@ test("form sheet controls fit a narrow viewport", async ({ page }) => {
   const modelBox = await model.boundingBox();
   const rescanBox = await sheet.getByRole("button", { name: "Rescan" }).boundingBox();
   expect(modelBox?.width).toBeGreaterThanOrEqual(160);
-  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(390);
+  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(width);
+  // Intent: label above the control, every option inside the sheet.
+  const sheetBox = (await sheet.boundingBox())!;
+  const label = await sheet.getByText("Intent", { exact: true }).boundingBox();
+  const group = sheet.getByRole("radiogroup", { name: "Intent" });
+  const groupBox = (await group.boundingBox())!;
+  expect(groupBox.y).toBeGreaterThanOrEqual(label!.y + label!.height - 1);
+  expect(groupBox.x).toBeLessThanOrEqual(label!.x + 1);
+  for (const radio of await group.getByRole("radio").all()) {
+    const box = (await radio.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(sheetBox.x + sheetBox.width - 8);
+  }
+  // Footer: helper text on its own line, buttons full width and stacked.
+  const cancel = (await sheet.getByRole("button", { name: "Cancel", exact: true }).boundingBox())!;
+  const submit = (await sheet.getByRole("button", { name: /^(Start|Queue)/ }).boundingBox())!;
+  expect(cancel.width).toBeGreaterThan(300);
+  expect(submit.width).toBeGreaterThan(300);
+  expect(submit.y).toBeGreaterThanOrEqual(cancel.y + cancel.height - 1);
+});
+
+test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/hierarchy?item=TASK-101");
+  const details = page.getByRole("dialog", { name: "TASK-101" });
+  await details.getByRole("tab", { name: "Checkpoints" }).click();
+  const row = details.getByRole("group").first().getByRole("button").first();
+  await expect(row).toBeVisible();
+  const [time, summary] = [row.locator("span").nth(0), row.locator("span").last()];
+  const t = (await time.boundingBox())!;
+  const s = (await summary.boundingBox())!;
+  expect(s.y).toBeGreaterThanOrEqual(t.y + t.height - 1);
+  await noHorizontalOverflow(page);
 });
 
 test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }, testInfo) => {
@@ -595,6 +626,31 @@ for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
     await page.waitForTimeout(500);
     await noHorizontalOverflow(page);
   });
+}
+
+for (const width of [375, 430, 768]) {
+  for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
+    test(`${view} view has no horizontal page overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/#/${view}`);
+      await expect(page.getByTestId("view")).toBeVisible();
+      await page.waitForTimeout(400);
+      await noHorizontalOverflow(page);
+    });
+  }
+  for (const [name, hash] of [["New item", "New item"], ["New orchestrator", "New orchestrator"]] as const) {
+    test(`${name} sheet has no horizontal overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/");
+      if (hash === "New orchestrator") await openNewOrchestrator(page);
+      else {
+        await page.getByRole("button", { name: "New item" }).click();
+        await page.getByRole("menuitem", { name: "Task" }).click();
+      }
+      await expect(page.getByRole("dialog", { name: name === "New item" ? "New item" : "New orchestrator" })).toBeVisible();
+      await noHorizontalOverflow(page);
+    });
+  }
 }
 
 for (const width of [375, 390, 430]) {

@@ -52,7 +52,7 @@ export function Sheet(p: {
           </SheetHeader>
         )}
         <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
-        {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{p.footer}</SheetFooter>}
+        {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 max-sm:flex-col max-sm:items-stretch border-t border-border px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{p.footer}</SheetFooter>}
       </SheetContent>
     </UiSheet>
   );

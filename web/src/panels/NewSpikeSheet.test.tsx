@@ -6,6 +6,15 @@ import { pickOption } from "../test/select";
 import { NewSpikeSheet } from "./NewSpikeSheet";
 
 describe("NewSpikeSheet (§16.3, I15)", () => {
+  it("stacks label over a wrapping Intent control and the footer below sm", async () => {
+    renderWithDaemon(<NewSpikeSheet intent="feature" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    const group = within(sheet).getByRole("radiogroup", { name: "Intent" });
+    expect(group).toHaveClass("max-sm:flex-wrap");
+    expect(group.parentElement).toHaveClass("max-sm:grid-cols-1");
+    expect(within(sheet).getByRole("button", { name: "Cancel" }).parentElement).toHaveClass("max-sm:flex-col", "max-sm:items-stretch");
+  });
+
   it("previews the agent name, validates it and switches the intent caption", async () => {
     const { user } = renderWithDaemon(<NewSpikeSheet intent="feature" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
     const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });

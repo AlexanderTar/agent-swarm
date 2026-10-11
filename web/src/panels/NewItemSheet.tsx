@@ -78,7 +78,7 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
           </Button>
         </Alert>
       ) : null}
-      <div className="grid grid-cols-[72px_1fr] items-center gap-2">
+      <div className="grid grid-cols-[72px_1fr] items-center gap-2 max-sm:grid-cols-1">
         <Label>{C.type}</Label>
         <Segmented
           label={C.type}
