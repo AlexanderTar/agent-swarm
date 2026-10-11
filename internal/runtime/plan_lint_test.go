@@ -248,3 +248,45 @@ func TestRegisterPlanRefusesFreeTextTddExempt(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestTreeRejectsEmptyNodeTitle(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Children[0].Title = "  "
+	lintErrors(t, tree, "Task t: Title must be 1–200 characters.")
+}
+
+func TestTreeRejectsOverlongNodeTitle(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Title = strings.Repeat("x", 201)
+	lintErrors(t, tree, "Story s: Title must be 1–200 characters.")
+}
+
+func TestTreeRejectsBadRootTitle(t *testing.T) {
+	tree := lintFixture()
+	tree.Root.Title = ""
+	lintErrors(t, tree, "Epic: Title must be 1–200 characters.")
+}
+
+func TestTreeAcceptsTitleOfExactly200Characters(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Title = strings.Repeat("é", 200)
+	if errs, _ := lintTree(tree); len(errs) != 0 {
+		t.Fatalf("errors=%v", errs)
+	}
+}
+
+func TestRegisterPlanRefusesOverlongTitle(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, "chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Long title", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	body := strings.Replace(planBody, `"Session cookie"`, `"`+strings.Repeat("x", 201)+`"`, 1)
+	_, err = s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, body), "")
+	if err == nil || !strings.Contains(err.Error(), "Task t1: Title must be 1–200 characters.") {
+		t.Fatalf("err = %v", err)
+	}
+}

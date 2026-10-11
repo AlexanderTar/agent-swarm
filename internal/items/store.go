@@ -377,11 +377,16 @@ func (s *Store) changed(ctx context.Context, tx *sql.Tx, it Item) error {
 	return err
 }
 
-func validateText(title, brief string) error {
+// ValidateTitle checks an already-trimmed item title's length.
+func ValidateTitle(title string) error {
 	if n := utf8.RuneCountInString(title); n < 1 || n > 200 {
 		return errf(CodeBadRequest, "Title must be 1–200 characters.")
 	}
 	return nil
+}
+
+func validateText(title, brief string) error {
+	return ValidateTitle(title)
 }
 
 // ValidateTddExempt checks a tdd_exempt value for an item of type t: it must be

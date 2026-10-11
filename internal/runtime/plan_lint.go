@@ -34,6 +34,10 @@ func lintTree(tree Tree) (errs []error, warnings []string) {
 				errs = append(errs, fmt.Errorf("%s %s workflow: %w.", capType(n.Type), n.Ref, err))
 			}
 		}
+		// Root is created at materialize too, and CreateTx trims titles first.
+		if err := items.ValidateTitle(strings.TrimSpace(n.Title)); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", strings.TrimSpace(capType(n.Type)+" "+n.Ref), err))
+		}
 		if n.TddExempt != nil {
 			// "" is rejected too: Resolve below treats a non-nil pointer as
 			// exempt, but CreateTx skips validation for "".
