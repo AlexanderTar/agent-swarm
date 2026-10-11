@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("document theme", () => {
@@ -7,5 +7,23 @@ describe("document theme", () => {
     const document = new DOMParser().parseFromString(html, "text/html");
     expect(document.querySelector('meta[name="color-scheme"]')?.getAttribute("content")).toBe("dark");
     expect(document.querySelector('meta[name="theme-color"]')?.getAttribute("content")).toBe("#0B0B0E");
+  });
+});
+
+describe("app icon", () => {
+  const document = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
+
+  it("serves the Agent Swarm app icon as the favicon", () => {
+    expect(document.querySelector('link[rel="icon"]')?.getAttribute("href")).toBe("/favicon.svg");
+    expect(readFileSync("public/favicon.svg", "utf8")).toBe(readFileSync("../apps/menubar/Resources/AppIcon.svg", "utf8"));
+  });
+
+  it("links a 180px apple-touch-icon for phone home screens", () => {
+    const href = document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute("href");
+    expect(href).toBe("/apple-touch-icon.png");
+    expect(existsSync("public/apple-touch-icon.png")).toBe(true);
+    const png = readFileSync("public/apple-touch-icon.png");
+    expect(png.subarray(1, 4).toString()).toBe("PNG");
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([180, 180]); // IHDR width, height
   });
 });
