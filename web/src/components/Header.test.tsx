@@ -45,6 +45,18 @@ describe("Header filters below sm", () => {
     expect(within(button).getByText("2")).toHaveAttribute("data-slot", "badge");
   });
 
+  it("counts a search query in the badge, since Clear filters also clears it", () => {
+    narrow(true);
+    setup({ q: "abc" });
+    expect(screen.getByRole("button", { name: "Filters, 1 active" })).toBeInTheDocument();
+  });
+
+  it("uses a short placeholder on phones and keeps the full accessible name", () => {
+    narrow(true);
+    setup();
+    expect(screen.getByRole("searchbox", { name: "Search name or key…" })).toHaveAttribute("placeholder", "Search");
+  });
+
   it("has no badge without active filters", () => {
     narrow(true);
     setup();

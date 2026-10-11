@@ -72,6 +72,7 @@ export const C = {
   newChore: "New chore",
   newItem: "New item",
   search: "Search name or key…",
+  searchShort: "Search",
   type: "Type",
   status: "Status",
   all: "All",
