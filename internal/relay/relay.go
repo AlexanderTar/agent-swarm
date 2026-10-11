@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -164,6 +165,8 @@ func (h *handler) newTunnel(sess *yamux.Session) *tunnel {
 		},
 		Transport:     t.tr,
 		FlushInterval: -1,
+		// a client leaving mid-stream (SSE) is routine, not worth a log line
+		ErrorLog: log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 		},
