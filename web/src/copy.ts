@@ -67,7 +67,6 @@ export const C = {
   waivedRow: (gate: string, reason: string) => `Waived: ${gate} — ${reason}`,
   overrideRow: (status: string, reason: string) => `Overridden to ${status} — ${reason}`,
   appTitle: "Agent Swarm",
-  signInTitle: "Sign in",
   signInHint: "Sign in to open the board.",
   email: "Email",
   password: "Password",

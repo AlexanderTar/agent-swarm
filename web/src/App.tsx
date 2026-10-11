@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createApi, errorText } from "./api";
 import { ConnectionBanner, ItemsErrorBanner, OutsideViewBanner } from "./components/Banners";
 import { Header } from "./components/Header";
@@ -143,15 +143,16 @@ export default function Root() {
   const [auth, setAuth] = useState<"loading" | "login" | "ready">("loading");
   const [who, setWho] = useState<{ remote: boolean; email?: string }>({ remote: false });
   const api = useMemo(() => createApi({ onUnauthenticated: () => setAuth("login") }), []);
-  useEffect(() => {
+  const load = useCallback(() => {
     // If /api/auth/me itself fails the board renders anyway and shows its own connection errors.
     api.session().then((s) => {
       setWho({ remote: s.origin !== "local", email: s.email });
       setAuth(s.authenticated ? "ready" : "login");
     }, () => setAuth("ready"));
   }, [api]);
+  useEffect(load, [load]);
   if (auth === "loading") return null;
-  if (auth === "login") return <Login login={api.login} onSignedIn={() => setAuth("ready")} />;
+  if (auth === "login") return <Login login={api.login} onSignedIn={load} />;
   const signOut = () => void api.logout().then(() => setAuth("login"), () => setAuth("login"));
   return (
     <SessionProvider value={{ ...who, signOut }}>

@@ -16,7 +16,7 @@ function remoteDaemon(o: { authenticated?: boolean; login?: () => Response } = {
     const path = String(input);
     calls.push(`${init?.method ?? "GET"} ${path}`);
     const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
-    if (path === "/api/auth/me") return json({ origin: "tunnel", authenticated: authed });
+    if (path === "/api/auth/me") return json({ origin: "tunnel", authenticated: authed, ...(authed ? { email: "me@example.com" } : {}) });
     if (path === "/api/auth/login") {
       const r = o.login?.() ?? new Response(null, { status: 204 });
       if (r.ok) authed = true;
@@ -44,6 +44,19 @@ describe("Root auth", () => {
     expect(await screen.findByTestId("view")).toBeInTheDocument();
     expect(screen.queryByLabelText("Email")).toBeNull();
     expect(calls).not.toContain("GET /api/bootstrap");
+  });
+
+  it("shows the signed-in email in the Account menu right after signing in", async () => {
+    remoteDaemon();
+    render(<Root />);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Email"), "me@example.com");
+    await user.type(screen.getByLabelText("Password"), "correct-horse-battery");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await screen.findByTestId("view");
+    screen.getByRole("button", { name: "Account" }).focus(); // keyboard: a pointer click right after Login unmounts doesn't open the menu in jsdom
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("me@example.com")).toBeInTheDocument();
   });
 
   it("skips Login when the session is already authenticated", async () => {
