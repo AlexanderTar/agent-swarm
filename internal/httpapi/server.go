@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -53,11 +54,14 @@ type Deps struct {
 	// Dev enables POST /api/dev/seed (Task 39). Set from daemonConfig.Dev,
 	// which only `make dev --dev` and a test's devDaemon pass; the launchd
 	// job never does. It gates nothing else.
-	Dev          bool
-	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
-	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
-	Log          func(format string, args ...any) // nil means log.Printf
-	Web          http.Handler                     // board for non-/api paths; nil means not built yet
+	Dev bool
+	// HasCredentials reports whether a web login exists. Until it does, lan and
+	// tunnel callers get the "run swarm auth set" 503. Nil counts as false.
+	HasCredentials func(context.Context) bool
+	WriteTimeout   time.Duration                    // per SSE write; 0 means 10 s
+	PingInterval   time.Duration                    // SSE keep-alive; 0 means 25 s
+	Log            func(format string, args ...any) // nil means log.Printf
+	Web            http.Handler                     // board for non-/api paths; nil means not built yet
 
 	// Run is how this package starts a process. The only one it starts is the
 	// Ghostty fallback for POST /api/agents/{name}/terminal (§10.4), and without
@@ -139,6 +143,9 @@ func New(d Deps) *Server {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if s.setupRequired(w, r, RequestOrigin(r)) {
+			return
+		}
 		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
 			return
@@ -176,6 +183,9 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 		if localOnly && origin != OriginLocal {
 			// indistinguishable from a route that does not exist
 			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
+			return
+		}
+		if s.setupRequired(w, r, origin) {
 			return
 		}
 		switch rt.auth {

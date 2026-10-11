@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -93,7 +94,7 @@ func remoteReq(origin Origin, method, path, token string) *http.Request {
 
 func TestRemoteOriginPolicy(t *testing.T) {
 	withOwnIPs(t, "192.168.1.20")
-	e := newEnv(t)
+	e := newEnv(t, func(d *Deps) { d.HasCredentials = func(context.Context) bool { return true } })
 	serve := func(r *http.Request) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		e.s.Handler().ServeHTTP(rec, r)
@@ -138,5 +139,52 @@ func TestRemoteOriginPolicy(t *testing.T) {
 	}
 	if rec := serve(localReq("GET", "/api/health", nil)); rec.Code != 200 {
 		t.Fatalf("local health = %d", rec.Code)
+	}
+}
+
+func TestRemoteWithoutCredentials(t *testing.T) {
+	withOwnIPs(t, "192.168.1.20")
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "board") })
+	has := false
+	e := newEnv(t, func(d *Deps) {
+		d.Web = web
+		d.HasCredentials = func(context.Context) bool { return has }
+	})
+	serve := func(r *http.Request) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(rec, r)
+		return rec
+	}
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		// pages get HTML, API paths get the JSON envelope; known and unknown routes alike
+		for _, p := range []string{"/", "/assets/app.js"} {
+			rec := serve(remoteReq(origin, "GET", p, ""))
+			if rec.Code != 503 || !strings.Contains(rec.Body.String(), "swarm auth set") ||
+				!strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") || strings.Contains(rec.Body.String(), "board") {
+				t.Errorf("%s %s = %d %q (%s)", origin, p, rec.Code, rec.Body, rec.Header().Get("Content-Type"))
+			}
+		}
+		for _, p := range []string{"/api/health", "/api/items", "/api/nope"} {
+			rec := serve(remoteReq(origin, "GET", p, daemonToken))
+			wantErr(t, rec.Code, rec.Body.Bytes(), 503, "setup_required", "Run `swarm auth set` on the Mac to turn on remote access.")
+		}
+		// local-only routes stay invisible
+		wantErrRec := serve(remoteReq(origin, "GET", "/api/bootstrap", ""))
+		wantErr(t, wantErrRec.Code, wantErrRec.Body.Bytes(), 404, "not_found", "Unknown API route.")
+	}
+	// this Mac never needs credentials
+	if rec := serve(localReq("GET", "/api/health", nil)); rec.Code != 200 {
+		t.Fatalf("local health = %d", rec.Code)
+	}
+	if rec := serve(localReq("GET", "/", nil)); rec.Code != 200 || rec.Body.String() != "board" {
+		t.Fatalf("local board = %d %q", rec.Code, rec.Body)
+	}
+	// once credentials exist the gate opens
+	has = true
+	if rec := serve(remoteReq(OriginLAN, "GET", "/api/health", "")); rec.Code != 200 {
+		t.Fatalf("lan health with credentials = %d", rec.Code)
+	}
+	if rec := serve(remoteReq(OriginTunnel, "GET", "/", "")); rec.Code != 200 {
+		t.Fatalf("tunnel board with credentials = %d", rec.Code)
 	}
 }

@@ -376,7 +376,8 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 		bg.Go(func() { defer running.Add(-1); loop(loopCtx) })
 	}
 
-	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second,
+		ConnContext: httpapi.ConnContext(httpapi.ListenerLoopback)}
 	if cfg.Ready != nil {
 		cfg.Ready(ln.Addr().String())
 	}

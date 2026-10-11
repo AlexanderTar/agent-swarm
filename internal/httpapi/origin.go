@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -108,4 +109,24 @@ var localOnlyPaths = map[string]bool{
 func localOnlyRoute(rt route) bool {
 	return localOnlyPaths[rt.pattern] || strings.HasPrefix(rt.pattern, "/api/kb/") ||
 		rt.auth == authSession || rt.auth == authLoopback
+}
+
+const setupMessage = "Run `swarm auth set` on the Mac to turn on remote access."
+
+// setupRequired answers 503 and reports true while a lan or tunnel caller has
+// no login to use yet: HTML for pages, the JSON error envelope under /api/.
+func (s *Server) setupRequired(w http.ResponseWriter, r *http.Request, origin Origin) bool {
+	if origin == OriginLocal || (s.HasCredentials != nil && s.HasCredentials(r.Context())) {
+		return false
+	}
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		s.writeErr(w, apiErr(http.StatusServiceUnavailable, "setup_required", setupMessage))
+		return true
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprint(w, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Swarm</title>`+
+		`<body style="font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1>Swarm isn't ready for remote access</h1>`+
+		`<p>Run <code>swarm auth set</code> on the Mac to choose an email and password, then reload this page.</p></body>`)
+	return true
 }
