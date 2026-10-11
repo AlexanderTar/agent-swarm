@@ -329,6 +329,23 @@ test("hierarchy rows fold status under the title and are 44px tall on phones", a
   await noHorizontalOverflow(page);
 });
 
+test("dependencies Details stays closed after Close and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout");
+  await page.goto("/#/dependencies");
+  const details = page.getByRole("dialog", { name: /^(EPIC|BUG|STORY|TASK)-\d+$/ });
+  await expect(details).toBeVisible();
+  await details.getByRole("button", { name: "Close" }).first().click();
+  await expect(details).toHaveCount(0);
+  await page.waitForTimeout(600);
+  await expect(details).toHaveCount(0);
+  expect(page.url()).not.toContain("item=");
+  const bar = page.getByRole("button", { name: "Fit" }).locator("xpath=..");
+  const box = await bar.boundingBox();
+  expect(box!.height).toBeLessThanOrEqual(64);
+  expect(await bar.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  await noHorizontalOverflow(page);
+});
+
 test("Hierarchy icon controls have 32px hit areas within 30px rows", async ({ page }, testInfo) => {
   desktopOnly(testInfo, "32px hit areas are desktop-only");
   await page.goto("/#/hierarchy");
