@@ -199,3 +199,33 @@ func TestDoctorTunnelRow(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorLANRow(t *testing.T) {
+	cases := map[string]struct {
+		info LANInfo
+		err  error
+		ok   bool
+		want string
+	}{
+		"disabled":  {LANInfo{State: "disabled"}, nil, true, "Off. Turn it on with swarm lan enable."},
+		"listening": {LANInfo{State: "listening", URL: "http://swarm.local:7777"}, nil, true, "Serving http://swarm.local:7777."},
+		"waiting":   {LANInfo{State: "waiting", LastError: "Waiting for a network: no default route"}, nil, true, "Waiting for a network"},
+		"error":     {LANInfo{State: "error", LastError: "Can't listen on 192.168.1.20: address already in use"}, nil, false, "address already in use"},
+		"name taken": {LANInfo{State: "listening", URL: "http://192.168.1.20:7777", LastError: "Another device on this network already uses the name swarm.local."},
+			nil, false, "already uses the name swarm.local"},
+		"daemon off": {LANInfo{}, errors.New("down"), true, "Not checked: the daemon isn't running."},
+	}
+	for name, c := range cases {
+		e := newDoctorEnv(t)
+		e.d.LAN = func(context.Context) (LANInfo, error) { return c.info, c.err }
+		var row *Check
+		for _, ch := range e.d.Checks(bg) {
+			if ch.Name == "LAN" {
+				row = &ch
+			}
+		}
+		if row == nil || row.OK != c.ok || !strings.Contains(row.Detail, c.want) {
+			t.Errorf("%s: row = %+v, want ok=%v containing %q", name, row, c.ok, c.want)
+		}
+	}
+}

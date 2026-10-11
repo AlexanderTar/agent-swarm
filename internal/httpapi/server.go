@@ -71,6 +71,10 @@ type Deps struct {
 	// nil means this daemon has none.
 	Tunnel TunnelControl
 
+	// LAN switches LAN access for the local-only /api/lan routes; nil means
+	// this daemon has none.
+	LAN LANControl
+
 	// Run is how this package starts a process. The only one it starts is the
 	// Ghostty fallback for POST /api/agents/{name}/terminal (§10.4), and without
 	// an injected runner that test launches the real Ghostty against the real
@@ -153,7 +157,7 @@ func New(d Deps) *Server {
 		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
 	}
 	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
-		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.authRoutes(), s.tunnelRoutes(), s.bugRoutes(), s.agentIORoutes(), s.devRoutes())
+		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.authRoutes(), s.tunnelRoutes(), s.lanRoutes(), s.bugRoutes(), s.agentIORoutes(), s.devRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}

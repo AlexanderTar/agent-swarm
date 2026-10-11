@@ -45,6 +45,7 @@ Commands:
   request-changes REQ COMMENT
   auth set|status|logout-all       the email and password for remote (lan, tunnel) access
   tunnel enable [--url wss://RELAY] | disable | status   reach the board through the relay (needs swarm auth set)
+  lan enable | disable | status   serve the board on the local network as swarm.local (needs swarm auth set)
   usage [--refresh]
   cleanup [--dry-run] [--no-grace]  remove finished agents' work dirs, orphan work dirs and reclaimable worktrees
   dev-seed                          load the contract fixture keys (make dev only)
@@ -133,6 +134,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdAuth(args[1:], stdin, stdout, stderr)
 	case "tunnel":
 		return cmdTunnel(args[1:], stdout, stderr)
+	case "lan":
+		return cmdLAN(args[1:], stdout, stderr)
 	case "usage":
 		return cmdUsage(args[1:], stdout, stderr)
 	case "cleanup":

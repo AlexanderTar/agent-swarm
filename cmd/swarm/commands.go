@@ -155,6 +155,7 @@ func newDoctor(home, daemonURL string) install.Doctor {
 		Procs:           func(ctx context.Context) ([]install.Proc, error) { return install.ListProcs(ctx, execx.Run) },
 		Session:         sessionLookup(home),
 		Tunnel:          tunnelProbe(home, daemonURL),
+		LAN:             lanProbe(home, daemonURL),
 	}
 }
 
