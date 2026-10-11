@@ -313,6 +313,22 @@ test("toast uses the popover surface in the browser", async ({ page }) => {
   expect(await toast.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(23, 23, 29)");
 });
 
+test("hierarchy rows fold status under the title and are 44px tall on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  await page.goto("/#/hierarchy");
+  await expect(page.getByTestId("view")).toBeVisible();
+  await expect(page.getByText("WORK ITEM")).toBeHidden();
+  const row = page.getByRole("treeitem", { name: /^TASK-102 / });
+  const rowBox = await row.boundingBox();
+  expect(rowBox!.height).toBeGreaterThanOrEqual(44);
+  const key = await row.getByText("TASK-102", { exact: true }).boundingBox();
+  const title = await row.locator("span.truncate").boundingBox();
+  const status = await row.getByText("Blocked", { exact: true }).boundingBox();
+  expect(status!.y).toBeGreaterThanOrEqual(title!.y + title!.height - 2);
+  expect(key!.height).toBeLessThan(24);
+  await noHorizontalOverflow(page);
+});
+
 test("Hierarchy icon controls have 32px hit areas within 30px rows", async ({ page }, testInfo) => {
   desktopOnly(testInfo, "32px hit areas are desktop-only");
   await page.goto("/#/hierarchy");

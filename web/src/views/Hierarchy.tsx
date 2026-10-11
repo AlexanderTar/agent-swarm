@@ -70,7 +70,7 @@ export function Hierarchy(p: HierarchyProps) {
 
   return (
     <div className="p-2">
-      <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+      <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 max-sm:hidden text-[11px] uppercase tracking-wide text-muted-foreground">
         <span>WORK ITEM</span>
         <span>STATUS</span>
         <span className="text-right">AGENTS</span>
@@ -98,7 +98,8 @@ export function Hierarchy(p: HierarchyProps) {
                 e.preventDefault();
                 setMenu(childType ? { key: it.key, type: childType } : null);
               }}
-              className={`relative grid h-[30px] cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 hover:bg-accent/60 ${
+              style={{ "--indent": `${r.depth * 20 + 8}px` } as React.CSSProperties}
+              className={`relative grid h-[30px] cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 hover:bg-accent/60 max-sm:h-auto max-sm:min-h-11 max-sm:grid-cols-[1fr_auto] max-sm:py-1 ${
                 top ? "mt-3 font-semibold" : ""
               } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-accent" : ""}`}
             >
@@ -121,12 +122,12 @@ export function Hierarchy(p: HierarchyProps) {
                   <span className="w-3.5" />
                 )}
                 <TypeIcon type={it.type} />
-                <Key>{it.key}</Key>
+                <span className="max-sm:shrink-0 max-sm:whitespace-nowrap"><Key>{it.key}</Key></span>
                 <span className="truncate">{it.title}</span>
                 {r.context && <span className="rounded bg-muted px-1 text-[11px] font-normal">{C.context}</span>}
               </span>
-              <span><StatusPill status={it.status} /></span>
-              <span className="flex items-center justify-end gap-1.5">
+              <span className="max-sm:col-start-1 max-sm:row-start-2 max-sm:pl-[var(--indent)]"><StatusPill status={it.status} /></span>
+              <span className="flex items-center justify-end gap-1.5 max-sm:col-start-2 max-sm:row-span-2 max-sm:row-start-1">
                 {it.active_agents > 0 && (
                   <Button
                     type="button"

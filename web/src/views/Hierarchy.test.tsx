@@ -39,6 +39,16 @@ describe("Hierarchy view (§16.6)", () => {
     expect(within(row("TASK-102")).getByText("Blocked")).toBeInTheDocument();
   });
 
+  it("folds the columns below sm: status under the title, rows at least 44px", () => {
+    setup();
+    expect(screen.getByText("WORK ITEM").parentElement).toHaveClass("max-sm:hidden");
+    const r = row("TASK-102");
+    expect(r).toHaveClass("max-sm:grid-cols-[1fr_auto]", "max-sm:h-auto", "max-sm:min-h-11");
+    const status = within(r).getByText("Blocked").parentElement!;
+    expect(status).toHaveClass("max-sm:col-start-1", "max-sm:row-start-2");
+    expect(within(r).getByText("TASK-102").parentElement).toHaveClass("max-sm:whitespace-nowrap");
+  });
+
   it("shows agent counts with a tooltip that open the Agents section", async () => {
     const { user, props } = setup();
     const count = within(row("EPIC-12")).getByRole("button", { name: "3" });
