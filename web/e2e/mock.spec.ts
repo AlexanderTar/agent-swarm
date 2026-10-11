@@ -830,3 +830,17 @@ test("touch targets are at least 44x44 below md", async ({ page }, testInfo) => 
   await page.getByRole("combobox", { name: "Hops" }).click();
   await expect44(page.getByRole("option"), "select option");
 });
+
+// The RepoPicker option rows are touch targets below md (New orchestrator sheet, Confirm repositories).
+test("RepoPicker option rows are at least 44px tall below md", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "mock", "touch layout");
+  if (testInfo.project.name === "tablet") await page.setViewportSize({ width: 700, height: 900 });
+  await page.goto("/");
+  await openNewOrchestrator(page);
+  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+  const options = sheet.getByRole("option");
+  await expect(options.first()).toBeVisible();
+  const heights = await options.evaluateAll((els) => els.map((e) => (e as HTMLElement).offsetHeight));
+  expect(heights.length).toBeGreaterThan(0);
+  for (const h of heights) expect(h).toBeGreaterThanOrEqual(44);
+});
