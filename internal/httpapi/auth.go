@@ -1,7 +1,12 @@
 package httpapi
 
 import (
+	"math"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/webauth"
@@ -45,11 +50,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	origin := RequestOrigin(r)
+	ip := clientIP(r, origin)
+	if ok, wait := s.limiter.Allow(ip); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+		s.writeErr(w, apiErr(http.StatusTooManyRequests, "rate_limited", "Too many login attempts. Try again later."))
+		return
+	}
 	if s.Auth == nil || !s.Auth.Verify(r.Context(), body.Email, body.Password) {
+		s.limiter.Fail(ip)
 		s.writeErr(w, errBadLogin)
 		return
 	}
-	origin := RequestOrigin(r)
+	s.limiter.Success(ip)
 	ua := r.UserAgent()
 	if len(ua) > 200 {
 		ua = ua[:200]
@@ -87,4 +100,28 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// clientIP is who the login limiter counts: the peer on lan, and on tunnel the
+// first X-Forwarded-For hop, which our relay sets. A lan caller's own
+// X-Forwarded-For is ignored. "" means unknown (counts only against the global cap).
+func clientIP(r *http.Request, origin Origin) string {
+	if origin == OriginTunnel {
+		first, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ",")
+		if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return ""
+}
+
+// sameOrigin is the CSRF guard for cookie-authenticated writes: the browser's
+// Origin header must name the host this request was sent to.
+func sameOrigin(r *http.Request) bool {
+	u, err := url.Parse(r.Header.Get("Origin"))
+	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
 }

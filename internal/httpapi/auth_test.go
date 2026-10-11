@@ -214,3 +214,151 @@ func TestRemoteHasCredentialsComesFromTheStore(t *testing.T) {
 		t.Fatalf("me after SetCredentials = %d %s", rec.Code, rec.Body)
 	}
 }
+
+// failLogin sends a bad login. ip is the tunnel's X-Forwarded-For, or the lan peer; "" sends none.
+func failLogin(e *env, origin Origin, ip string) *httptest.ResponseRecorder {
+	r := asRemote(origin, "POST", "/api/auth/login", loginBody(testEmail, "wrong password!!"))
+	r.Header.Del("X-Forwarded-For")
+	r.Header.Del("X-Real-IP")
+	switch {
+	case origin == OriginTunnel && ip != "":
+		r.Header.Set("X-Forwarded-For", ip)
+	case origin == OriginLAN:
+		r.RemoteAddr = ip + ":5000"
+		r.Header.Set("X-Forwarded-For", "10.9.9."+ip[len(ip)-1:]) // a lan client can send anything; it must not matter
+	}
+	return serve(e, r)
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		t.Run(string(origin), func(t *testing.T) {
+			e, _ := authEnv(t)
+			now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+			e.s.limiter = webauth.NewLimiter(func() time.Time { return now })
+			for i := 0; i < 5; i++ {
+				if rec := failLogin(e, origin, "192.168.1.31"); rec.Code != 401 {
+					t.Fatalf("failure %d = %d", i+1, rec.Code)
+				}
+			}
+			rec := failLogin(e, origin, "192.168.1.31")
+			wantErr(t, rec.Code, rec.Body.Bytes(), 429, "rate_limited", "")
+			if ra := rec.Header().Get("Retry-After"); ra != "900" {
+				t.Fatalf("Retry-After = %q, want 900", ra)
+			}
+			// even the right password waits out the block
+			good := asRemote(origin, "POST", "/api/auth/login", loginBody(testEmail, testPassword))
+			good.Header.Del("X-Forwarded-For")
+			if origin == OriginTunnel {
+				good.Header.Set("X-Forwarded-For", "192.168.1.31")
+			} else {
+				good.RemoteAddr = "192.168.1.31:5000"
+			}
+			if rec := serve(e, good); rec.Code != 429 {
+				t.Fatalf("right password while blocked = %d, want 429", rec.Code)
+			}
+			// another client is unaffected
+			if rec := failLogin(e, origin, "192.168.1.32"); rec.Code != 401 {
+				t.Fatalf("other client = %d, want 401", rec.Code)
+			}
+			now = now.Add(16 * time.Minute)
+			if rec := failLogin(e, origin, "192.168.1.31"); rec.Code != 401 {
+				t.Fatalf("after the window = %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+func TestLanIgnoresForwardedFor(t *testing.T) {
+	e, _ := authEnv(t)
+	// one lan peer rotating X-Forwarded-For is still one client
+	for i := 0; i < 5; i++ {
+		r := asRemote(OriginLAN, "POST", "/api/auth/login", loginBody(testEmail, "wrong password!!"))
+		r.Header.Set("X-Forwarded-For", "10.1.1."+string(rune('1'+i)))
+		serve(e, r)
+	}
+	r := asRemote(OriginLAN, "POST", "/api/auth/login", loginBody(testEmail, "wrong password!!"))
+	r.Header.Set("X-Forwarded-For", "10.1.1.99")
+	if rec := serve(e, r); rec.Code != 429 {
+		t.Fatalf("6th attempt from one lan peer with a fresh XFF = %d, want 429", rec.Code)
+	}
+}
+
+func TestTunnelWithoutForwardedForFallsBackToTheGlobalCap(t *testing.T) {
+	e, _ := authEnv(t)
+	for i := 0; i < 19; i++ {
+		if rec := failLogin(e, OriginTunnel, ""); rec.Code != 401 {
+			t.Fatalf("failure %d = %d, want 401: an unknown client has no per-client limit", i+1, rec.Code)
+		}
+	}
+	failLogin(e, OriginTunnel, "") // the 20th trips the global lock
+	rec := failLogin(e, OriginTunnel, "203.0.113.9")
+	wantErr(t, rec.Code, rec.Body.Bytes(), 429, "rate_limited", "")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("global lock must send Retry-After")
+	}
+}
+
+func TestSuccessfulLoginClearsTheClientsFailures(t *testing.T) {
+	e, _ := authEnv(t)
+	for i := 0; i < 4; i++ {
+		failLogin(e, OriginTunnel, "203.0.113.5")
+	}
+	good := asRemote(OriginTunnel, "POST", "/api/auth/login", loginBody(testEmail, testPassword))
+	good.Header.Set("X-Forwarded-For", "203.0.113.5")
+	if rec := serve(e, good); rec.Code != 204 {
+		t.Fatalf("login = %d", rec.Code)
+	}
+	for i := 0; i < 4; i++ {
+		if rec := failLogin(e, OriginTunnel, "203.0.113.5"); rec.Code != 401 {
+			t.Fatalf("failure %d after success = %d", i+1, rec.Code)
+		}
+	}
+}
+
+func TestCookieWritesNeedAMatchingOrigin(t *testing.T) {
+	e, store := authEnv(t)
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		c := login(t, e, origin)
+		write := func(path, originHdr string) *httptest.ResponseRecorder {
+			r := withCookie(asRemote(origin, "PUT", path, `{}`), c)
+			r.Header.Del("Origin")
+			if originHdr != "" {
+				r.Header.Set("Origin", originHdr)
+			}
+			return serve(e, r)
+		}
+		host := asRemote(origin, "GET", "/", "").Host
+		for _, bad := range []string{"", "null", "https://evil.example", "http://" + host + ".evil.example", "http://other:7777"} {
+			rec := write("/api/settings", bad)
+			wantErr(t, rec.Code, rec.Body.Bytes(), 403, "forbidden", "")
+		}
+		if rec := write("/api/settings", "http://"+host); rec.Code == 403 {
+			t.Errorf("%s: a matching Origin was refused: %s", origin, rec.Body)
+		}
+		if rec := write("/api/settings", "https://"+host); rec.Code == 403 {
+			t.Errorf("%s: https Origin with the same host was refused: %s", origin, rec.Body)
+		}
+		// reads need no Origin
+		if rec := serve(e, withCookie(asRemote(origin, "GET", "/api/settings", ""), c)); rec.Code != 200 {
+			t.Errorf("%s: GET = %d", origin, rec.Code)
+		}
+		// logout is a cookie write too, and a forged one must not revoke the session
+		r := withCookie(asRemote(origin, "POST", "/api/auth/logout", ""), c)
+		r.Header.Set("Origin", "https://evil.example")
+		if rec := serve(e, r); rec.Code != 403 {
+			t.Errorf("%s: cross-origin logout = %d, want 403", origin, rec.Code)
+		}
+		if _, ok := store.LookupSession(bg, c.Value); !ok {
+			t.Errorf("%s: a refused logout revoked the session", origin)
+		}
+	}
+	// local callers use the Bearer token and are not subject to the cookie check
+	if rec := serve(e, func() *http.Request {
+		r := localReq("PUT", "/api/settings", strings.NewReader(`{}`))
+		r.Header.Set("Authorization", "Bearer "+daemonToken)
+		return r
+	}()); rec.Code == 403 {
+		t.Fatal("local Bearer writes need no Origin")
+	}
+}

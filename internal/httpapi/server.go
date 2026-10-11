@@ -95,6 +95,7 @@ type route struct {
 
 type Server struct {
 	Deps
+	limiter   *webauth.Limiter
 	mux       *http.ServeMux
 	routes    []route
 	idemMu    sync.Mutex
@@ -140,7 +141,7 @@ func New(d Deps) *Server {
 	if d.HasCredentials == nil && d.Auth != nil {
 		d.HasCredentials = func(ctx context.Context) bool { ok, _ := d.Auth.HasCredentials(ctx); return ok }
 	}
-	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
+	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{}), limiter: webauth.NewLimiter(time.Now)}
 	if d.MCP != nil {
 		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
 	}
@@ -181,6 +182,7 @@ func bearer(r *http.Request) string {
 	return tok
 }
 
+var errCrossOrigin = apiErr(http.StatusForbidden, "forbidden", "Cross-origin request refused.")
 var errUnauthorized = apiErr(http.StatusUnauthorized, "unauthorized", "Missing or invalid token.")
 
 func (s *Server) wrap(rt route) http.HandlerFunc {
@@ -193,6 +195,11 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 			return
 		}
 		if s.setupRequired(w, r, origin) {
+			return
+		}
+		if _, err := r.Cookie(sessionCookie); err == nil && origin != OriginLocal &&
+			r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOrigin(r) {
+			s.writeErr(w, errCrossOrigin) // a cookie write needs a matching Origin (CSRF)
 			return
 		}
 		switch rt.auth {
