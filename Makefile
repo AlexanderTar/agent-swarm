@@ -62,6 +62,13 @@ install-daemon: build
 	install -m 0755 bin/swarm $(PREFIX)/bin/swarm
 	codesign --force --sign "$(SWARM_SIGN_IDENTITY)" --identifier dev.swarm.daemon $(PREFIX)/bin/swarm
 
+# Deploys the tunnel relay to personal Railway (workspace "My Projects").
+# The bootstrap is idempotent: it ensures the project, service, secret,
+# config path and domain before uploading.
+relay-deploy:
+	scripts/relay-bootstrap.sh
+	RAILWAY_API_TOKEN="$$(cat $$HOME/.config/railway-personal/token)" railway up . --project "$$(scripts/relay-bootstrap.sh --project-id)" --service relay --environment production --ci
+
 # Builds Swarm.app into /Applications.
 install-app: app
 	mkdir -p $(APP_DIR)
