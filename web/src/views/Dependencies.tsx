@@ -3,7 +3,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMediaQuery } from "../state/media";
+import { NARROW, useMediaQuery } from "../state/media";
 import { errorText } from "../api";
 import { Key } from "../components/icons";
 import { Segmented } from "../components/Segmented";
@@ -57,8 +57,8 @@ function Graph(p: DependenciesProps) {
   // re-picking on every empty selection would reopen Details right after the user closes it.
   const [anchor, setAnchor] = useState(p.selected);
   const autoPicked = useRef(false);
-  // Selecting a root opens Details, which covers the whole screen below sm: show the graph first there.
-  const phone = useMediaQuery("(max-width: 639.98px)");
+  // Selecting a root opens Details, which covers the whole screen below 1100 (phones in landscape too): show the graph first there.
+  const phone = useMediaQuery(NARROW);
   const graph = useGraph(anchor || null, scope, hops);
   const idx = useMemo(() => buildIndex(p.items), [p.items]);
 

@@ -98,7 +98,8 @@ describe("Kanban view (§16.7)", () => {
     expect(ready).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
     expect(cell("EPIC-12", "ready")).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
     const done = screen.getByTestId("col-done");
-    expect(within(done).getByText("Done")).toHaveClass("max-sm:not-sr-only");
+    expect(within(done).getByText("Done")).toHaveClass("sr-only", "max-sm:hidden");
+    expect(within(done).getByText(/^Done · \d+$/)).toHaveClass("max-sm:inline", "truncate");
     expect(done).toHaveClass("max-sm:w-[132px]");
     expect(cell("EPIC-12", "done")).toHaveClass("max-sm:w-[132px]");
     expect(card("TASK-101")).toHaveClass("max-sm:w-full");
@@ -116,8 +117,10 @@ describe("Kanban view (§16.7)", () => {
     expect(draft).toHaveClass("uppercase", "tracking-wide");
     expect(draft).not.toHaveClass("max-sm:normal-case");
     expect(draft).not.toHaveClass("max-sm:tracking-normal");
-    expect(draft.querySelector("[aria-hidden]")).not.toHaveClass("max-sm:ml-1");
     expect(draft.lastElementChild).not.toHaveClass("max-sm:ml-1");
+    // Below sm the label and count are one text node, so no flex gap shows between them.
+    const phoneText = draft.querySelector(".max-sm\\:inline")!;
+    expect(phoneText).toHaveTextContent(/^Draft · 0$/);
   });
 
   it("shows every conditional card line", async () => {

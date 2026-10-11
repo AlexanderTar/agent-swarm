@@ -262,8 +262,8 @@ export function Kanban(p: KanbanProps) {
                 onClick={() => toggleCol(s)}
                 className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate max-sm:w-[132px]" : "w-[280px] max-sm:w-[85vw]"} max-sm:snap-start`}
               >
-                {collapsed && <span className="sr-only max-sm:not-sr-only max-sm:truncate">{STATUS_LABEL[s]}</span>}
-                {collapsed ? <><span aria-hidden className="hidden max-sm:inline">·</span><span>{counts.get(s)?.shown ?? 0}</span></> : t.text}
+                {collapsed && <span className="sr-only max-sm:hidden">{STATUS_LABEL[s]}</span>}
+                {collapsed ? <><span className="max-sm:hidden">{counts.get(s)?.shown ?? 0}</span><span className="hidden truncate max-sm:inline">{STATUS_LABEL[s]} · {counts.get(s)?.shown ?? 0}</span></> : t.text}
               </Button>
             );
           })}

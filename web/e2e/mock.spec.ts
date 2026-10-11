@@ -215,7 +215,7 @@ test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px 
   await expect(ready.locator("xpath=../../..")).toHaveCSS("scroll-snap-type", /x mandatory/);
   const done = page.getByTestId("col-done");
   await done.scrollIntoViewIfNeeded();
-  await expect(done.getByText("Done", { exact: true })).toBeVisible();
+  await expect(done.getByText(/^Done · \d+$/)).toBeVisible();
   const more = page.getByTestId("card-TASK-103").getByRole("button", { name: "Move to… TASK-103" });
   await more.scrollIntoViewIfNeeded();
   const moreBox = await more.boundingBox();

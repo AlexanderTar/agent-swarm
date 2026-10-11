@@ -95,9 +95,9 @@ describe("Dependencies view (§16.8)", () => {
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith("EPIC-12"));
   });
 
-  it("below sm it opens on the graph of the first root instead of selecting it", async () => {
+  it("below 1100 it opens on the graph of the first root instead of selecting it", async () => {
     vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
-      ({ matches: query.includes("max-width: 639"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+      ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
     const onSelect = vi.fn();
     renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
     expect(await screen.findByText("No dependencies for this item.")).toBeInTheDocument();
