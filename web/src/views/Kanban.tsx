@@ -259,6 +259,7 @@ export function Kanban(p: KanbanProps) {
                 data-testid={`col-${s}`}
                 data-collapsed={collapsed}
                 title={t.tooltip}
+                aria-label={collapsed ? `${STATUS_LABEL[s]} ${counts.get(s)?.shown ?? 0}` : undefined}
                 onClick={() => toggleCol(s)}
                 className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate max-sm:w-[132px]" : "w-[280px] max-sm:w-[85vw]"} max-sm:snap-start`}
               >

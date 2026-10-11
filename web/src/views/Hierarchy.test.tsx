@@ -49,6 +49,15 @@ describe("Hierarchy view (§16.6)", () => {
     expect(within(r).getByText("TASK-102").parentElement).toHaveClass("max-sm:whitespace-nowrap");
   });
 
+  it("reserves the same trailing slots below sm on rows with and without Add child", () => {
+    setup();
+    const slots = (key: string) => Array.from(row(key).lastElementChild!.children).map((c) => c.className);
+    // TASK-102 is a task (no Add child button); EPIC-12 has one. The agents, needs-you and add slots exist on both.
+    expect(slots("EPIC-12")).toHaveLength(3);
+    expect(slots("TASK-102")).toEqual(slots("EPIC-12"));
+    expect(slots("TASK-102")[2]).toContain("max-sm:w-11");
+  });
+
   it("shows agent counts with a tooltip that open the Agents section", async () => {
     const { user, props } = setup();
     const count = within(row("EPIC-12")).getByRole("button", { name: "3" });

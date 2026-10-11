@@ -109,6 +109,13 @@ describe("Kanban view (§16.7)", () => {
     expect(screen.getByTestId("col-ready").parentElement!.parentElement).toHaveClass("max-md:w-max", "max-md:min-w-full");
   });
 
+  it("names a collapsed header 'Done 2' without the middle dot", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const done = await screen.findByTestId("col-done");
+    expect(done).toHaveAttribute("aria-label", expect.stringMatching(/^Done \d+$/));
+    expect(screen.getByRole("button", { name: /^Done \d+$/ })).toBe(done);
+  });
+
   it("collapsed headers below sm read 'Draft · 0' with single spacing and the expanded casing", async () => {
     renderWithDaemon(<Host />, { events: false });
     const draft = await screen.findByTestId("col-draft");

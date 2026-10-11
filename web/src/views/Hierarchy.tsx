@@ -9,6 +9,11 @@ import { PARENT_TYPES, hierarchyRows, isFilterActive } from "../logic/tree";
 import { useLocalSet } from "../state/local";
 import type { HierarchyProps } from "./props";
 
+// Below sm the trailing cell keeps three fixed slots (agents, needs-you dot, add) so they line up on every row;
+// from sm up the wrappers vanish and the cell lays out as before.
+const SLOT = "flex items-center justify-center max-sm:w-11 sm:contents";
+const DOT_SLOT = "flex items-center justify-center max-sm:w-4 sm:contents";
+
 export function Hierarchy(p: HierarchyProps) {
   const [collapsed, toggleCollapsed] = useLocalSet("swarm.hierarchy.collapsed", []);
   const [opened, toggleOpened] = useLocalSet("swarm.hierarchy.opened", []);
@@ -128,6 +133,7 @@ export function Hierarchy(p: HierarchyProps) {
               </span>
               <span className="max-sm:col-start-1 max-sm:row-start-2 max-sm:pl-[calc(var(--indent)+42px)]"><StatusPill status={it.status} /></span>
               <span className="flex items-center justify-end gap-1.5 max-sm:col-start-2 max-sm:row-span-2 max-sm:row-start-1">
+                <span className={SLOT}>
                 {it.active_agents > 0 && (
                   <Button
                     type="button"
@@ -143,8 +149,9 @@ export function Hierarchy(p: HierarchyProps) {
                     {it.active_agents}
                   </Button>
                 )}
-                {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}
-                {childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}
+                </span>
+                <span className={DOT_SLOT}>{it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}</span>
+                <span className={SLOT}>{childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}</span>
               </span>
             </div>
             {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>

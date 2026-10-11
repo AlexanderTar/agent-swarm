@@ -17,6 +17,8 @@ describe("ConfirmRepos (§16.11)", () => {
     expect(within(proposed).getByRole("checkbox", { name: /endurio-app/ })).toBeChecked();
     expect(within(proposed).getByText("You selected")).toBeInTheDocument();
     expect(within(proposed).getByText("Reason: the sync queue lives in the app's data layer.")).toBeInTheDocument();
+    // ui/label sets leading-none, which would pack wrapped reason lines together.
+    expect(within(proposed).getByText("Reason: the sync queue lives in the app's data layer.")).toHaveClass("leading-normal");
     const additions = screen.getByRole("group", { name: "Suggested additions" });
     expect(within(additions).getByRole("checkbox", { name: /endurio-landing/ })).not.toBeChecked();
     expect(screen.getByText("“Offline sync needs the chat API and the app client.”")).toBeInTheDocument();

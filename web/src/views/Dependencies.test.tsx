@@ -3,6 +3,7 @@ import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { useItems } from "../data/queries";
+import { seed } from "../mock/fixtures";
 import { createMockDaemon } from "../mock/daemon";
 import { clickNode, renderWithDaemon } from "../test/render";
 import { pickOption } from "../test/select";
@@ -109,7 +110,23 @@ describe("Dependencies view (§16.8)", () => {
       ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
     const onSelect = vi.fn();
     renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
-    expect(await screen.findByText("No dependencies for this item.")).toBeInTheDocument();
+    // No root has an edge in the seed, so the empty state names the anchor (EPIC-12, the first root).
+    const empty = await screen.findByText("No dependencies for this item.");
+    expect(empty.parentElement).toHaveTextContent("EPIC-12 Authentication");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("below 1100 it anchors on the first root that has dependency edges", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
+      ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    // EPIC-12 is the first root but has no edge; BUG-8 waits for BUG-7, so BUG-8 is the first root with one.
+    const db = seed();
+    db.deps = [{ item: "BUG-8", blocked_by: "BUG-7" }];
+    const onSelect = vi.fn();
+    renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false, daemon: createMockDaemon(db) });
+    expect(await screen.findByTestId("node-BUG-8")).toBeInTheDocument();
+    expect(screen.getByTestId("node-BUG-7")).toBeInTheDocument();
+    expect(screen.queryByText("No dependencies for this item.")).not.toBeInTheDocument();
     expect(onSelect).not.toHaveBeenCalled();
   });
 
