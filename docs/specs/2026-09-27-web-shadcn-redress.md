@@ -75,6 +75,18 @@ None. No schema, migration, or Go change.
 - Controls `h-8` (buttons, inputs, select triggers); `size="sm"` buttons `h-7`; icon buttons `size-8`. List rows 30 px. Sheet padding `px-5 py-4`; field gap `space-y-4`; label-to-control `gap-1.5`.
 - Focus: `ring-2 ring-ring ring-offset-2 ring-offset-background` via shadcn defaults.
 
+### Mobile / touch
+
+User-approved deviation from the `h-8` density above, for touch screens only. Desktop (`md` and up, 768 px) keeps every size in "Type and density" unchanged; the boundary is the Tailwind `max-md:` variant.
+
+- Below `md`, Button (all sizes), Input, SelectTrigger (both sizes) and TabsTrigger are 44 px: `max-md:h-11`, icon buttons `max-md:size-11`, tabs `max-md:min-h-11` with the tab list `h-auto`.
+- Viewport: `viewport-fit=cover`; the app shell is `h-dvh`, not `h-screen`, so the mobile browser toolbar never hides the bottom of the board.
+- Safe areas: the header pads top, left and right with `max(<desktop padding>, env(safe-area-inset-*))`; the sheet footer pads the bottom the same way. With no inset the desktop padding is unchanged.
+- Toasts are `top-center` below `sm` (640 px) and `bottom-left` from `sm` up. Offsets are Sonner's own gutters (24 px, 16 px at 600 px and below) raised to the safe-area insets with `max(<gutter>, env(safe-area-inset-*))`, so desktop is unchanged.
+- Header below `sm` (640 px), user-approved deviation (2026-10-11), is two 44 px rows, at most 140 px tall at 390 px. Row 1: the three view tabs fill the width beside a compact "Needs you" button (dot and count; its accessible name keeps the full label). Row 2: the search field fills the remaining width, then an icon-only "Filters" button, then "New item". The app title is screen-reader only and "New orchestrator" moves into the "New item" menu.
+- The Filters popover holds Type, Status and, on Kanban, card level and group-by. Its button shows the number of active filters in a `ui/badge`. The popover keeps a 16 px gutter from the screen edge.
+- Screens must not scroll horizontally at 375, 430 and 768 px (Playwright `mobile` and `tablet` projects assert this).
+
 ### `web/src/index.css` (target)
 
 ```css

@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Toaster as SonnerToaster, toast as sonner } from "sonner";
 import { useConnection } from "../data/hooks";
+import { useMediaQuery } from "../state/media";
 
 export interface ToastInput { message: string; action?: { label: string; onClick: () => void } }
 
@@ -37,11 +38,19 @@ export const useToast = (): ToastFn => {
   );
 };
 
+// Sonner's own gutters (24px, 16px at <=600px) unless a device inset is larger.
+const inset = (px: number) => Object.fromEntries(
+  (["top", "right", "bottom", "left"] as const).map((side) => [side, `max(${px}px, env(safe-area-inset-${side}))`]),
+);
+
 export function Toaster() {
+  const narrow = useMediaQuery("(max-width: 639px)");
   return (
     <SonnerToaster
       theme="dark"
-      position="bottom-left"
+      position={narrow ? "top-center" : "bottom-left"}
+      offset={inset(24)}
+      mobileOffset={inset(16)}
       visibleToasts={3}
       toastOptions={{
         style: { "--normal-bg": "var(--popover)" } as CSSProperties,
