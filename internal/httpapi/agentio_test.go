@@ -68,7 +68,7 @@ func TestMCPAcceptsASessionTokenAndTheDaemonToken(t *testing.T) {
 		t.Fatalf("unbound body = %s", unbound.Body)
 	}
 	none := httptest.NewRecorder()
-	s.Handler().ServeHTTP(none, httptest.NewRequest("POST", "/mcp", strings.NewReader(body)))
+	s.Handler().ServeHTTP(none, localReq("POST", "/mcp", strings.NewReader(body)))
 	if none.Code != 401 {
 		t.Fatalf("no token = %d", none.Code)
 	}

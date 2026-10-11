@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,4 +64,79 @@ func TestRequestOrigin(t *testing.T) {
 	}
 }
 
+// localReq is a request from this Mac's loopback, as a browser or the CLI sends it.
+func localReq(method, path string, body io.Reader) *http.Request {
+	r := httptest.NewRequest(method, path, body)
+	r.RemoteAddr, r.Host = "127.0.0.1:5000", "127.0.0.1:7777"
+	return r
+}
+
 func kp(k ListenerKind) *ListenerKind { return &k }
+
+// remoteReq builds a request as the lan or tunnel listener would deliver it,
+// carrying every header a spoofer would try.
+func remoteReq(origin Origin, method, path, token string) *http.Request {
+	r := httptest.NewRequest(method, path, nil)
+	kind := ListenerLAN
+	r.RemoteAddr, r.Host = "192.168.1.77:5000", "swarm.local"
+	if origin == OriginTunnel {
+		kind = ListenerTunnel
+		r.RemoteAddr, r.Host = "127.0.0.1:5000", "localhost"
+	}
+	r.Header.Set("X-Forwarded-For", "127.0.0.1")
+	r.Header.Set("X-Real-IP", "127.0.0.1")
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	return r.WithContext(ConnContext(kind)(context.Background(), nil))
+}
+
+func TestRemoteOriginPolicy(t *testing.T) {
+	withOwnIPs(t, "192.168.1.20")
+	e := newEnv(t)
+	serve := func(r *http.Request) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(rec, r)
+		return rec
+	}
+	localOnly := []struct{ method, path string }{
+		{"GET", "/api/bootstrap"},
+		{"POST", "/mcp"}, {"GET", "/mcp"}, {"DELETE", "/mcp"},
+		{"POST", "/hook/claude/PreToolUse"},
+		{"GET", "/api/sessions/self/wake"},
+		{"POST", "/api/agents/a/terminal"},
+		{"POST", "/api/agents/a/terminal-opened"},
+		{"GET", "/api/agents/a/replacement"},
+		{"POST", "/api/dev/seed"},
+		{"GET", "/api/bugs"},
+		{"GET", "/api/kb/status"}, {"GET", "/api/kb/search"}, {"GET", "/api/kb/specs/alpha"},
+	}
+	for _, origin := range []Origin{OriginLAN, OriginTunnel} {
+		for _, rt := range localOnly {
+			// 404 whether or not the caller presents the daemon token
+			for _, tok := range []string{"", daemonToken} {
+				rec := serve(remoteReq(origin, rt.method, rt.path, tok))
+				wantErr(t, rec.Code, rec.Body.Bytes(), 404, "not_found", "Unknown API route.")
+			}
+		}
+		// the daemon Bearer token is local-only: a non-local-only route says 401
+		rec := serve(remoteReq(origin, "GET", "/api/settings", daemonToken))
+		wantErr(t, rec.Code, rec.Body.Bytes(), 401, "unauthorized", "Missing or invalid token.")
+	}
+	// every route that authenticates with a session token or the loopback check
+	// must be on the local-only list, so a new one cannot be forgotten
+	for _, rt := range e.s.routes {
+		if (rt.auth == authSession || rt.auth == authLoopback) && !localOnlyRoute(rt) {
+			t.Errorf("%s %s is not local-only", rt.method, rt.pattern)
+		}
+	}
+	// local behaviour is unchanged
+	r := localReq("GET", "/api/settings", nil)
+	r.Header.Set("Authorization", "Bearer "+daemonToken)
+	if rec := serve(r); rec.Code != 200 {
+		t.Fatalf("local settings = %d %s", rec.Code, rec.Body)
+	}
+	if rec := serve(localReq("GET", "/api/health", nil)); rec.Code != 200 {
+		t.Fatalf("local health = %d", rec.Code)
+	}
+}

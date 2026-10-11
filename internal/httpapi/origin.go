@@ -88,3 +88,24 @@ func containsIP(ips []net.IP, ip net.IP) bool {
 	}
 	return false
 }
+
+// localOnlyPaths are the routes that lan and tunnel callers must not learn
+// exist: they hand out or accept the daemon token, or drive this Mac. Routes
+// that authenticate with a session token or the loopback check are local-only
+// too, whether or not they are listed. Add a new local-only route here.
+var localOnlyPaths = map[string]bool{
+	"/api/bootstrap":                     true,
+	"/mcp":                               true,
+	"/hook/{agent}/{event}":              true,
+	"/api/sessions/self/wake":            true,
+	"/api/agents/{name}/terminal":        true,
+	"/api/agents/{name}/terminal-opened": true,
+	"/api/agents/{name}/replacement":     true,
+	"/api/dev/seed":                      true,
+	"/api/bugs":                          true,
+}
+
+func localOnlyRoute(rt route) bool {
+	return localOnlyPaths[rt.pattern] || strings.HasPrefix(rt.pattern, "/api/kb/") ||
+		rt.auth == authSession || rt.auth == authLoopback
+}

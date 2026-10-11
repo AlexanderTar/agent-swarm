@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -171,16 +170,19 @@ func bearer(r *http.Request) string {
 var errUnauthorized = apiErr(http.StatusUnauthorized, "unauthorized", "Missing or invalid token.")
 
 func (s *Server) wrap(rt route) http.HandlerFunc {
+	localOnly := localOnlyRoute(rt)
 	return func(w http.ResponseWriter, r *http.Request) {
+		origin := RequestOrigin(r)
+		if localOnly && origin != OriginLocal {
+			// indistinguishable from a route that does not exist
+			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
+			return
+		}
 		switch rt.auth {
 		case authDaemon:
-			if tok := bearer(r); tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) != 1 {
+			// the daemon token never leaves this Mac
+			if tok := bearer(r); origin != OriginLocal || tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) != 1 {
 				s.writeErr(w, errUnauthorized)
-				return
-			}
-		case authLoopback:
-			if !isLocal(r) {
-				s.writeErr(w, apiErr(http.StatusUnauthorized, "unauthorized", "Bootstrap is only available on this Mac."))
 				return
 			}
 		case authSession:
@@ -191,21 +193,6 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 		}
 		rt.h(w, r)
 	}
-}
-
-// isLocal requires a loopback peer and a loopback Host (guards against DNS rebinding).
-func isLocal(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-		return false
-	}
-	h := r.Host
-	if hh, _, err := net.SplitHostPort(h); err == nil {
-		h = hh
-	} else {
-		h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
-	}
-	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
 // sessionCaller is what a session token resolves to (P2 T34).
