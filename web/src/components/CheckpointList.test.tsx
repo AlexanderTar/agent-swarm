@@ -14,7 +14,8 @@ describe("CheckpointList (§16.9)", () => {
     renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={["login-form-coder"]} />, { events: false });
     const rows = await screen.findAllByRole("group");
     const title = within(rows.find((r) => /Advice/.test(r.textContent ?? ""))!).getByRole("button");
-    expect(title).toHaveClass("max-md:h-auto", "max-md:min-h-11", "whitespace-normal");
+    expect(title).toHaveClass("max-md:h-auto", "max-md:min-h-11", "max-md:whitespace-normal", "max-md:justify-start", "max-md:text-left");
+    for (const c of ["whitespace-normal", "justify-start", "text-left"]) expect(title).not.toHaveClass(c); // phone/tablet only
     expect(title).not.toHaveClass("h-auto"); // desktop keeps size sm's h-7 (1440 pixel-identical)
   });
 

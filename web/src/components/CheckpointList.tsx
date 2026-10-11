@@ -79,7 +79,7 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
           <CheckpointRow key={e.checkpoint.id} c={e.checkpoint} />
         ) : (
           <Collapsible key={e.advice.id} role="group" className="rounded border border-border p-2">
-            <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="justify-start whitespace-normal text-left max-md:h-auto max-md:min-h-11">{adviceTitle(e.advice)}</Button></CollapsibleTrigger>
+            <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="max-md:h-auto max-md:min-h-11 max-md:justify-start max-md:whitespace-normal max-md:text-left">{adviceTitle(e.advice)}</Button></CollapsibleTrigger>
             <CollapsibleContent>
             <p className="mt-2 font-medium">{e.advice.question}</p>
             <p>{e.advice.answer ?? e.advice.error ?? ""}</p>

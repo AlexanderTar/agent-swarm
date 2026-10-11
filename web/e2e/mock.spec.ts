@@ -212,7 +212,7 @@ test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px 
   const viewport = page.viewportSize()!.width;
   const box = await ready.boundingBox();
   expect(Math.round(box!.width)).toBe(Math.round(viewport * 0.85));
-  await expect(ready.locator("xpath=../..")).toHaveCSS("scroll-snap-type", /x mandatory/);
+  await expect(ready.locator("xpath=../../..")).toHaveCSS("scroll-snap-type", /x mandatory/);
   const done = page.getByTestId("col-done");
   await done.scrollIntoViewIfNeeded();
   await expect(done.getByText("Done", { exact: true })).toBeVisible();
@@ -272,6 +272,32 @@ test("kanban lane header text stays inside its button and every lane header is o
       const box = (await l.getByRole("button").first().boundingBox())!;
       expect(box.x, `${width}`).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width, `${width}`).toBeLessThanOrEqual(width + 0.5);
+    }
+  }
+});
+
+test("kanban lane headers stay on screen at every horizontal scroll offset and after reload on phones", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
+  const onScreen = async (width: number, label: string) => {
+    for (const l of await page.locator('[data-testid^="lane-"]').all()) {
+      const box = (await l.getByRole("button").first().boundingBox())!;
+      expect(box.x, label).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, label).toBeLessThanOrEqual(width + 0.5);
+    }
+  };
+  for (const width of [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/kanban");
+    await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+    for (const s of ["draft", "ready", "in_progress", "blocked", "done", "cancelled"]) {
+      const col = page.getByTestId(`col-${s}`);
+      await col.evaluate((e) => e.scrollIntoView({ inline: "start", block: "nearest" }));
+      await page.waitForTimeout(300);
+      await onScreen(width, `${width} scrolled to ${s}`);
+      await page.reload();
+      await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
+      await page.waitForTimeout(300);
+      await onScreen(width, `${width} reloaded at ${s}`);
     }
   }
 });

@@ -93,7 +93,7 @@ describe("Kanban view (§16.7)", () => {
   it("snaps 85vw columns below sm and names collapsed headers", async () => {
     renderWithDaemon(<Host />, { events: false });
     const ready = await screen.findByTestId("col-ready");
-    const scroller = ready.parentElement!.parentElement!;
+    const scroller = ready.parentElement!.parentElement!.parentElement!;
     expect(scroller).toHaveClass("max-sm:snap-x", "max-sm:snap-mandatory");
     expect(ready).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
     expect(cell("EPIC-12", "ready")).toHaveClass("max-sm:w-[85vw]", "max-sm:snap-start");
@@ -104,6 +104,8 @@ describe("Kanban view (§16.7)", () => {
     expect(card("TASK-101")).toHaveClass("max-sm:w-full");
     const lane = within(screen.getByTestId("lane-EPIC-12")).getAllByRole("button")[0]!;
     expect(lane).toHaveClass("max-sm:max-w-[100vw]", "max-sm:flex-wrap", "max-sm:whitespace-normal", "max-md:h-auto", "max-md:min-h-11");
+    expect(screen.getByTestId("lane-EPIC-12")).toHaveClass("max-sm:min-w-full"); // spans the scroll width so the sticky header can travel
+    expect(screen.getByTestId("col-ready").parentElement!.parentElement).toHaveClass("max-sm:w-max", "max-sm:min-w-full");
   });
 
   it("shows every conditional card line", async () => {

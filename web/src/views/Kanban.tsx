@@ -235,6 +235,7 @@ export function Kanban(p: KanbanProps) {
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
         className="h-full overflow-auto max-sm:snap-x max-sm:snap-mandatory"
       >
+        <div className="max-sm:w-max max-sm:min-w-full">
         <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
           {cols.map((s) => {
             const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
@@ -259,7 +260,7 @@ export function Kanban(p: KanbanProps) {
         {lanes.map((l) => {
           const collapsed = group === "root" && laneCollapsed(l);
           return (
-            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border">
+            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border max-sm:min-w-full">
               {group === "root" && (
                 <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-md:h-auto max-md:min-h-11 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
@@ -301,6 +302,7 @@ export function Kanban(p: KanbanProps) {
             </section>
           );
         })}
+        </div>
       </div>
     </DndContext>
   );
