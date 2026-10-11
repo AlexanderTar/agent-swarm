@@ -95,6 +95,15 @@ describe("Dependencies view (§16.8)", () => {
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith("EPIC-12"));
   });
 
+  it("below sm it opens on the graph of the first root instead of selecting it", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
+      ({ matches: query.includes("max-width: 639"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    const onSelect = vi.fn();
+    renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
+    expect(await screen.findByText("No dependencies for this item.")).toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("does not re-select a root after the selection is closed, and keeps the graph", async () => {
     const onSelect = vi.fn();
     function Closable() {

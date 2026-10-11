@@ -489,13 +489,11 @@ test("hierarchy rows are at least 44px tall between sm and md too", async ({ pag
   expect(box.height).toBeGreaterThanOrEqual(44);
 });
 
-test("dependencies Details stays closed after Close and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {
+test("dependencies opens on the graph, not Details, and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout");
   await page.goto("/#/dependencies");
   const details = page.getByRole("dialog", { name: /^(EPIC|BUG|STORY|TASK)-\d+$/ });
-  await expect(details).toBeVisible();
-  await details.getByRole("button", { name: "Close" }).first().click();
-  await expect(details).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Fit" })).toBeVisible();
   await page.waitForTimeout(600);
   await expect(details).toHaveCount(0);
   expect(page.url()).not.toContain("item=");
