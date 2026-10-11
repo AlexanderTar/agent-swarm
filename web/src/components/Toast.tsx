@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Toaster as SonnerToaster, toast as sonner } from "sonner";
 import { useConnection } from "../data/hooks";
+import { useMediaQuery } from "../state/media";
 
 export interface ToastInput { message: string; action?: { label: string; onClick: () => void } }
 
@@ -38,10 +39,12 @@ export const useToast = (): ToastFn => {
 };
 
 export function Toaster() {
+  const narrow = useMediaQuery("(max-width: 639px)");
   return (
     <SonnerToaster
       theme="dark"
-      position="bottom-left"
+      position={narrow ? "top-center" : "bottom-left"}
+      offset={{ top: "max(0.5rem, env(safe-area-inset-top))", left: "max(1rem, env(safe-area-inset-left))", bottom: "max(1rem, env(safe-area-inset-bottom))" }}
       visibleToasts={3}
       toastOptions={{
         style: { "--normal-bg": "var(--popover)" } as CSSProperties,

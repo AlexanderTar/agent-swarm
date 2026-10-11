@@ -97,7 +97,7 @@ export function App() {
   const outside = showDetails && outsideView(url.item, all, filter, url.view, url.level);
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-dvh flex-col">
       {conn.state === "closed" && <ConnectionBanner onRetry={conn.retry} />}
       {items.error ? <ItemsErrorBanner message={errorText(items.error)} onRetry={items.reload} /> : null}
       <Header

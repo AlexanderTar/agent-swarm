@@ -29,7 +29,7 @@ export function Header(p: {
 }) {
   const { url, setUrl } = p;
   return (
-    <header className="space-y-2 border-b border-border bg-card px-4 py-2">
+    <header className="space-y-2 border-b border-border bg-card px-4 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]">
       <div className="flex min-h-12 flex-wrap items-center gap-2 py-2 sm:h-12 sm:flex-nowrap sm:py-0">
         <h1 className="text-[14px] font-semibold">{C.appTitle}</h1>
         <Button type="button" variant="secondary" className="ml-auto" onClick={() => setUrl({ view: "inbox" })}>

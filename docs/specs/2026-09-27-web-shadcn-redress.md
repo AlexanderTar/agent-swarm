@@ -75,6 +75,17 @@ None. No schema, migration, or Go change.
 - Controls `h-8` (buttons, inputs, select triggers); `size="sm"` buttons `h-7`; icon buttons `size-8`. List rows 30 px. Sheet padding `px-5 py-4`; field gap `space-y-4`; label-to-control `gap-1.5`.
 - Focus: `ring-2 ring-ring ring-offset-2 ring-offset-background` via shadcn defaults.
 
+### Mobile / touch
+
+User-approved deviation from the `h-8` density above, for touch screens only. Desktop (`md` and up, 768 px) keeps every size in "Type and density" unchanged; the boundary is the Tailwind `max-md:` variant.
+
+- Below `md`, Button (all sizes), Input, SelectTrigger (both sizes) and TabsTrigger are 44 px: `max-md:h-11`, icon buttons `max-md:size-11`, tabs `max-md:min-h-11` with the tab list `h-auto`.
+- Viewport: `viewport-fit=cover`; the app shell is `h-dvh`, not `h-screen`, so the mobile browser toolbar never hides the bottom of the board.
+- Safe areas: the header pads top, left and right with `max(<desktop padding>, env(safe-area-inset-*))`; the sheet footer pads the bottom the same way. With no inset the desktop padding is unchanged.
+- Toasts are `top-center` below `sm` (640 px) and `bottom-left` from `sm` up, offset by the safe-area insets.
+- Header below `sm`: full-width search; Type, Status, card level and group-by move into one "Filters" popover whose button shows the number of active filters. Tabs are unchanged.
+- Screens must not scroll horizontally at 375, 430 and 768 px (Playwright `mobile` and `tablet` projects assert this).
+
 ### `web/src/index.css` (target)
 
 ```css
