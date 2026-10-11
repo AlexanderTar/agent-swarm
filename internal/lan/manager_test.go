@@ -53,6 +53,20 @@ func (f *fakeRegistrar) calls() ([]string, int) {
 	return append([]string(nil), f.started...), f.stops
 }
 
+// closeTracker signals Close on a real listener. Waiting on this instead of dialling the freed
+// port avoids a flake: under load another process can reuse the ephemeral port the test just freed.
+// http.Server closes the listener from its Serve goroutine, so the signal can land a moment late.
+type closeTracker struct {
+	net.Listener
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *closeTracker) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Listener.Close()
+}
+
 type harness struct {
 	m     *Manager
 	reg   *fakeRegistrar
@@ -92,10 +106,12 @@ func newHarness(t *testing.T, ip string) *harness {
 			defer h.mu.Unlock()
 			h.listens = append(h.listens, network+" "+addr)
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err == nil {
-				h.real = append(h.real, ln)
+			if err != nil {
+				return nil, err
 			}
-			return ln, err
+			tracked := &closeTracker{Listener: ln, closed: make(chan struct{})}
+			h.real = append(h.real, tracked)
+			return tracked, nil
 		},
 	}
 	t.Cleanup(h.m.Stop)
@@ -283,9 +299,10 @@ func TestApplyPersistsOutsideSettingsAndStartResumes(t *testing.T) {
 	if st := h2.state(); st.State != "disabled" || st.Enabled || st.IP != "" {
 		t.Fatalf("disabled: %+v", st)
 	}
-	if c, err := net.Dial("tcp", h2.real[0].Addr().String()); err == nil {
-		c.Close()
-		t.Fatal("still accepting after disable")
+	select {
+	case <-h2.real[0].(*closeTracker).closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener not closed on disable")
 	}
 	if _, stops := h2.reg.calls(); stops < 1 {
 		t.Fatal("registrar not stopped on disable")
