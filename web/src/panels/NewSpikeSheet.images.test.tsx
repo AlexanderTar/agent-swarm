@@ -283,6 +283,86 @@ describe("NewSpikeSheet request images: submit", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("images alone never enable Start", async () => {
+    const { sheet, request } = await open();
+    paste(request, "a.png");
+    await within(sheet).findByText("1 of 10");
+    expect(start(sheet)).toBeDisabled();
+  });
+
+  it("an image error never disables Start", async () => {
+    vi.mocked(addImages).mockImplementationOnce(async () => ({
+      added: [],
+      error: "bad.png is not an image Swarm can attach.",
+    }));
+    const { sheet, request, user } = await open();
+    await user.type(request, "Look");
+    paste(request, "bad.png");
+    await within(sheet).findByText("bad.png is not an image Swarm can attach.");
+    expect(start(sheet)).toBeEnabled();
+  });
+
+  it("recovers when reading a file rejects: error line, Start enabled, later adds still work", async () => {
+    vi.mocked(addImages).mockImplementationOnce(async () => {
+      throw new Error("read failed");
+    });
+    const { sheet, request, user } = await open();
+    await user.type(request, "Look");
+    paste(request, "folder");
+    expect(
+      await within(sheet).findByText("folder is not an image Swarm can attach."),
+    ).toBeInTheDocument();
+    expect(sheet.querySelector('li[aria-hidden="true"]')).toBeNull();
+    expect(start(sheet)).toBeEnabled();
+    paste(request, "ok.png");
+    expect(await within(sheet).findByRole("img", { name: "ok.png" })).toBeInTheDocument();
+  });
+
+  it("scrolls the body back to the top when the launch fails, so the banner is visible", async () => {
+    const d = createMockDaemon();
+    d.db.force413 = true;
+    d.db.settings.max_concurrent_agents = 8;
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={vi.fn()} />, {
+      daemon: d,
+      events: false,
+    });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "Look");
+    const body = sheet.querySelector<HTMLElement>(".overflow-y-auto") as HTMLElement;
+    let top = 120;
+    Object.defineProperty(body, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = v;
+      },
+    });
+    await user.click(start(sheet));
+    await within(sheet).findByText("Couldn't start orchestrator. Your entries are saved.");
+    expect(top).toBe(0);
+  });
+
+  it("lays the failure banner out like the not-saved alert: icon plus one text block", async () => {
+    const d = createMockDaemon();
+    d.db.force413 = true;
+    d.db.settings.max_concurrent_agents = 8;
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={vi.fn()} />, {
+      daemon: d,
+      events: false,
+    });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "Look");
+    await user.click(start(sheet));
+    const title = await within(sheet).findByText(
+      "Couldn't start orchestrator. Your entries are saved.",
+    );
+    const alert = title.closest('[role="alert"]') as HTMLElement;
+    expect(alert.querySelector(":scope > svg")).not.toBeNull();
+    const text = alert.querySelector(":scope > div") as HTMLElement;
+    expect(text).toContainElement(title);
+    expect(text).toContainElement(within(alert).getByText(/too large to send over remote access/));
+  });
+
   it("maps a 413 to the remote-access banner and offers Try again", async () => {
     const d = createMockDaemon();
     d.db.force413 = true;

@@ -54,6 +54,8 @@ function Form(p: {
   const [dragging, setDragging] = useState(false);
   const [started, setStarted] = useState<CreateSpikeResponse>();
   const notSaved = useRef<HTMLDivElement>(null);
+  const banner = useRef<HTMLDivElement>(null);
+  const done = useRef<HTMLButtonElement>(null);
   const imagesRef = useRef<RequestImage[]>([]);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const alive = useRef(true);
@@ -71,10 +73,15 @@ function Form(p: {
   const canStart = connected && !create.pending && pending === 0 && !started && !nameErr && agentChoiceValid && (tName !== "" || tReq !== "");
   const nameKebab = kebab(name);
 
-  // Images-not-saved: the alert is the first child of the scrolling sheet body; bring it into view.
+  // The alerts are the first children of the scrolling sheet body; bring them into view.
   useEffect(() => {
-    const body = started ? notSaved.current?.closest<HTMLElement>(".overflow-y-auto") : null;
+    const body = (started ? notSaved.current : failure.banner ? banner.current : null)?.closest<HTMLElement>(".overflow-y-auto");
     if (body) body.scrollTop = 0;
+  }, [started, failure.banner]);
+
+  // Start unmounts when the launch lands, and the dialog's focus scope then reclaims focus; take it back for Done.
+  useEffect(() => {
+    if (started) done.current?.focus();
   }, [started]);
 
   useEffect(() => {
@@ -100,14 +107,18 @@ function Form(p: {
   const addFiles = (files: File[], fallbackName: string, usable: (n: string) => boolean = (n) => n !== "") => {
     if (files.length === 0) return;
     setPending((n) => n + files.length);
+    const named = files.map((f) => ({ blob: f, name: usable(f.name) ? f.name : fallbackName }));
     queue.current = queue.current.then(async () => {
       try {
-        const r = await addImages(imagesRef.current.length, files.map((f) => ({ blob: f, name: usable(f.name) ? f.name : fallbackName })));
+        const r = await addImages(imagesRef.current.length, named);
         if (!alive.current) return;
         const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob) }));
         imagesRef.current = [...imagesRef.current, ...fresh];
         setImages(imagesRef.current);
         setImageError(r.error);
+      } catch {
+        // A file the browser cannot read (a folder dropped from Finder); keep the queue alive for later adds.
+        if (alive.current) setImageError(T.imageUnsupported(named.map((n) => n.name).join(", ")));
       } finally {
         setPending((n) => n - files.length);
       }
@@ -122,7 +133,7 @@ function Form(p: {
     const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
     if (files.length === 0) return;
     e.preventDefault();
-    // Browsers name every clipboard screenshot "image.png".
+    // Browsers name every clipboard screenshot "image.png"; a pasted file that really is called that is renamed too.
     addFiles(files, C.pastedImageName, (n) => n !== "" && n !== "image.png");
   };
   const zoneHandlers = {
@@ -179,7 +190,7 @@ function Form(p: {
           {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
           <Button variant="secondary" disabled={!!started} onClick={p.onClose}>{C.cancel}</Button>
           {started ? (
-            <Button autoFocus onClick={() => finish(started)}>{C.done}</Button>
+            <Button ref={done} onClick={() => finish(started)}>{C.done}</Button>
           ) : (
             <Button disabled={!canStart} onClick={() => void submit()}>
               {create.pending && <Loader2 className="animate-spin" />}
@@ -196,9 +207,12 @@ function Form(p: {
         </Alert>
       )}
       {failure.banner && (
-        <Alert variant="destructive" role="alert">
-          <p>{failure.banner}</p>
-          {failure.detail && <p>{failure.detail}</p>}
+        <Alert ref={banner} variant="destructive" role="alert">
+          <TriangleAlert />
+          <div>
+            <p>{failure.banner}</p>
+            {failure.detail && <p className="mt-1">{failure.detail}</p>}
+          </div>
         </Alert>
       )}
       <div className={cn("space-y-4", started && "opacity-50")} inert={!!started} aria-disabled={!!started} data-started={!!started}>
