@@ -109,7 +109,9 @@ export function RequestImages(p: {
     </Button>
   );
   const count = n > 0 && (
-    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground tabular-nums">{T.imageCount(n)}</span>
+    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground tabular-nums">
+      {T.imageCount(n)}
+    </span>
   );
 
   return (

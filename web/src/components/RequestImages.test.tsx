@@ -182,11 +182,11 @@ describe("RequestImages", () => {
     expect(desk.container.querySelector("ul")).toHaveClass("flex", "overflow-x-auto");
   });
 
-  it("sizes the remove target 24 px from md and 44 px below, with an 18 px disc", () => {
+  it("sizes the remove target 24 px from md and 44 px below, with an 18 px disc, in px", () => {
     render(<RequestImages images={imgs(1)} pending={0} onAdd={vi.fn()} onRemove={vi.fn()} />);
     const btn = screen.getByRole("button", { name: "Remove shot-1.png" });
-    expect(btn).toHaveClass("size-6", "max-md:size-11");
-    expect(btn.querySelector("span")).toHaveClass("size-[18px]", "max-md:size-6");
+    expect(btn).toHaveClass("size-6", "max-md:size-[44px]");
+    expect(btn.querySelector("span")).toHaveClass("size-[18px]", "max-md:size-[24px]");
   });
 
   it("does not render the strip when there is nothing to show", () => {
