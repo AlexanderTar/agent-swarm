@@ -284,14 +284,17 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
 
   function createSpike(body: Body): MockResponse {
     return once(body.request_id, () => {
-      const name = kebab(String(body.name ?? ""));
+      const typed = String(body.name ?? "").trim();
+      const request = String(body.request ?? "");
+      if (!typed && !request.trim()) return fail(400, "bad_request", C.nameOrRequestRequired);
+      const name = typed ? kebab(typed) : `orchestrator-${counter + 1}`;
       if (!name) return fail(400, "bad_request", C.nameEmpty);
       if (agent(name)) return fail(409, "conflict", C.nameTaken);
       // Mirrors StartSpike (chore spec decision 2): intent chore is a Ready chore, not a spike.
       const chore = body.intent === "chore";
       const key = chore ? `CHORE-${++counter}` : `SPIKE-${++counter}`;
       const it = makeItem({
-        key, title: body.name, brief: String(body.request ?? ""), status: chore ? "ready" : "draft",
+        key, title: typed || request.split("\n").find((l) => l.trim())?.trim() || name, brief: request, status: chore ? "ready" : "draft",
         spike_intent: chore ? null : body.intent, repos: body.repos ?? [], created_at: NOW,
       });
       db.items.push(it);

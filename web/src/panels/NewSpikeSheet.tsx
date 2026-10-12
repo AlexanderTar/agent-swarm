@@ -1,3 +1,4 @@
+import { Loader2 } from "lucide-react";
 import { useId, useState } from "react";
 import { errorText } from "../api";
 import { AgentFields, type AgentFieldsValue } from "../components/AgentFields";
@@ -34,7 +35,8 @@ function Form(p: {
   const nameId = useId();
   const requestIdField = useId();
   const [name, setName] = useState("");
-  const [intent, setIntent] = useState<SpikeIntent>(p.intent ?? "feature");
+  const [nameTouched, setNameTouched] = useState(false);
+  const [intent, setIntent] = useState<SpikeIntent>(p.intent ?? "chore");
   const [repos, setRepos] = useState<string[]>([]);
   const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
   const [request, setRequest] = useState("");
@@ -42,8 +44,13 @@ function Form(p: {
   const [failure, setFailure] = useState<SubmitFailure>({});
   const create = useMutation((api, body: CreateSpikeBody) => api.createSpike(body), ["agents", "items", "item:"]);
   const busy = orchestratorsBusy(p.agents, p.settings);
-  const nameErr = failure.name ?? (name !== "" ? nameError(name) : undefined);
-  const valid = !nameError(name) && isValid(validateChoice(fields.choice, fields.advisor, p.catalog, p.settings.enabled_agents, "orchestrator"));
+  const tName = name.trim();
+  const tReq = request.trim();
+  const clientNameErr = tName === "" ? (tReq === "" && nameTouched ? C.nameOrRequestRequired : undefined) : nameError(name);
+  const nameErr = failure.name ?? clientNameErr;
+  const agentChoiceValid = isValid(validateChoice(fields.choice, fields.advisor, p.catalog, p.settings.enabled_agents, "orchestrator"));
+  const canStart = connected && !create.pending && !nameErr && agentChoiceValid && (tName !== "" || tReq !== "");
+  const nameKebab = kebab(name);
 
   const submit = async () => {
     if (create.pending) return;
@@ -67,7 +74,8 @@ function Form(p: {
         <>
           {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
           <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
-          <Button disabled={!valid || !connected || create.pending} onClick={() => void submit()}>
+          <Button disabled={!canStart} onClick={() => void submit()}>
+            {create.pending && <Loader2 className="animate-spin" />}
             {failure.banner ? C.tryAgain : submitLabel(busy)}
           </Button>
         </>
@@ -83,10 +91,11 @@ function Form(p: {
         <Label htmlFor={nameId}>{C.name}</Label>
         <Input id={nameId}
           value={name}
-          onChange={(e) => { setName(e.target.value); setFailure((f) => ({ ...f, name: undefined })); }}
+          placeholder={C.nameOptionalPlaceholder}
+          onChange={(e) => { setName(e.target.value); if (e.target.value.trim() !== "") setNameTouched(true); setFailure((f) => ({ ...f, name: undefined })); }}
         />
-        <p className="text-xs text-muted-foreground">{T.agentName(kebab(name))}</p>
-        {nameErr && <p className="text-xs text-destructive">{nameErr}</p>}
+        {nameErr ? <p className="text-xs text-destructive">{nameErr}</p>
+          : nameKebab !== "" && <p className="font-mono text-xs text-muted-foreground">{T.agentName(nameKebab)}</p>}
       </div>
       <div className="grid grid-cols-[72px_1fr] items-start gap-x-2 gap-y-1 max-sm:grid-cols-1">
           <Label className="h-7 leading-7">{C.intent}</Label>

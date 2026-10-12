@@ -31,6 +31,7 @@ describe("App flows", () => {
     await user.click(await screen.findByRole("button", { name: "New orchestrator" }));
     const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Offline sync");
+    await user.click(within(sheet).getByRole("radio", { name: "Feature spike" }));
     await user.click(await within(sheet).findByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(window.location.hash).toMatch(/item=SPIKE-\d+/));
     expect(screen.queryByRole("dialog", { name: "New orchestrator" })).not.toBeInTheDocument();

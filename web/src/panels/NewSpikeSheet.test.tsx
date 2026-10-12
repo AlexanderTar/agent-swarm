@@ -121,4 +121,82 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     renderWithDaemon(<NewSpikeSheet intent="chore" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
     expect(await screen.findByRole("radio", { name: "Chore" })).toHaveAttribute("aria-checked", "true");
   });
+
+  describe("optional name (menu bar parity)", () => {
+    const startBtn = (sheet: HTMLElement) => within(sheet).getByRole("button", { name: /^(Start|Queue) orchestrator$/ });
+    const open = async (daemon = createMockDaemon(), onCreated = vi.fn()) => {
+      daemon.db.settings.max_concurrent_agents = 8;
+      const r = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon, events: false });
+      const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+      return { ...r, sheet, onCreated };
+    };
+
+    it("defaults the intent to Chore", async () => {
+      const { sheet } = await open();
+      expect(within(sheet).getByRole("radio", { name: "Chore" })).toHaveAttribute("aria-checked", "true");
+    });
+
+    it("enables Start by Name or Request, never by neither", async () => {
+      const { sheet, user } = await open();
+      expect(startBtn(sheet)).toBeDisabled();
+      await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "Fix login");
+      expect(startBtn(sheet)).toBeEnabled();
+      await user.clear(within(sheet).getByRole("textbox", { name: "Request (optional)" }));
+      expect(startBtn(sheet)).toBeDisabled();
+      await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Fix login");
+      expect(startBtn(sheet)).toBeEnabled();
+    });
+
+    it("shows the name-or-request error only after Name was typed then cleared", async () => {
+      const { sheet, user } = await open();
+      const name = within(sheet).getByRole("textbox", { name: "Name" });
+      expect(within(sheet).queryByText("Give a name or a request.")).not.toBeInTheDocument();
+      await user.type(name, "a");
+      expect(within(sheet).queryByText("Give a name or a request.")).not.toBeInTheDocument();
+      await user.clear(name);
+      expect(within(sheet).getByText("Give a name or a request.")).toBeInTheDocument();
+      await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "x");
+      expect(within(sheet).queryByText("Give a name or a request.")).not.toBeInTheDocument();
+    });
+
+    it("hides the Agent name preview until a kebab name exists, with the Optional placeholder", async () => {
+      const { sheet, user } = await open();
+      const name = within(sheet).getByRole("textbox", { name: "Name" });
+      expect(name).toHaveAttribute("placeholder", "Optional if you write a request");
+      expect(within(sheet).queryByText(/^Agent name:/)).not.toBeInTheDocument();
+      await user.type(name, "???");
+      expect(within(sheet).queryByText(/^Agent name:/)).not.toBeInTheDocument();
+      await user.clear(name);
+      await user.type(name, "Fix It");
+      expect(within(sheet).getByText("Agent name: fix-it")).toHaveClass("font-mono");
+    });
+
+    it("posts name \"\" and a trimmed request when only a Request is written, titled from it", async () => {
+      const d = createMockDaemon();
+      const { sheet, user, onCreated } = await open(d);
+      await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "  \n  Fix the login loop  \nmore");
+      await user.click(startBtn(sheet));
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^CHORE-/)));
+      const body = d.calls.find((c) => c.path === "/api/spikes")?.body;
+      expect(body).toMatchObject({ name: "", intent: "chore", request: "Fix the login loop  \nmore" });
+      expect(d.db.items.find((i) => i.key === onCreated.mock.calls[0]?.[0])?.title).toBe("Fix the login loop");
+    });
+
+    it("shows a spinner on Start while sending and keeps the label", async () => {
+      const d = createMockDaemon();
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => { release = r; });
+      const { sheet, user } = await open(d);
+      const real = globalThis.fetch;
+      vi.stubGlobal("fetch", async (...a: Parameters<typeof fetch>) => {
+        if (String(a[0]).endsWith("/api/spikes")) await gate;
+        return real(...a);
+      });
+      await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "x");
+      await user.click(startBtn(sheet));
+      expect(startBtn(sheet)).toBeDisabled();
+      expect(startBtn(sheet).querySelector("svg.animate-spin")).not.toBeNull();
+      release();
+    });
+  });
 });
