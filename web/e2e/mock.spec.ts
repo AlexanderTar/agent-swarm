@@ -914,3 +914,31 @@ for (const width of [375, 430, 768]) {
     for (const s of sizes) expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual(width < 768 ? 44 : 24);
   });
 }
+
+// EPIC-28 review: the counter must not wrap and the remove disc must not scale with the root text size.
+for (const root of [16, 24]) {
+  test(`10 request images: counter on one line and no tile clipped at ${root}px root text`, async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "mobile", "tablet and desktop strip");
+    await page.goto("/");
+    await page.evaluate((px) => { document.documentElement.style.fontSize = `${px}px`; }, root);
+    await openNewOrchestrator(page);
+    const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+    await sheet.locator('input[type="file"]').setInputFiles(shots(10));
+    const counter = sheet.getByText("10 of 10");
+    await expect(counter).toBeVisible();
+    await expect(async () => {
+      const box = await sheet.boundingBox();
+      expect((box?.x ?? Number.POSITIVE_INFINITY) + (box?.width ?? 0)).toBeLessThanOrEqual((page.viewportSize()?.width ?? 0) + 0.5);
+    }).toPass();
+    const lines = await counter.evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); return new Set(Array.from(r.getClientRects()).map((q) => Math.round(q.top))).size; });
+    expect(lines, "counter line boxes").toBe(1);
+    const strip = await sheet.locator("ul").evaluate((ul) => {
+      ul.scrollLeft = ul.scrollWidth;
+      const u = ul.getBoundingClientRect();
+      const last = ul.lastElementChild?.getBoundingClientRect();
+      return { fits: ul.scrollWidth <= ul.clientWidth, lastRight: last?.right ?? 0, right: u.right };
+    });
+    expect(strip.fits || strip.lastRight <= strip.right + 0.5, "last tile fully visible").toBe(true);
+    await noHorizontalOverflow(page);
+  });
+}
