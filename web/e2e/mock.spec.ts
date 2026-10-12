@@ -427,6 +427,7 @@ test("a new spike is created and selected", async ({ page }) => {
   await page.goto("/");
   await openNewOrchestrator(page);
   await page.getByRole("textbox", { name: "Name" }).fill("Offline sync");
+  await page.getByRole("radio", { name: "Feature spike" }).click();
   await page.getByRole("button", { name: /orchestrator$/ }).click();
   await expect(page).toHaveURL(/item=SPIKE-\d+/);
 });
@@ -844,3 +845,72 @@ test("RepoPicker option rows are at least 44px tall below md", async ({ page }, 
   expect(heights.length).toBeGreaterThan(0);
   for (const h of heights) expect(h).toBeGreaterThanOrEqual(44);
 });
+
+// A real 1x1 PNG: Chrome decodes it, so the sheet's prepareImage path runs unmocked.
+const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOoyfkPAANPAehlu0LKAAAAAElFTkSuQmCC", "base64");
+const shots = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({ name: `shot-${from + i + 1}.png`, mimeType: "image/png", buffer: PNG_1X1 }));
+
+test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized, Start works with only a request", async ({ page }) => {
+  await page.goto("/");
+  await openNewOrchestrator(page);
+  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+  const width = page.viewportSize()?.width ?? 0;
+  const phone = width < 768;
+  const add = sheet.getByRole("button", { name: "Add images…" });
+  const remove = sheet.getByRole("button", { name: /^Remove shot-/ });
+  const input = sheet.locator('input[type="file"]');
+
+  // Measure only once the sheet has finished sliding in.
+  await expect(async () => {
+    const box = await sheet.boundingBox();
+    expect((box?.x ?? Number.POSITIVE_INFINITY) + (box?.width ?? 0)).toBeLessThanOrEqual(width + 0.5);
+  }).toPass();
+  await expect(add).toBeEnabled();
+  await expect(sheet.getByText(/ of 10$/)).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: /^(Start|Queue) orchestrator$/ })).toBeDisabled();
+  await noHorizontalOverflow(page);
+
+  await input.setInputFiles(shots(3));
+  await expect(sheet.getByText("3 of 10")).toBeVisible();
+  await expect(remove).toHaveCount(3);
+  await expect(add).toBeEnabled();
+  await noHorizontalOverflow(page);
+
+  await input.setInputFiles(shots(7, 3));
+  await expect(sheet.getByText("10 of 10")).toBeVisible();
+  await expect(remove).toHaveCount(10);
+  await expect(add).toBeDisabled();
+  await noHorizontalOverflow(page);
+
+  const boxes = await remove.evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height, right: r.right }; }));
+  const min = phone ? 44 : 24;
+  for (const b of boxes) {
+    expect(b.w, "remove target width").toBeGreaterThanOrEqual(min);
+    expect(b.h, "remove target height").toBeGreaterThanOrEqual(min);
+  }
+  if (phone) for (const b of boxes) expect(b.right, "remove target inside the viewport").toBeLessThanOrEqual(width);
+  const tiles = await sheet.locator("li:has(img)").evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { y: Math.round(r.top), w: r.width, right: r.right }; }));
+  expect(tiles).toHaveLength(10);
+  expect(new Set(tiles.map((t) => t.y)).size, phone ? "two rows of five" : "one row").toBe(phone ? 2 : 1);
+  for (const t of tiles) expect(t.right).toBeLessThanOrEqual(width);
+
+  await sheet.getByRole("textbox", { name: "Request (optional)" }).fill("Fix the login redirect loop");
+  await sheet.getByRole("button", { name: /^(Start|Queue) orchestrator$/ }).click();
+  await expect(page).toHaveURL(/item=CHORE-\d+/);
+});
+
+for (const width of [375, 430, 768]) {
+  test(`10 request images do not overflow the page at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await openNewOrchestrator(page);
+    const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+    await sheet.locator('input[type="file"]').setInputFiles(shots(10));
+    await expect(sheet.getByText("10 of 10")).toBeVisible();
+    await noHorizontalOverflow(page);
+    const sheetBox = await sheet.boundingBox();
+    expect(sheetBox?.width).toBeLessThanOrEqual(width);
+    const sizes = await sheet.getByRole("button", { name: /^Remove shot-/ }).evaluateAll((els) => els.map((e) => ({ w: e.getBoundingClientRect().width, h: e.getBoundingClientRect().height })));
+    for (const s of sizes) expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual(width < 768 ? 44 : 24);
+  });
+}
