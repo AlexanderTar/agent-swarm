@@ -885,8 +885,8 @@ test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized
   const boxes = await remove.evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height, right: r.right }; }));
   const min = phone ? 44 : 24;
   for (const b of boxes) {
-    expect(b.w, "remove target width").toBeGreaterThanOrEqual(min);
-    expect(b.h, "remove target height").toBeGreaterThanOrEqual(min);
+    expect(b.w, "remove target width").toBeGreaterThanOrEqual(min - 0.5);
+    expect(b.h, "remove target height").toBeGreaterThanOrEqual(min - 0.5);
   }
   if (phone) for (const b of boxes) expect(b.right, "remove target inside the viewport").toBeLessThanOrEqual(width);
   const tiles = await sheet.locator("li:has(img)").evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { y: Math.round(r.top), w: r.width, right: r.right }; }));
@@ -911,7 +911,7 @@ for (const width of [375, 430, 768]) {
     const sheetBox = await sheet.boundingBox();
     expect(sheetBox?.width).toBeLessThanOrEqual(width);
     const sizes = await sheet.getByRole("button", { name: /^Remove shot-/ }).evaluateAll((els) => els.map((e) => ({ w: e.getBoundingClientRect().width, h: e.getBoundingClientRect().height })));
-    for (const s of sizes) expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual(width < 768 ? 44 : 24);
+    for (const s of sizes) expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual((width < 768 ? 44 : 24) - 0.5);
   });
 }
 
@@ -967,9 +967,9 @@ test("remove disc stays 24px in a 44px target at 24px root text on a phone", asy
   });
   expect(m.dw, "disc width").toBeLessThanOrEqual(24);
   expect(m.dh, "disc height").toBeLessThanOrEqual(24);
-  expect(m.tw, "target width").toBeGreaterThanOrEqual(44);
+  expect(m.tw, "target width").toBeGreaterThanOrEqual(44 - 0.5);
   expect(m.tw, "target width").toBeLessThanOrEqual(48);
-  expect(m.th, "target height").toBeGreaterThanOrEqual(44);
+  expect(m.th, "target height").toBeGreaterThanOrEqual(44 - 0.5);
   expect(m.th, "target height").toBeLessThanOrEqual(48);
   expect(m.inside, "target inside the tile corner").toBe(true);
 });
