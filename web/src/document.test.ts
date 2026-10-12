@@ -20,9 +20,11 @@ describe("app icon", () => {
 
   it("links a 180px apple-touch-icon for phone home screens", () => {
     const href = document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute("href");
-    expect(href).toBe("/apple-touch-icon.png");
     expect(existsSync("public/apple-touch-icon.png")).toBe(true);
     const png = readFileSync("public/apple-touch-icon.png");
+    // Inlined so iOS needn't fetch it at Share time (a slow fetch freezes a title monogram into the webclip).
+    expect(href?.startsWith("data:image/png;base64,")).toBe(true);
+    expect(Buffer.from(href!.slice("data:image/png;base64,".length), "base64").equals(png)).toBe(true);
     expect(png.subarray(1, 4).toString()).toBe("PNG");
     expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([180, 180]); // IHDR width, height
     expect(png[25]).toBe(2); // IHDR colour type 2 = RGB: iOS fills alpha with black, so the square must be opaque
