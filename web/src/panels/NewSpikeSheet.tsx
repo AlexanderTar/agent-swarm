@@ -1,8 +1,9 @@
 import { Loader2 } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { errorText } from "../api";
 import { AgentFields, type AgentFieldsValue } from "../components/AgentFields";
 import { RepoPicker } from "../components/RepoPicker";
+import { RequestImages, type RequestImage } from "../components/RequestImages";
 import { Segmented } from "../components/Segmented";
 import { Sheet } from "../components/Sheet";
 import { useToast } from "../components/Toast";
@@ -16,11 +17,15 @@ import { useConnection, useMutation } from "../data/hooks";
 import { useAgents, useCatalog, useSettings } from "../data/queries";
 import { isValid, prefill, validateChoice } from "../logic/catalog";
 import { kebab } from "../logic/kebab";
+import { addImages } from "../logic/requestImages";
+import { useMediaQuery } from "../state/media";
 import { startedToast } from "../logic/toasts";
 import {
   type SubmitFailure, mapSubmitError, nameError, newRequestId, orchestratorsBusy, spikePayload, submitLabel,
 } from "../logic/spawnForm";
 import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Settings, SpikeIntent } from "../types";
+
+const hasFiles = (e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
 function Form(p: {
   settings: Settings;
@@ -42,6 +47,17 @@ function Form(p: {
   const [request, setRequest] = useState("");
   const [requestId, setRequestId] = useState(newRequestId);
   const [failure, setFailure] = useState<SubmitFailure>({});
+  const [images, setImages] = useState<RequestImage[]>([]);
+  const [pending, setPending] = useState(0);
+  const [imageError, setImageError] = useState<string>();
+  const [dragging, setDragging] = useState(false);
+  const imagesRef = useRef<RequestImage[]>([]);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const alive = useRef(true);
+  const zone = useRef<HTMLDivElement>(null);
+  const depth = useRef(0);
+  const finePointer = useMediaQuery("(hover: hover) and (pointer: fine)");
+  const hint = finePointer ? (/Mac|iPhone|iPad/.test(navigator.userAgent) ? C.requestImageHintMac : C.requestImageHint) : undefined;
   const create = useMutation((api, body: CreateSpikeBody) => api.createSpike(body), ["agents", "items", "item:"]);
   const busy = orchestratorsBusy(p.agents, p.settings);
   const tName = name.trim();
@@ -51,6 +67,80 @@ function Form(p: {
   const agentChoiceValid = isValid(validateChoice(fields.choice, fields.advisor, p.catalog, p.settings.enabled_agents, "orchestrator"));
   const canStart = connected && !create.pending && !nameErr && agentChoiceValid && (tName !== "" || tReq !== "");
   const nameKebab = kebab(name);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  // Window guard: a file dropped outside the zone would make the browser open it and lose the form.
+  useEffect(() => {
+    const guard = (e: DragEvent) => {
+      if (!hasFiles(e) || zone.current?.contains(e.target as Node)) return;
+      e.preventDefault();
+      if (e.type === "dragover" && e.dataTransfer) e.dataTransfer.dropEffect = "none";
+    };
+    window.addEventListener("dragover", guard);
+    window.addEventListener("drop", guard);
+    return () => {
+      window.removeEventListener("dragover", guard);
+      window.removeEventListener("drop", guard);
+    };
+  }, []);
+
+  const addFiles = (files: File[], fallbackName: string, usable: (n: string) => boolean = (n) => n !== "") => {
+    if (files.length === 0) return;
+    setPending((n) => n + files.length);
+    queue.current = queue.current.then(async () => {
+      try {
+        const r = await addImages(imagesRef.current.length, files.map((f) => ({ blob: f, name: usable(f.name) ? f.name : fallbackName })));
+        if (!alive.current) return;
+        const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob) }));
+        imagesRef.current = [...imagesRef.current, ...fresh];
+        setImages(imagesRef.current);
+        setImageError(r.error);
+      } finally {
+        setPending((n) => n - files.length);
+      }
+    });
+  };
+  const removeImage = (id: string) => {
+    imagesRef.current = imagesRef.current.filter((i) => i.id !== id);
+    setImages(imagesRef.current);
+    setImageError(undefined);
+  };
+  const onPaste = (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0) return;
+    e.preventDefault();
+    // Browsers name every clipboard screenshot "image.png".
+    addFiles(files, C.pastedImageName, (n) => n !== "" && n !== "image.png");
+  };
+  const zoneHandlers = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!hasFiles(e.nativeEvent)) return;
+      e.preventDefault();
+      depth.current += 1;
+      setDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (!hasFiles(e.nativeEvent)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!hasFiles(e.nativeEvent)) return;
+      depth.current = Math.max(0, depth.current - 1);
+      if (depth.current === 0) setDragging(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!hasFiles(e.nativeEvent)) return;
+      e.preventDefault();
+      depth.current = 0;
+      setDragging(false);
+      addFiles(Array.from(e.dataTransfer.files), C.droppedImageName);
+    },
+  };
 
   const submit = async () => {
     if (create.pending) return;
@@ -109,9 +199,17 @@ function Form(p: {
       </div>
       <RepoPicker label={C.repositoriesOptional} caption={intent === "chore" ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
       <AgentFields value={fields} onChange={setFields} settings={p.settings} catalog={p.catalog} />
-      <div className="space-y-1.5">
+      <div ref={zone} data-drop-zone className="space-y-1.5" {...zoneHandlers}>
         <Label htmlFor={requestIdField}>{C.requestOptional}</Label>
-        <Textarea id={requestIdField} rows={5} value={request} onChange={(e) => setRequest(e.target.value)} />
+        <div className="relative">
+          <Textarea id={requestIdField} rows={5} className="min-h-[108px]" placeholder={hint} value={request} onChange={(e) => setRequest(e.target.value)} onPaste={onPaste} />
+          {dragging && (
+            <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-md border-2 border-dashed border-ring bg-background text-sm font-medium text-link">
+              {C.dropImages}
+            </div>
+          )}
+        </div>
+        <RequestImages images={images} pending={pending} error={imageError} onAdd={(files) => addFiles(files, C.droppedImageName)} onRemove={removeImage} />
       </div>
     </Sheet>
   );
