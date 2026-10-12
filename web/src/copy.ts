@@ -247,6 +247,7 @@ export const C = {
   neverFetched: "Never fetched",
   launchFailure: "Couldn't start orchestrator. Your entries are saved.",
   imageTooMany: "Up to 10 images.",
+  imagesTooLargeToSend: "The images are too large to send over remote access. Remove some and try again.",
   queuedCaption: "Starts when an agent slot becomes available.",
   orchestratorExists: "This item already has an orchestrator.",
   epicDone: "Accept this epic to mark it Done.",

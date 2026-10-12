@@ -49,7 +49,7 @@ function Form(p: {
     if (create.pending) return;
     setFailure({});
     try {
-      const r = await create.run(spikePayload({ name, intent, repos, request, fields }, p.settings, p.catalog, requestId));
+      const r = await create.run(await spikePayload({ name, intent, repos, request, images: [], fields }, p.settings, p.catalog, requestId));
       toast.success(startedToast(r.agent, r.item.key));
       p.onCreated(r.item.key);
     } catch (e) {

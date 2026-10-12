@@ -1,7 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { type Deps, MAX_IMAGES, addImages, prepareImage, sniff } from "./requestImages";
+import {
+  type Deps,
+  MAX_IMAGES,
+  addImages,
+  prepareImage,
+  sniff,
+  toAttachment,
+} from "./requestImages";
 
 const u8 = (...b: number[]) => new Uint8Array(b);
 const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
@@ -245,5 +252,20 @@ describe("prepareImage decoder fallback", () => {
     decoders.heic.mockRejectedValue(new Error("corrupt"));
     const r = await prepareImage(fixture("tiny.heic"), "bad.heic", deps);
     expect(r).toEqual({ error: "bad.heic is not an image Swarm can attach." });
+  });
+});
+
+describe("toAttachment", () => {
+  it("returns plain base64 with no data: prefix, also for large blobs", async () => {
+    const small = await toAttachment({
+      name: "a.png",
+      blob: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
+    });
+    expect(small).toEqual({ name: "a.png", data: "AQIDBA==" });
+    const big = await toAttachment({
+      name: "b.png",
+      blob: new Blob([new Uint8Array(200_000).fill(65)]),
+    });
+    expect(big.data).toBe(btoa("A".repeat(200_000)));
   });
 });

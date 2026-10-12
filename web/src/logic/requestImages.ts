@@ -126,3 +126,14 @@ export async function addImages(
   }
   return error ? { added, error } : { added };
 }
+
+export async function toAttachment(img: { name: string; blob: Blob }): Promise<{
+  name: string;
+  data: string;
+}> {
+  const bytes = new Uint8Array(await img.blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { name: img.name, data: btoa(bin) };
+}
