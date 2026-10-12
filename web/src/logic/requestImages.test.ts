@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_IMAGES, addImages, sniff } from "./requestImages";
+import { type Deps, MAX_IMAGES, addImages, prepareImage, sniff } from "./requestImages";
 
 const u8 = (...b: number[]) => new Uint8Array(b);
 const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
@@ -71,5 +71,124 @@ describe("addImages", () => {
     const r = await addImages(10, [png("a.png")], { decode });
     expect(r.added).toEqual([]);
     expect(r.error).toBe("Up to 10 images.");
+  });
+});
+
+describe("prepareImage", () => {
+  const MB = 1 << 20;
+  const PNG = [0x89, 0x50, 0x4e, 0x47];
+  const JPEG = [0xff, 0xd8, 0xff, 0xe0];
+  const BMP = [0x42, 0x4d, 0, 0];
+  const sized = (bytes: number, magic: number[]) => {
+    const b = new Uint8Array(bytes);
+    b.set(magic);
+    return new Blob([b]);
+  };
+  const decodeTo =
+    (width: number, height: number): NonNullable<Deps["decode"]> =>
+    async () =>
+      ({ width, height }) as ImageBitmap;
+  const encodeTo = (...sizes: (number | null)[]) => {
+    const calls: unknown[][] = [];
+    const encode = vi.fn(async (...args: unknown[]) => {
+      calls.push(args.slice(1));
+      const n = sizes[Math.min(calls.length, sizes.length) - 1] ?? null;
+      return n === null ? null : new Blob([new Uint8Array(n)]);
+    });
+    return { encode: encode as unknown as NonNullable<Deps["encode"]>, calls };
+  };
+
+  it("keeps a small PNG byte for byte whatever its pixel size", async () => {
+    const file = sized(1 * MB, PNG);
+    const { encode, calls } = encodeTo(1);
+    const r = await prepareImage(file, "shot.png", { decode: decodeTo(2880, 1800), encode });
+    expect(r).toEqual({ blob: file });
+    expect(calls).toEqual([]);
+  });
+
+  it("re-encodes a JPEG over 2 MB as JPEG at 2560 px and 0.85", async () => {
+    const file = sized(3 * MB, JPEG);
+    const { encode, calls } = encodeTo(MB);
+    const r = await prepareImage(file, "photo.jpg", { decode: decodeTo(3000, 2000), encode });
+    expect("blob" in r && r.blob.size).toBe(MB);
+    expect(calls).toEqual([[2560, "image/jpeg", 0.85]]);
+  });
+
+  it("never upscales", async () => {
+    const { encode, calls } = encodeTo(MB);
+    await prepareImage(sized(3 * MB, JPEG), "p.jpg", { decode: decodeTo(2000, 1000), encode });
+    expect(calls[0]?.[0]).toBe(2000);
+  });
+
+  it("re-encodes a big PNG as PNG when that lands under 2 MB", async () => {
+    const { encode, calls } = encodeTo(MB);
+    const r = await prepareImage(sized(3 * MB, PNG), "shot.png", {
+      decode: decodeTo(4000, 3000),
+      encode,
+    });
+    expect("blob" in r && r.blob.size).toBe(MB);
+    expect(calls).toEqual([[2560, "image/png"]]);
+  });
+
+  it("falls back to JPEG when the PNG re-encode is still over 2 MB", async () => {
+    const { encode, calls } = encodeTo(3 * MB, MB);
+    const r = await prepareImage(sized(3 * MB, PNG), "shot.png", {
+      decode: decodeTo(4000, 3000),
+      encode,
+    });
+    expect("blob" in r && r.blob.size).toBe(MB);
+    expect(calls).toEqual([
+      [2560, "image/png"],
+      [2560, "image/jpeg", 0.85],
+    ]);
+  });
+
+  it("converts a format the browser decodes but we cannot send as is (BMP) to PNG", async () => {
+    const { encode, calls } = encodeTo(MB);
+    const r = await prepareImage(sized(MB, BMP), "a.bmp", { decode: decodeTo(100, 100), encode });
+    expect("blob" in r && r.blob.size).toBe(MB);
+    expect(calls).toEqual([[100, "image/png"]]);
+  });
+
+  it("rejects a non-web format when the encoder fails", async () => {
+    const { encode } = encodeTo(null);
+    const r = await prepareImage(sized(MB, BMP), "a.bmp", { decode: decodeTo(100, 100), encode });
+    expect(r).toEqual({ error: "a.bmp is not an image Swarm can attach." });
+  });
+
+  it("falls back to the original when the encoder returns null, then enforces 10 MB", async () => {
+    const { encode } = encodeTo(null);
+    const small = sized(3 * MB, JPEG);
+    expect(await prepareImage(small, "a.jpg", { decode: decodeTo(3000, 2000), encode })).toEqual({
+      blob: small,
+    });
+    const r = await prepareImage(sized(12 * MB, JPEG), "Panorama.jpg", {
+      decode: decodeTo(9000, 3000),
+      encode,
+    });
+    expect(r).toEqual({ error: "Panorama.jpg is larger than 10 MB." });
+  });
+
+  it("falls back to the original when the encoder throws", async () => {
+    const encode = vi.fn().mockRejectedValue(new Error("out of memory"));
+    const file = sized(3 * MB, JPEG);
+    expect(await prepareImage(file, "a.jpg", { decode: decodeTo(3000, 2000), encode })).toEqual({
+      blob: file,
+    });
+  });
+
+  it("rejects an encode result over 10 MB", async () => {
+    const { encode } = encodeTo(11 * MB);
+    const r = await prepareImage(sized(3 * MB, JPEG), "a.jpg", {
+      decode: decodeTo(3000, 2000),
+      encode,
+    });
+    expect(r).toEqual({ error: "a.jpg is larger than 10 MB." });
+  });
+
+  it("rejects an undecodable blob", async () => {
+    const decode = vi.fn().mockRejectedValue(new Error("nope"));
+    const r = await prepareImage(sized(100, PNG), "x.png", { decode });
+    expect(r).toEqual({ error: "x.png is not an image Swarm can attach." });
   });
 });
