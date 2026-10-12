@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { addImages } from "../logic/requestImages";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import { NewSpikeSheet } from "./NewSpikeSheet";
@@ -12,7 +13,8 @@ vi.mock("../logic/requestImages", async (orig) => ({
   })),
 }));
 
-const png = (name = "a.png") => new File(["\x89PNG"], name, { type: "image/png" });
+const png = (name = "a.png") =>
+  new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
 const filesDrag = (files: File[] = []) => ({
   dataTransfer: { types: ["Files"], files, dropEffect: "" },
 });
@@ -155,5 +157,151 @@ describe("NewSpikeSheet request images: paste and drop", () => {
   it("gives phones (coarse pointer) no placeholder", async () => {
     const { request } = await open();
     expect(request).not.toHaveAttribute("placeholder");
+  });
+});
+
+describe("NewSpikeSheet request images: submit", () => {
+  const start = (sheet: HTMLElement) =>
+    within(sheet).getByRole("button", { name: /^(Start|Queue|Try again)/ });
+  const paste = (request: HTMLElement, ...names: string[]) =>
+    fireEvent.paste(request, {
+      clipboardData: { files: names.map((n) => png(n)), types: ["Files"], getData: () => "" },
+    });
+
+  it("posts base64 attachments for the images, none without images", async () => {
+    const { sheet, request, user, daemon, onCreated } = await open();
+    await user.type(request, "Look at these");
+    paste(request, "a.png", "b.png");
+    await within(sheet).findByText("2 of 10");
+    await user.click(start(sheet));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const body = daemon.calls.find((c) => c.path === "/api/spikes")?.body as {
+      attachments?: { name: string; data: string }[];
+    };
+    expect(body.attachments).toHaveLength(2);
+    expect(body.attachments?.[0]).toEqual({ name: "a.png", data: btoa("\x89PNG") });
+  });
+
+  it("omits attachments with no images", async () => {
+    const { sheet, request, user, daemon, onCreated } = await open();
+    await user.type(request, "Just text");
+    await user.click(start(sheet));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(daemon.calls.find((c) => c.path === "/api/spikes")?.body).not.toHaveProperty(
+      "attachments",
+    );
+  });
+
+  it("keeps Start disabled, without a spinner, while a tile is still being read", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    vi.mocked(addImages).mockImplementationOnce(async (_n, files) => {
+      await gate;
+      return { added: files };
+    });
+    const { sheet, request, user } = await open();
+    await user.type(request, "Look");
+    paste(request, "slow.png");
+    expect(start(sheet)).toBeDisabled();
+    expect(start(sheet).querySelector("svg.animate-spin")).toBeNull();
+    expect(sheet.querySelector('li[aria-hidden="true"]')).not.toBeNull();
+    release();
+    await within(sheet).findByRole("img", { name: "slow.png" });
+    expect(start(sheet)).toBeEnabled();
+  });
+
+  it("shows the images-not-saved state, scrolls to the top, and finishes only on Done", async () => {
+    const d = createMockDaemon();
+    d.db.failAttachments = true;
+    d.db.settings.max_concurrent_agents = 8;
+    const onCreated = vi.fn();
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, {
+      daemon: d,
+      events: false,
+    });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    const request = within(sheet).getByRole("textbox", { name: "Request (optional)" });
+    await user.type(request, "Look");
+    paste(request, "a.png");
+    await within(sheet).findByText("1 of 10");
+    const body = sheet.querySelector<HTMLElement>(".overflow-y-auto") as HTMLElement;
+    let top = 120;
+    Object.defineProperty(body, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = v;
+      },
+    });
+    await user.click(start(sheet));
+    const alert = await within(sheet).findByText(
+      "Started, but the images could not be saved. Share them with the orchestrator another way.",
+    );
+    expect(alert.closest('[role="alert"]')).toBeInTheDocument();
+    expect(top).toBe(0);
+    expect(onCreated).not.toHaveBeenCalled();
+    const done = within(sheet).getByRole("button", { name: "Done" });
+    expect(done).toHaveFocus();
+    expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(sheet.querySelector("[data-started]")).toHaveAttribute("inert");
+    expect(within(sheet).queryByRole("button", { name: /^(Start|Queue)/ })).not.toBeInTheDocument();
+    await user.click(done);
+    expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^CHORE-/));
+  });
+
+  it.each([
+    [
+      "Escape",
+      async (user: ReturnType<typeof renderWithDaemon>["user"]) => user.keyboard("{Escape}"),
+    ],
+    [
+      "the close button",
+      async (user: ReturnType<typeof renderWithDaemon>["user"]) =>
+        user.click(screen.getByRole("button", { name: "Close" })),
+    ],
+  ])("treats %s as Done in the images-not-saved state", async (_n, close) => {
+    const d = createMockDaemon();
+    d.db.failAttachments = true;
+    d.db.settings.max_concurrent_agents = 8;
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={onClose} onCreated={onCreated} />, {
+      daemon: d,
+      events: false,
+    });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    const request = within(sheet).getByRole("textbox", { name: "Request (optional)" });
+    await user.type(request, "Look");
+    paste(request, "a.png");
+    await within(sheet).findByText("1 of 10");
+    await user.click(start(sheet));
+    await within(sheet).findByRole("button", { name: "Done" });
+    await close(user);
+    expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^CHORE-/));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("maps a 413 to the remote-access banner and offers Try again", async () => {
+    const d = createMockDaemon();
+    d.db.force413 = true;
+    d.db.settings.max_concurrent_agents = 8;
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={vi.fn()} />, {
+      daemon: d,
+      events: false,
+    });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "Look");
+    await user.click(start(sheet));
+    expect(
+      await within(sheet).findByText(
+        "The images are too large to send over remote access. Remove some and try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("Couldn't start orchestrator. Your entries are saved."),
+    ).toBeInTheDocument();
+    expect(within(sheet).getByRole("button", { name: "Try again" })).toBeEnabled();
   });
 });

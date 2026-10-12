@@ -24,6 +24,10 @@ export interface MockDb {
   settings: Settings;
   catalog: AgentCatalogEntry[];
   repos: ReposResponse;
+  // Test switches for POST /api/spikes: save no attachments / answer 413 like the relay.
+  failAttachments?: boolean;
+  force413?: boolean;
+  attachments?: Record<string, { name: string }[]>;
 }
 
 const ses = (state: SessionInfo["state"], p: Partial<SessionInfo> = {}): SessionInfo => ({

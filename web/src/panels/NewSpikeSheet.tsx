@@ -1,6 +1,7 @@
-import { Loader2 } from "lucide-react";
+import { Loader2, TriangleAlert } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { errorText } from "../api";
+import { cn } from "@/lib/utils";
 import { AgentFields, type AgentFieldsValue } from "../components/AgentFields";
 import { RepoPicker } from "../components/RepoPicker";
 import { RequestImages, type RequestImage } from "../components/RequestImages";
@@ -23,7 +24,7 @@ import { startedToast } from "../logic/toasts";
 import {
   type SubmitFailure, mapSubmitError, nameError, newRequestId, orchestratorsBusy, spikePayload, submitLabel,
 } from "../logic/spawnForm";
-import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Settings, SpikeIntent } from "../types";
+import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, CreateSpikeResponse, Settings, SpikeIntent } from "../types";
 
 const hasFiles = (e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
@@ -51,6 +52,8 @@ function Form(p: {
   const [pending, setPending] = useState(0);
   const [imageError, setImageError] = useState<string>();
   const [dragging, setDragging] = useState(false);
+  const [started, setStarted] = useState<CreateSpikeResponse>();
+  const notSaved = useRef<HTMLDivElement>(null);
   const imagesRef = useRef<RequestImage[]>([]);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const alive = useRef(true);
@@ -65,8 +68,14 @@ function Form(p: {
   const clientNameErr = tName === "" ? (tReq === "" && nameTouched ? C.nameOrRequestRequired : undefined) : nameError(name);
   const nameErr = failure.name ?? clientNameErr;
   const agentChoiceValid = isValid(validateChoice(fields.choice, fields.advisor, p.catalog, p.settings.enabled_agents, "orchestrator"));
-  const canStart = connected && !create.pending && !nameErr && agentChoiceValid && (tName !== "" || tReq !== "");
+  const canStart = connected && !create.pending && pending === 0 && !started && !nameErr && agentChoiceValid && (tName !== "" || tReq !== "");
   const nameKebab = kebab(name);
+
+  // Images-not-saved: the alert is the first child of the scrolling sheet body; bring it into view.
+  useEffect(() => {
+    const body = started ? notSaved.current?.closest<HTMLElement>(".overflow-y-auto") : null;
+    if (body) body.scrollTop = 0;
+  }, [started]);
 
   useEffect(() => {
     alive.current = true;
@@ -142,13 +151,18 @@ function Form(p: {
     },
   };
 
+  const finish = (r: CreateSpikeResponse) => {
+    toast.success(startedToast(r.agent, r.item.key));
+    p.onCreated(r.item.key);
+  };
+
   const submit = async () => {
     if (create.pending) return;
     setFailure({});
     try {
-      const r = await create.run(await spikePayload({ name, intent, repos, request, images: [], fields }, p.settings, p.catalog, requestId));
-      toast.success(startedToast(r.agent, r.item.key));
-      p.onCreated(r.item.key);
+      const r = await create.run(await spikePayload({ name, intent, repos, request, images, fields }, p.settings, p.catalog, requestId));
+      if (r.attachments_failed) setStarted(r);
+      else finish(r);
     } catch (e) {
       setFailure(mapSubmitError(e));
       setRequestId(newRequestId());
@@ -159,24 +173,35 @@ function Form(p: {
     <Sheet
       title={C.newOrchestrator}
       width={900}
-      onClose={p.onClose}
+      onClose={started ? () => finish(started) : p.onClose}
       footer={
         <>
           {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
-          <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
-          <Button disabled={!canStart} onClick={() => void submit()}>
-            {create.pending && <Loader2 className="animate-spin" />}
-            {failure.banner ? C.tryAgain : submitLabel(busy)}
-          </Button>
+          <Button variant="secondary" disabled={!!started} onClick={p.onClose}>{C.cancel}</Button>
+          {started ? (
+            <Button autoFocus onClick={() => finish(started)}>{C.done}</Button>
+          ) : (
+            <Button disabled={!canStart} onClick={() => void submit()}>
+              {create.pending && <Loader2 className="animate-spin" />}
+              {failure.banner ? C.tryAgain : submitLabel(busy)}
+            </Button>
+          )}
         </>
       }
     >
+      {started && (
+        <Alert ref={notSaved} className="border-warning/40 text-warning">
+          <TriangleAlert />
+          <div>{C.imagesNotSaved}</div>
+        </Alert>
+      )}
       {failure.banner && (
         <Alert variant="destructive" role="alert">
           <p>{failure.banner}</p>
           {failure.detail && <p>{failure.detail}</p>}
         </Alert>
       )}
+      <div className={cn("space-y-4", started && "opacity-50")} inert={!!started} aria-disabled={!!started} data-started={!!started}>
       <div className="space-y-1.5">
         <Label htmlFor={nameId}>{C.name}</Label>
         <Input id={nameId}
@@ -210,6 +235,7 @@ function Form(p: {
           )}
         </div>
         <RequestImages images={images} pending={pending} error={imageError} onAdd={(files) => addFiles(files, C.droppedImageName)} onRemove={removeImage} />
+      </div>
       </div>
     </Sheet>
   );

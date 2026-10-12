@@ -4,6 +4,7 @@ import { C, T } from "../copy";
 import { MAX_IMAGES } from "../logic/requestImages";
 import { useMediaQuery } from "../state/media";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 
 export interface RequestImage {
   id: string;
@@ -71,17 +72,19 @@ export function RequestImages(p: {
       {p.images.map((i) => (
         <li key={i.id} className={tile} title={i.name}>
           <img src={i.url} alt={i.name} className="size-full object-cover" draggable={false} />
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size={null}
             aria-label={T.removeImage(i.name)}
             data-remove-id={i.id}
             onClick={() => remove(i.id)}
-            className="group absolute right-0 top-0 flex size-6 items-start justify-end p-0.5 outline-none max-md:size-11 max-md:p-1"
+            className="group absolute right-0 top-0 flex size-6 items-start justify-end rounded-none p-0.5 hover:bg-transparent focus-visible:ring-0 max-md:size-11 max-md:p-1"
           >
             <span className="grid size-[18px] place-items-center rounded-full bg-black/70 text-white group-hover:bg-black/85 group-focus-visible:ring-2 group-focus-visible:ring-ring max-md:size-6">
               <X className="size-3 max-md:size-3.5" strokeWidth={2.5} />
             </span>
-          </button>
+          </Button>
         </li>
       ))}
       {pendingKeys.map((k) => (
@@ -111,12 +114,13 @@ export function RequestImages(p: {
 
   return (
     <div ref={root}>
-      <input
+      <Input
         ref={input}
         type="file"
         accept="image/*"
         multiple
         hidden
+        className="hidden"
         aria-hidden="true"
         tabIndex={-1}
         onChange={(e) => {

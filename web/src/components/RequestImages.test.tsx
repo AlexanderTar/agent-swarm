@@ -31,21 +31,19 @@ function Harness(p: {
 }
 
 const media = (matches: boolean) =>
-  vi
-    .spyOn(window, "matchMedia")
-    .mockImplementation(
-      (q) =>
-        ({
-          matches,
-          media: q,
-          onchange: null,
-          addEventListener() {},
-          removeEventListener() {},
-          addListener() {},
-          removeListener() {},
-          dispatchEvent: () => false,
-        }) as MediaQueryList,
-    );
+  vi.spyOn(window, "matchMedia").mockImplementation(
+    (q) =>
+      ({
+        matches,
+        media: q,
+        onchange: null,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList,
+  );
 
 describe("RequestImages", () => {
   it("hides the counter at 0 and shows 'N of 10' otherwise", () => {
