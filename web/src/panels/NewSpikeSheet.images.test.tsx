@@ -384,4 +384,19 @@ describe("NewSpikeSheet request images: submit", () => {
     ).toBeInTheDocument();
     expect(within(sheet).getByRole("button", { name: "Try again" })).toBeEnabled();
   });
+
+  it("moves focus to Try again after a 413", async () => {
+    const d = createMockDaemon();
+    d.db.force413 = true;
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={vi.fn()} />, {
+      daemon: d,
+      events: false,
+    });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
+    await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "Look");
+    // fireEvent leaves focus where it was, as when the disabled Start button drops it to the dialog.
+    fireEvent.click(start(sheet));
+    const retry = await within(sheet).findByRole("button", { name: "Try again" });
+    await waitFor(() => expect(retry).toHaveFocus());
+  });
 });

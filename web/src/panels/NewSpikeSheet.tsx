@@ -56,6 +56,7 @@ function Form(p: {
   const notSaved = useRef<HTMLDivElement>(null);
   const banner = useRef<HTMLDivElement>(null);
   const done = useRef<HTMLButtonElement>(null);
+  const start = useRef<HTMLButtonElement>(null);
   const imagesRef = useRef<RequestImage[]>([]);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const alive = useRef(true);
@@ -83,6 +84,11 @@ function Form(p: {
   useEffect(() => {
     if (started) done.current?.focus();
   }, [started]);
+
+  // The disabled Start button drops focus while the request is in flight; hand it to Try again once the failure lands.
+  useEffect(() => {
+    if (failure.banner && !create.pending) start.current?.focus();
+  }, [failure.banner, create.pending]);
 
   useEffect(() => {
     alive.current = true;
@@ -192,7 +198,7 @@ function Form(p: {
           {started ? (
             <Button ref={done} onClick={() => finish(started)}>{C.done}</Button>
           ) : (
-            <Button disabled={!canStart} onClick={() => void submit()}>
+            <Button ref={start} disabled={!canStart} onClick={() => void submit()}>
               {create.pending && <Loader2 className="animate-spin" />}
               {failure.banner ? C.tryAgain : submitLabel(busy)}
             </Button>
