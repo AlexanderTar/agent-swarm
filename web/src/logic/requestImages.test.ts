@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { type Deps, MAX_IMAGES, addImages, prepareImage, sniff } from "./requestImages";
 
@@ -190,5 +192,58 @@ describe("prepareImage", () => {
     const decode = vi.fn().mockRejectedValue(new Error("nope"));
     const r = await prepareImage(sized(100, PNG), "x.png", { decode });
     expect(r).toEqual({ error: "x.png is not an image Swarm can attach." });
+  });
+});
+
+describe("prepareImage decoder fallback", () => {
+  const fixture = (name: string) =>
+    new Blob([readFileSync(join(process.cwd(), "src/test/fixtures", name))]);
+  const nativeFails = vi.fn().mockRejectedValue(new Error("unsupported"));
+  const decoded = { width: 64, height: 64, data: new Uint8ClampedArray(64 * 64 * 4) } as ImageData;
+  const pngOut = () => new Blob([new Uint8Array(500)]);
+  const mkDeps = (decode: NonNullable<Deps["decode"]>) => {
+    const decoders = { heic: vi.fn(async () => decoded), tiff: vi.fn(async () => decoded) };
+    const encode = vi.fn(async () => pngOut());
+    return { decoders, encode, deps: { decode, encode, decoders } satisfies Deps };
+  };
+
+  it.each([
+    ["tiny.heic", "heic"],
+    ["tiny.tiff", "tiff"],
+  ] as const)("decodes %s through the lazy decoder and sends a PNG", async (file, kind) => {
+    const { decoders, encode, deps } = mkDeps(nativeFails);
+    const r = await prepareImage(fixture(file), file, deps);
+    expect("blob" in r && r.blob.size).toBe(500);
+    expect(decoders[kind]).toHaveBeenCalledOnce();
+    expect(decoders[kind === "heic" ? "tiff" : "heic"]).not.toHaveBeenCalled();
+    expect(encode).toHaveBeenCalledWith(decoded, 64, "image/png");
+  });
+
+  it("never calls a decoder for a PNG or JPEG the browser cannot decode", async () => {
+    const { decoders, deps } = mkDeps(nativeFails);
+    for (const magic of [
+      [0x89, 0x50, 0x4e, 0x47],
+      [0xff, 0xd8, 0xff, 0xe0],
+    ]) {
+      const r = await prepareImage(new Blob([new Uint8Array(magic)]), "x", deps);
+      expect(r).toEqual({ error: "x is not an image Swarm can attach." });
+    }
+    expect(decoders.heic).not.toHaveBeenCalled();
+    expect(decoders.tiff).not.toHaveBeenCalled();
+  });
+
+  it("does not call a decoder when the browser decodes HEIC/TIFF itself (Safari)", async () => {
+    const { decoders, deps } = mkDeps(async () => ({ width: 16, height: 16 }) as ImageBitmap);
+    expect("blob" in (await prepareImage(fixture("tiny.heic"), "a.heic", deps))).toBe(true);
+    expect("blob" in (await prepareImage(fixture("tiny.tiff"), "a.tiff", deps))).toBe(true);
+    expect(decoders.heic).not.toHaveBeenCalled();
+    expect(decoders.tiff).not.toHaveBeenCalled();
+  });
+
+  it("reports unsupported when the lazy decoder itself fails", async () => {
+    const { decoders, deps } = mkDeps(nativeFails);
+    decoders.heic.mockRejectedValue(new Error("corrupt"));
+    const r = await prepareImage(fixture("tiny.heic"), "bad.heic", deps);
+    expect(r).toEqual({ error: "bad.heic is not an image Swarm can attach." });
   });
 });

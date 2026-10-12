@@ -1,4 +1,5 @@
 import { C, T } from "../copy";
+import { decodeHeic, decodeTiff } from "./imageDecoders";
 
 export const MAX_IMAGES = 10;
 export const MAX_IMAGE_BYTES = 10 << 20;
@@ -35,6 +36,7 @@ export type Encoder = (
 export interface Deps {
   decode?: (b: Blob) => Promise<ImageBitmap | ImageData>;
   encode?: Encoder;
+  decoders?: { heic(b: Uint8Array): Promise<ImageData>; tiff(b: Uint8Array): Promise<ImageData> };
 }
 
 const nativeDecode = (b: Blob) => createImageBitmap(b, { imageOrientation: "from-image" });
@@ -69,13 +71,20 @@ export async function prepareImage(
   deps: Deps = {},
 ): Promise<{ blob: Blob } | { error: string }> {
   const unsupported = { error: T.imageUnsupported(name) };
+  const fmt = sniff(new Uint8Array(await file.slice(0, 16).arrayBuffer()));
   let bmp: ImageBitmap | ImageData;
   try {
     bmp = await (deps.decode ?? nativeDecode)(file);
   } catch {
-    return unsupported;
+    // Chrome and Firefox cannot decode HEIC/TIFF; Safari can and never reaches here.
+    const decoders = deps.decoders ?? { heic: decodeHeic, tiff: decodeTiff };
+    if (fmt !== "heic" && fmt !== "tiff") return unsupported;
+    try {
+      bmp = await decoders[fmt](new Uint8Array(await file.arrayBuffer()));
+    } catch {
+      return unsupported;
+    }
   }
-  const fmt = sniff(new Uint8Array(await file.slice(0, 16).arrayBuffer()));
   const web = WEB_FORMATS.includes(fmt);
   if (web && file.size <= DOWNSCALE_BYTES) return finish(file, name);
 
