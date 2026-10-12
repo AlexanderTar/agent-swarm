@@ -390,8 +390,9 @@ export interface CreateSpikeBody {
   advisor?: AdvisorPayload;
   request?: string;
   roles?: Partial<Record<SettingsRole, RoleDefault>>;
+  attachments?: { name: string; data: string }[];
 }
-export interface CreateSpikeResponse { item: Item; agent: AgentNode; queued: boolean }
+export interface CreateSpikeResponse { item: Item; agent: AgentNode; queued: boolean; attachments_failed?: boolean }
 
 export type AgentEndpoint = "pause" | "resume" | "cancel" | "ack" | "retry" | "terminal";
 export interface ApproveBody {

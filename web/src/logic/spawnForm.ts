@@ -5,6 +5,7 @@ import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Item, Settings, Spi
 import { flattenAgents } from "./agentActions";
 import { advisorPayload, choicePayload } from "./catalog";
 import { kebab } from "./kebab";
+import { toAttachment } from "./requestImages";
 
 // Every role, orchestrator included, now shares one admission pool
 // (docs/specs/2026-09-24-unify-agent-limits.md), so whether starting a NEW
@@ -28,13 +29,18 @@ export function mapSubmitError(e: unknown): SubmitFailure {
     // behaviorally identical today, but it stops working silently the day one does.
     const msg = errorText(e);
     if (msg === C.nameTaken || msg === C.nameEmpty) return { name: msg };
+    if (e.status === 413) return { banner: C.launchFailure, detail: C.imagesTooLargeToSend };
     return { banner: C.launchFailure, detail: msg };
   }
   return { banner: C.launchFailure };
 }
 
 export interface SpawnFormState { name: string; repos: string[]; fields: AgentFieldsValue }
-export interface SpikeFormState extends SpawnFormState { intent: SpikeIntent; request: string }
+export interface SpikeFormState extends SpawnFormState {
+  intent: SpikeIntent;
+  request: string;
+  images: { name: string; blob: Blob }[];
+}
 
 // Deviation from the brief: advisorPayload (logic/catalog.ts) takes a `catalog` argument in this
 // codebase -- normalizing the advisor's stored effort against the model the user actually has
@@ -57,10 +63,10 @@ export function orchestratorPayload(f: SpawnFormState, item: Item, settings: Set
   return body;
 }
 
-export function spikePayload(f: SpikeFormState, settings: Settings, catalog: AgentCatalogEntry[], requestId: string): CreateSpikeBody {
+export async function spikePayload(f: SpikeFormState, settings: Settings, catalog: AgentCatalogEntry[], requestId: string): Promise<CreateSpikeBody> {
   const body: CreateSpikeBody = {
     request_id: requestId,
-    name: f.name,
+    name: f.name.trim(),
     intent: f.intent,
     repos: f.repos,
     ...choicePayload(f.fields.choice),
@@ -69,7 +75,10 @@ export function spikePayload(f: SpikeFormState, settings: Settings, catalog: Age
   if (f.fields.roles && Object.keys(f.fields.roles).length > 0) {
     body.roles = f.fields.roles;
   }
-  return f.request.trim() ? { ...body, request: f.request } : body;
+  const request = f.request.trim();
+  if (request) body.request = request;
+  if (f.images.length > 0) body.attachments = await Promise.all(f.images.map(toAttachment));
+  return body;
 }
 
 export const newRequestId = () => crypto.randomUUID();
