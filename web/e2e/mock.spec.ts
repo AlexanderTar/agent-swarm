@@ -932,13 +932,20 @@ for (const root of [16, 24]) {
     }).toPass();
     const lines = await counter.evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); return new Set(Array.from(r.getClientRects()).map((q) => Math.round(q.top))).size; });
     expect(lines, "counter line boxes").toBe(1);
-    const strip = await sheet.locator("ul").evaluate((ul) => {
-      ul.scrollLeft = ul.scrollWidth;
+    const edges = (extreme: "start" | "end") => sheet.locator("ul").evaluate((ul, at) => {
+      ul.scrollLeft = at === "end" ? ul.scrollWidth : 0;
       const u = ul.getBoundingClientRect();
-      const last = ul.lastElementChild?.getBoundingClientRect();
-      return { fits: ul.scrollWidth <= ul.clientWidth, lastRight: last?.right ?? 0, right: u.right };
-    });
-    expect(strip.fits || strip.lastRight <= strip.right + 0.5, "last tile fully visible").toBe(true);
+      const tiles = Array.from(ul.children).map((c) => c.getBoundingClientRect());
+      // the tile on the scroll extreme must be fully inside the strip, borders included
+      const edge = at === "end" ? tiles[tiles.length - 1] : tiles[0];
+      return { fits: ul.scrollWidth <= ul.clientWidth, left: edge.left - u.left, right: u.right - edge.right };
+    }, extreme);
+    const start = await edges("start");
+    const end = await edges("end");
+    if (root === 16) expect(start.fits, "strip does not overflow at default text").toBe(true);
+    // at large text the strip scrolls; the first tile at the start and the last at the end must not be cut
+    expect(start.left, "tile 1 left edge").toBeGreaterThanOrEqual(-0.5);
+    expect(end.right, "tile 10 right edge").toBeGreaterThanOrEqual(-0.5);
     await noHorizontalOverflow(page);
   });
 }

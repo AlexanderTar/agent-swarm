@@ -132,7 +132,7 @@ export function RequestImages(p: {
         }}
       />
       {desktop ? (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 md:gap-1.5">
           {list}
           {add}
           {count}
