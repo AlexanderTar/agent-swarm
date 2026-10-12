@@ -79,10 +79,10 @@ export function RequestImages(p: {
             aria-label={T.removeImage(i.name)}
             data-remove-id={i.id}
             onClick={() => remove(i.id)}
-            className="group absolute right-0 top-0 flex size-6 items-start justify-end rounded-none p-0.5 hover:bg-transparent focus-visible:ring-0 max-md:size-11 max-md:p-1"
+            className="group absolute right-0 top-0 flex size-6 items-start justify-end rounded-none p-0.5 hover:bg-transparent focus-visible:ring-0 max-md:size-[44px] max-md:p-[4px]"
           >
-            <span className="grid size-[18px] place-items-center rounded-full bg-black/70 text-white group-hover:bg-black/85 group-focus-visible:ring-2 group-focus-visible:ring-ring max-md:size-6">
-              <X className="size-3 max-md:size-3.5" strokeWidth={2.5} />
+            <span className="grid size-[18px] place-items-center rounded-full bg-black/70 text-white group-hover:bg-black/85 group-focus-visible:ring-2 group-focus-visible:ring-ring max-md:size-[24px]">
+              <X className="size-3 max-md:size-[14px]" strokeWidth={2.5} />
             </span>
           </Button>
         </li>

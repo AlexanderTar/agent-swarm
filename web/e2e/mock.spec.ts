@@ -942,3 +942,27 @@ for (const root of [16, 24]) {
     await noHorizontalOverflow(page);
   });
 }
+
+test("remove disc stays 24px in a 44px target at 24px root text on a phone", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "phone layout");
+  await page.goto("/");
+  await page.evaluate(() => { document.documentElement.style.fontSize = "24px"; });
+  await openNewOrchestrator(page);
+  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+  await sheet.locator('input[type="file"]').setInputFiles(shots(3));
+  const remove = sheet.getByRole("button", { name: /^Remove shot-/ });
+  await expect(remove).toHaveCount(3);
+  const m = await remove.first().evaluate((b) => {
+    const t = b.getBoundingClientRect();
+    const d = (b.firstElementChild as HTMLElement).getBoundingClientRect();
+    const tile = (b.closest("li") as HTMLElement).getBoundingClientRect();
+    return { tw: t.width, th: t.height, dw: d.width, dh: d.height, inside: t.right <= tile.right + 0.5 && t.top >= tile.top - 0.5 && t.left >= tile.left - 0.5 };
+  });
+  expect(m.dw, "disc width").toBeLessThanOrEqual(24);
+  expect(m.dh, "disc height").toBeLessThanOrEqual(24);
+  expect(m.tw, "target width").toBeGreaterThanOrEqual(44);
+  expect(m.tw, "target width").toBeLessThanOrEqual(48);
+  expect(m.th, "target height").toBeGreaterThanOrEqual(44);
+  expect(m.th, "target height").toBeLessThanOrEqual(48);
+  expect(m.inside, "target inside the tile corner").toBe(true);
+});
