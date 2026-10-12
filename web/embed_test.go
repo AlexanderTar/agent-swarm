@@ -1,10 +1,12 @@
 package web
 
 import (
+	"encoding/base64"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -79,5 +81,27 @@ func TestHandlerWithoutBuild(t *testing.T) {
 func TestDistIsEmbedded(t *testing.T) {
 	if _, err := fs.Stat(Dist, ".gitkeep"); err != nil {
 		t.Fatalf("dist not embedded: %v", err)
+	}
+}
+
+// iOS freezes a title monogram into the webclip when the touch-icon fetch at
+// Share time is slow, so the icon is inlined; this guards it against drift.
+func TestIndexInlinesAppleTouchIcon(t *testing.T) {
+	png, err := os.ReadFile("public/apple-touch-icon.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `rel="apple-touch-icon" href="data:image/png;base64,` + base64.StdEncoding.EncodeToString(png) + `"`
+	for _, path := range []string{"index.html", "dist/index.html"} {
+		html, err := os.ReadFile(path)
+		if os.IsNotExist(err) && path == "dist/index.html" {
+			t.Skip("web not built (cd web && pnpm build)")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(html), want) {
+			t.Errorf("%s: apple-touch-icon is not the inlined public/apple-touch-icon.png", path)
+		}
 	}
 }
