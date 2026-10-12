@@ -937,7 +937,7 @@ for (const root of [16, 24]) {
       const u = ul.getBoundingClientRect();
       const tiles = Array.from(ul.children).map((c) => c.getBoundingClientRect());
       // the tile on the scroll extreme must be fully inside the strip, borders included
-      const edge = at === "end" ? tiles[tiles.length - 1] : tiles[0];
+      const edge = (at === "end" ? tiles[tiles.length - 1] : tiles[0]) as DOMRect;
       return { fits: ul.scrollWidth <= ul.clientWidth, left: edge.left - u.left, right: u.right - edge.right };
     }, extreme);
     const start = await edges("start");
