@@ -592,8 +592,8 @@ func (s *Store) orchestratorScope(ctx context.Context, q querier, by Actor, it I
 // orchestratorScopeOrCrossRoot is orchestratorScope, except that when crossOK a top-level orchestrator may
 // write into another root whose status is Draft or Ready and that has no live orchestrator. Each such
 // write records an item.cross_root_edit event. crossOK is false for anything but a create or a
-// title/brief/acceptance update. A root's orchestrator that is still queued behind the agent limit has no
-// session yet and is not live; only an active one is.
+// title/brief/acceptance update. A root's orchestrator, queued or active, closes the door: a queued one
+// already holds a copy of the brief that an outside edit would not update.
 func (s *Store) orchestratorScopeOrCrossRoot(ctx context.Context, tx *sql.Tx, by Actor, it Item, crossOK bool) error {
 	scopeErr := s.orchestratorScope(ctx, tx, by, it)
 	if scopeErr == nil || !crossOK {
@@ -611,12 +611,17 @@ func (s *Store) orchestratorScopeOrCrossRoot(ctx context.Context, tx *sql.Tx, by
 		return errf(CodeBadRequest, "%s, and its root is %s; only a Draft or Ready root can be edited from outside.",
 			outside, StatusLabel(root.Status))
 	}
-	var live int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE root_item_id = ? AND role = 'orchestrator'
-		AND state = 'active'`, root.ID).Scan(&live); err != nil {
+	var name, state string
+	err = tx.QueryRowContext(ctx, `SELECT name, state FROM agents WHERE root_item_id = ? AND role = 'orchestrator'
+		AND state IN ('queued', 'active') ORDER BY state = 'active' DESC LIMIT 1`, root.ID).Scan(&name, &state)
+	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	if live > 0 {
+	if state == "queued" {
+		return errf(CodeBadRequest, "%s, and its orchestrator %s is queued and has not started; it already holds the current brief, so wait for it to start and message it.",
+			outside, name)
+	}
+	if state == "active" {
 		return errf(CodeBadRequest, "%s, and its root has a live orchestrator.", outside)
 	}
 	_, err = s.Events.Append(ctx, tx, events.ItemCrossRootEdit, map[string]string{"key": it.Key,
