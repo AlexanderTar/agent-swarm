@@ -164,7 +164,7 @@ func Sweep(ctx context.Context, db *sql.DB, home string) ([]string, error) {
 			continue
 		}
 		var status string
-		err := db.QueryRowContext(ctx, `SELECT status FROM items WHERE key = ?`, e.Name()).Scan(&status)
+		err := db.QueryRowContext(ctx, `SELECT r.status FROM items i JOIN items r ON r.id = i.root_id WHERE i.key = ?`, e.Name()).Scan(&status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return removed, err
 		}
