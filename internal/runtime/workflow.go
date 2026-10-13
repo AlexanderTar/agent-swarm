@@ -201,40 +201,58 @@ func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, 
 	return false, nil
 }
 
-// preflightBriefs renders the brief of every step the first advance would
-// spawn, so an over-long one is refused at Start (BUG-55) rather than
-// failing the run after the workflows row is committed.
+// preflightBriefs renders the brief of every step the workflow can spawn, so
+// an over-long one is refused at Start (BUG-55, BUG-79) rather than failing
+// the run after the workflows row is committed -- or, worse, at a later
+// step's spawn after the build finished. A later step's brief carries what
+// the first one's doesn't (the reviewer's verdict contract and review-tree
+// line, a Context pointer once an artifact is registered), so each is
+// rendered with those stand-ins in place.
 func (s *Store) preflightBriefs(ctx context.Context, orch Agent, it items.Item, wf wfRow) error {
 	wf.OwnerAgentID = orch.ID
 	spec, err := s.engineSpec(ctx, it, orch.ID)
 	if err != nil {
 		return err
 	}
-	action := workflow.Next(spec, nil, 1, 0)
-	if action.Kind != workflow.ActionSpawn {
-		return nil
-	}
-	step, ok := stepFor(&spec, action.StepID)
-	if !ok {
-		return nil
-	}
-	roles := action.Roles
-	if step.Run != "" {
-		roles = []string{step.Run}
-	}
-	for _, role := range roles {
-		brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: action.StepID, Role: role, Round: action.Round})
-		if err != nil {
-			return err
+	for _, step := range spec.EffectiveSteps() {
+		roles := step.Review
+		if step.Run != "" {
+			roles = []string{step.Run}
 		}
-		name, err := defaultName(Role(role), it.Title)
-		if err != nil {
-			return err
-		}
-		brief.Key, brief.Title, brief.Name, brief.Role = it.Key, it.Title, name, Role(role)
-		brief.RootKey, brief.ParentName = it.RootKey, orch.Name
-		if _, err := RenderBrief(brief); err != nil {
-			return &items.Error{Code: items.CodeBadRequest, Message: it.Key + ": " + err.Error()}
+		for _, role := range roles {
+			brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: step.ID, Role: role, Round: 1})
+			if err != nil {
+				return err
+			}
+			name, err := defaultName(Role(role), it.Title)
+			if err != nil {
+				return err
+			}
+			brief.Key, brief.Title, brief.Name, brief.Role = it.Key, it.Title, name, Role(role)
+			brief.RootKey, brief.ParentName = it.RootKey, orch.Name
+			if len(brief.Context) == 0 {
+				brief.Context = []string{"docs/design/artifact.md"}
+			}
+			if step.Run == "" && len(brief.Worktrees) == 0 {
+				// The review tree doesn't exist yet; its line is about as long
+				// as the build worktree's, with a "-N" suffix when the path was taken.
+				for _, w := range wf.worktrees() {
+					if w.Mode != "rw" {
+						continue
+					}
+					wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: w.WorktreeID, Mode: "ro"}})
+					if err != nil {
+						return err
+					}
+					for _, bw := range wts {
+						bw.Path += "-9"
+						brief.Worktrees = append(brief.Worktrees, bw)
+					}
+				}
+			}
+			if _, err := RenderBrief(brief); err != nil {
+				return &items.Error{Code: items.CodeBadRequest, Message: it.Key + ": " + err.Error()}
+			}
 		}
 	}
 	return nil
