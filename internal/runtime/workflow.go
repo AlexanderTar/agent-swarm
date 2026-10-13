@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -152,8 +153,35 @@ func (s *Store) validateWorktrees(ctx context.Context, wts []WorkflowWorktree) e
 		if err != nil {
 			return err
 		}
+		if _, err := s.liveWorktreePath(ctx, w.WorktreeID); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// liveWorktreePath returns id's recorded path once it is an active (or
+// retained, BUG-60) worktree whose directory still exists. A brief must never
+// name a path that isn't there (BUG-77): a removed tree keeps its row and path,
+// so the row alone proves nothing.
+func (s *Store) liveWorktreePath(ctx context.Context, id string) (string, error) {
+	return s.checkWorktreePath(ctx, id, true)
+}
+
+// checkWorktreePath is liveWorktreePath, optionally without the state check:
+// the brief only needs the directory to be there (a Share onto a non-active
+// tree is logged, not fatal -- see spawnRunAgent).
+func (s *Store) checkWorktreePath(ctx context.Context, id string, needActive bool) (string, error) {
+	var path, state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT path, state FROM worktrees WHERE id = ?`, id).Scan(&path, &state); err != nil {
+		return "", err
+	}
+	_, statErr := os.Lstat(path)
+	if statErr != nil || (needActive && state != "active" && state != "retained") {
+		return "", &items.Error{Code: items.CodeBadRequest,
+			Message: fmt.Sprintf("worktree %s is gone (%s, state %s). Create a fresh one with swarm_worktree.", id, path, state)}
+	}
+	return path, nil
 }
 
 // callerOwnsRWWorktree reports whether wts names at least one 'rw' worktree
@@ -875,7 +903,9 @@ func (s *Store) reviewWorktreeFor(ctx context.Context, wf wfRow, stepID string, 
 		WHERE r.workflow_id = ? AND r.step_id = ? AND r.round = ? LIMIT 1`,
 		wf.ID, stepID, round).Scan(&existing)
 	if err == nil && existing != "" {
-		return existing, nil
+		if _, lerr := s.liveWorktreePath(ctx, existing); lerr == nil {
+			return existing, nil
+		}
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", err
@@ -1066,6 +1096,19 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 	return brief, shareRW, nil
 }
 
+// failWaitingRun marks a still-waiting run failed with err (fatal when the
+// refusal is deterministic), reporting handled=true so a sibling waiting row
+// still gets its own spawn attempt.
+func (s *Store) failWaitingRun(ctx context.Context, run wfRunRow, err error) (bool, error) {
+	res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?, error = ?, error_fatal = ?
+		WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), err.Error(), isSpawnRefusal(err), run.ID)
+	if uerr != nil {
+		return false, uerr
+	}
+	n, rerr := res.RowsAffected()
+	return n > 0, rerr
+}
+
 func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (bool, error) {
 	spec, err := s.engineSpec(ctx, it, wf.OwnerAgentID)
 	if err != nil {
@@ -1075,20 +1118,33 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	if !ok {
 		return false, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
 	}
-	if step.Run == "" && run.SHA != "" && run.ReviewWorktreeID == "" {
-		wtID, err := s.reviewWorktreeFor(ctx, wf, run.StepID, run.Round, run.SHA)
-		if err != nil {
-			return false, err
+	// A retried review run keeps its review_worktree_id; if the tree was
+	// reclaimed meanwhile, swap in a fresh one rather than brief a dead path.
+	if step.Run == "" && run.SHA != "" {
+		stale := run.ReviewWorktreeID
+		if _, lerr := s.liveWorktreePath(ctx, stale); stale == "" || lerr != nil {
+			wtID, err := s.reviewWorktreeFor(ctx, wf, run.StepID, run.Round, run.SHA)
+			if err != nil {
+				return false, err
+			}
+			if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET review_worktree_id = ?
+				WHERE workflow_id = ? AND step_id = ? AND round = ?
+				AND (review_worktree_id IS NULL OR review_worktree_id = ?)`,
+				wtID, wf.ID, run.StepID, run.Round, stale); err != nil {
+				return false, err
+			}
+			run.ReviewWorktreeID = wtID
 		}
-		if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET review_worktree_id = ?
-			WHERE workflow_id = ? AND step_id = ? AND round = ? AND review_worktree_id IS NULL`,
-			wtID, wf.ID, run.StepID, run.Round); err != nil {
-			return false, err
-		}
-		run.ReviewWorktreeID = wtID
 	}
 	brief, shareRW, err := s.stepBrief(ctx, wf, it, run)
 	if err != nil {
+		// A named worktree that's gone is a deterministic refusal, like an
+		// over-long brief: fail the run so the engine escalates it.
+		var ie *items.Error
+		if errors.As(err, &ie) && ie.Code == items.CodeBadRequest {
+			s.logf("advance: brief %s/%s round %d: %v", run.StepID, run.Role, run.Round, err)
+			return s.failWaitingRun(ctx, run, err)
+		}
 		return false, err
 	}
 
@@ -1111,13 +1167,7 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		// row is handled, and a sibling waiting row (a parallel reviewer)
 		// must still get its own spawn attempt.
 		s.logf("advance: spawn %s/%s round %d: %v", run.StepID, run.Role, run.Round, err)
-		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?, error = ?, error_fatal = ?
-			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), err.Error(), isSpawnRefusal(err), run.ID)
-		if uerr != nil {
-			return false, uerr
-		}
-		n, rerr := res.RowsAffected()
-		return n > 0, rerr
+		return s.failWaitingRun(ctx, run, err)
 	}
 
 	// Claim the row right away -- before Share -- so a Share error, a
@@ -1704,6 +1754,9 @@ func (s *Store) BriefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]B
 	for _, w := range wts {
 		id, err := s.ResolveWorktreeRef(ctx, w.WorktreeID)
 		if err != nil {
+			return nil, err
+		}
+		if _, err := s.checkWorktreePath(ctx, id, false); err != nil {
 			return nil, err
 		}
 		var repo, path, branch, base string
