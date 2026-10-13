@@ -1523,6 +1523,42 @@ func TestCrossRootEditsRefused(t *testing.T) {
 	}
 }
 
+// BUG-84: a root's orchestrator that is queued behind the agent limit already holds a copy of the brief
+// (agents.brief and its pending assignment), so an outside edit would never reach it. The edit is refused,
+// and the message names the queued orchestrator rather than calling the root merely "live".
+func TestCrossRootEditRefusedWhileRootOrchestratorIsQueued(t *testing.T) {
+	s, foreign, _, orch := crossRootFixture(t, items.Draft)
+	exec(t, s.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		VALUES ('agt_q', 'spike-orch', 'fake', 'm', 'orchestrator', ?, ?, 'b', 'queued', 1)`, foreign.ID, foreign.RootID)
+	_, err := s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("context"), Revision: foreign.Revision}, orch)
+	if err == nil || !strings.Contains(err.Error(), "its orchestrator spike-orch is queued and has not started") {
+		t.Fatalf("queued root orchestrator: err = %v", err)
+	}
+	if got := mustGet(t, s, foreign.Key); got.Brief == "context" {
+		t.Fatal("refused edit was applied")
+	}
+	// once the orchestrator is active the door stays closed, and the message says why
+	exec(t, s.DB, `UPDATE agents SET state = 'active' WHERE id = 'agt_q'`)
+	_, err = s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("again"), Revision: foreign.Revision}, orch)
+	if err == nil || !strings.Contains(err.Error(), "has a live orchestrator") || strings.Contains(err.Error(), "Draft") {
+		t.Fatalf("active root orchestrator: err = %v", err)
+	}
+}
+
+func TestCrossRootRefusalNamesItsCause(t *testing.T) {
+	s, foreign, _, orch := crossRootFixture(t, items.InProgress)
+	_, err := s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("x"), Revision: foreign.Revision}, orch)
+	if err == nil || strings.Contains(err.Error(), "live orchestrator") || !strings.Contains(err.Error(), "In progress") {
+		t.Fatalf("root status refusal: err = %v", err)
+	}
+	child := orch
+	child.Child = true
+	_, err = s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("x"), Revision: foreign.Revision}, child)
+	if err == nil || !strings.Contains(err.Error(), "top-level orchestrator") {
+		t.Fatalf("child refusal: err = %v", err)
+	}
+}
+
 func TestCrossRootEditsRefusedOnOpenRoot(t *testing.T) {
 	for _, from := range []items.Status{items.InProgress, items.InReview, items.Done} {
 		s, _, story, orch := crossRootFixture(t, from)

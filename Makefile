@@ -56,11 +56,13 @@ e2e:
 # reinstalling one never rebuilds or touches the other.
 install: install-daemon install-app
 
-# Builds swarm into ~/.swarm/bin.
+# Builds swarm into ~/.swarm/bin. `build` already signed bin/swarm; the signed bytes are copied to a
+# temp file and renamed over the target, so the installed inode is never rewritten or re-signed in
+# place (that left launchd's respawn failing with OS_REASON_CODESIGNING, BUG-74/76).
 install-daemon: build
 	mkdir -p $(PREFIX)/bin
-	install -m 0755 bin/swarm $(PREFIX)/bin/swarm
-	codesign --force --sign "$(SWARM_SIGN_IDENTITY)" --identifier dev.swarm.daemon $(PREFIX)/bin/swarm
+	install -m 0755 bin/swarm $(PREFIX)/bin/.swarm.new
+	mv -f $(PREFIX)/bin/.swarm.new $(PREFIX)/bin/swarm
 
 # Deploys the tunnel relay to personal Railway (workspace "My Projects").
 # The bootstrap is idempotent: it ensures the project, service, secret,
