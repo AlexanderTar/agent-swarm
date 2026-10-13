@@ -1618,3 +1618,23 @@ func TestSwarmSkillsFor(t *testing.T) {
 		t.Errorf("orchestrator = %v, want %v", got, all)
 	}
 }
+
+// BUG-93: the daemon sweeps ~/.swarm/attachments, so agents must keep review
+// evidence under ~/.swarm/screenshots/<ITEM-KEY>/ instead. Checked against both
+// the canonical skills/ tree and the embedded mirror.
+func TestSkillsKeepEvidenceOutOfAttachments(t *testing.T) {
+	const evidence = "~/.swarm/screenshots/<ITEM-KEY>/"
+	for _, name := range []string{"swarm", "swarm-orchestrator", "swarm-coder", "swarm-ui-reviewer"} {
+		canonical, err := os.ReadFile("../../skills/" + name + "/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for src, body := range map[string]string{"skills/": string(canonical), "embedded ": string(install.SkillBody(name))} {
+			for _, want := range []string{"~/.swarm/attachments", evidence} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s%s/SKILL.md is missing %q", src, name, want)
+				}
+			}
+		}
+	}
+}

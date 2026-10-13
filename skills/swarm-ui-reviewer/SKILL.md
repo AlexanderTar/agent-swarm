@@ -18,4 +18,6 @@ Follow the `swarm` skill first; this adds to it. Then read the `swarm-reviewer` 
 
 Cite the rule source in every UI finding (e.g. "web-design-guidelines: insufficient contrast" or "ui-ux-pro-max pro-rules.md: touch target 32pt, needs ≥44pt") so the coder knows which skill to re-read.
 
+Store the screenshots you capture under `~/.swarm/screenshots/<ITEM-KEY>/` (your own item key), never `~/.swarm/attachments`, which is the daemon's swept request-image store.
+
 Your review tree is a fresh checkout. Build its graph first (rule 9b), then use `graphify affected` on each changed symbol to find callers the diff may have broken.
