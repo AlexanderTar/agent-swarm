@@ -34,6 +34,8 @@ Once a unit's test is red, write the minimal code with the vendored `ponytail` l
 ## Finishing a unit's diff
 Self-review your diff before moving on or completing (borrowed from `superpowers:subagent-driven-development`'s implementer prompt): does it match the unit's steps, does it touch only files in scope, did you leave debug output or commented-out code behind. If the brief is ambiguous about how to implement something, ask your parent (`swarm_send`, `kind: "question"`) rather than guessing — but keep working on anything that doesn't depend on the answer.
 
+Screenshots and other evidence you capture go under `~/.swarm/screenshots/<ITEM-KEY>/` (your own item key), never `~/.swarm/attachments`, which is the daemon's swept request-image store.
+
 ## Verify and completing the package
 Once every unit is committed, run every command in `## Verify` and record each as a verification entry (`superpowers:verification-before-completion` — evidence before the claim, no "should pass"). `completed` carries `git` with `dirty:false` and the HEAD sha for every rw worktree shared with you, plus the `verification` entries for the Verify commands you just ran. The per-unit red/green entries were already recorded as `progress` checkpoints while you worked each unit (step 1 and 2 above) — `completed` doesn't re-create or backfill them, it only adds the Verify run on top; the `tdd` gate reads across every checkpoint from this attempt, in order. A single-unit task (`## Steps`, no `## Units`) has no unit number to tag — omit `unit` on its verification entries. Do not write `completed` with anything uncommitted or any Verify command unrun.
 

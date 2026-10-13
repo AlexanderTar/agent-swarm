@@ -1,7 +1,9 @@
 // Package attachments stores the images a user attaches to a New orchestrator
 // request (spec docs/specs/2026-09-28-request-images.md). The directory
 // <SWARM_HOME>/attachments/<ITEM-KEY>/ is the only record; Sweep removes it once
-// the root item is Done, Cancelled or gone.
+// the item's root is Done, Cancelled or the item is gone. The directory belongs
+// to the daemon: agents must not write into it (screenshots and review evidence
+// go under <SWARM_HOME>/screenshots/<ITEM-KEY>/, which nothing sweeps).
 //
 // # Which agent kinds can view an attached image
 //
@@ -148,8 +150,8 @@ func FailureSection(count int, err error) string {
 	return fmt.Sprintf("## Attachments\n\nThe user attached %d images, but Swarm could not save them (%v). Ask the user to share them another way.", count, err)
 }
 
-// Sweep removes a key's attachments once its root item is Done, Cancelled or
-// gone. ponytail: reopening an item after a sweep leaves it without images.
+// Sweep removes a key's attachments once its item's root is Done, Cancelled or
+// the item is gone; the item's own status does not matter. ponytail: reopening an item after a sweep leaves it without images.
 func Sweep(ctx context.Context, db *sql.DB, home string) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(home, "attachments"))
 	if os.IsNotExist(err) {
@@ -164,7 +166,7 @@ func Sweep(ctx context.Context, db *sql.DB, home string) ([]string, error) {
 			continue
 		}
 		var status string
-		err := db.QueryRowContext(ctx, `SELECT status FROM items WHERE key = ?`, e.Name()).Scan(&status)
+		err := db.QueryRowContext(ctx, `SELECT r.status FROM items i JOIN items r ON r.id = i.root_id WHERE i.key = ?`, e.Name()).Scan(&status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return removed, err
 		}
@@ -183,7 +185,11 @@ func SweepLoop(ctx context.Context, db *sql.DB, home string, every time.Duration
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		if _, err := Sweep(ctx, db, home); err != nil && ctx.Err() == nil {
+		removed, err := Sweep(ctx, db, home)
+		for _, key := range removed {
+			log("attachments sweep: removed %s", key)
+		}
+		if err != nil && ctx.Err() == nil {
 			log("attachments sweep: %v", err)
 		}
 		select {
