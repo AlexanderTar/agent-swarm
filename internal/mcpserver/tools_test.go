@@ -80,6 +80,48 @@ func TestInstructionsToolGetAndSet(t *testing.T) {
 	}
 }
 
+func TestInstructionsToolSetIgnoresRetiredRoleModel(t *testing.T) {
+	srv, cleanup := newTestServerWithSettings(t)
+	defer cleanup()
+	ctx := context.Background()
+	c := Caller{SessionID: "s1", AgentName: "coder-1"}
+
+	// A Claude catalog without the model the coder default still names:
+	// Put refuses that default, but an instructions write must not.
+	if _, err := srv.RT.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"claude-live-1","aliases":["fable","opus","sonnet","haiku"],"label":"Live 1","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true}]','claude-live-1','test',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.RT.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES ('roles', ?, 0)
+		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`,
+		`{"coder":{"agent":"claude","model":"claude-retired-9"}}`); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := srv.Settings.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Settings.Put(ctx, cfg); err == nil || !strings.Contains(err.Error(), "claude-retired-9 is no longer offered") {
+		t.Fatalf("fixture: Put err = %v, want claude-retired-9 refusal", err)
+	}
+
+	setRes, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"set","instructions":"# Still saved"}`))
+	if err != nil {
+		t.Fatalf("set under a retired role model: %v", err)
+	}
+	if setRes.(map[string]any)["status"] != "ok" {
+		t.Fatalf("set = %v", setRes)
+	}
+	res, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.(map[string]any)["instructions"]; got != "# Still saved" {
+		t.Fatalf("get = %q", got)
+	}
+}
+
 func TestInstructionsToolInvalidOp(t *testing.T) {
 	srv, cleanup := newTestServerWithSettings(t)
 	defer cleanup()

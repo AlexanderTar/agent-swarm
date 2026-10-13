@@ -1114,12 +1114,7 @@ func instructionsTool(s *Server) ToolDef {
 				if c.Unbound {
 					return nil, errors.New("read-only: an unbound caller cannot update swarm instructions")
 				}
-				cfg, err := st.Get(ctx)
-				if err != nil {
-					return nil, err
-				}
-				cfg.Instructions = in.Instructions
-				if _, err := st.Put(ctx, cfg); err != nil {
+				if err := st.SetInstructions(ctx, in.Instructions); err != nil {
 					return nil, err
 				}
 				return map[string]any{"status": "ok"}, nil
