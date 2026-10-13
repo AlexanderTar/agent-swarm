@@ -23,8 +23,10 @@ Affected repo: agent-swarm only. There is no collision with other in-flight work
 2. **Delivery:** the item brief gets an "Attachments" section listing absolute paths. The
    images are not copied into worktrees and not inlined into prompts.
 3. **Cleanup:** a daemon sweep (on startup and every 10 minutes) deletes a key's folder once
-   the root item is Done or Cancelled, or no longer exists. If the item is reopened after the
-   sweep, its images are gone.
+   the item's root is Done or Cancelled (a Done task under an open root keeps its folder), or the
+   item no longer exists. If the item is reopened after the sweep, its images are gone. The folder
+   is the daemon's request-image store: agents must not write into it. Review evidence and
+   screenshots go under `~/.swarm/screenshots/<ITEM-KEY>/`, which nothing sweeps.
 4. **Upload:** base64 inside the same JSON create body. One request and one `request_id`. A
    replay of an existing `request_id` returns the item and writes nothing.
 5. **Limits:** at most 10 images, each at most 10 MiB decoded. The daemon accepts PNG, JPEG,
@@ -76,7 +78,7 @@ func Dir(home, key string) string       // <home>/attachments/<key>
 func Save(home, key string, files []File) ([]Saved, error)
 func BriefSection(saved []Saved) string
 func FailureSection(count int, err error) string
-// Sweep removes <home>/attachments/<key> when the item is Done, Cancelled or missing.
+// Sweep removes <home>/attachments/<key> when the item's root is Done, Cancelled or the item is missing.
 func Sweep(ctx context.Context, db *sql.DB, home string) (removed []string, err error)
 ```
 
@@ -211,7 +213,7 @@ Deleted: nothing.
    - 10 MiB + 1 byte → 400;
    - request_id replay with images → the same item, no second write;
    - Save fails (home not writable) → item created, brief has FailureSection, `attachments_failed: true`;
-   - sweep: Done, Cancelled and missing keys removed; an in-progress key kept;
+   - sweep: keys of a Done or Cancelled root, and missing keys, removed; a Done task under an open root kept; each removal logged;
    - Swift: paste PNG data → 1 image; add a HEIC URL → converted to PNG; an 11th add → `imageTooMany`; remove → gone; submit body carries base64; `attachmentsFailed` shows `imagesNotSaved`.
 4. Live probe per kind (claude, codex, agy, cursor, muse) on isolated tmux sockets: an agent is
    told to open a PNG by absolute path and describe it. Record which kinds can view it.

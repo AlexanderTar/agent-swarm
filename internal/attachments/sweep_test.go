@@ -2,8 +2,10 @@ package attachments
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +93,39 @@ func TestSweepNoAttachmentsDir(t *testing.T) {
 	removed, err := Sweep(context.Background(), d.DB, t.TempDir())
 	if err != nil || removed != nil {
 		t.Fatalf("Sweep = %v, %v, want nil, nil", removed, err)
+	}
+}
+
+func TestSweepLoopLogsEachRemovedKey(t *testing.T) {
+	d := dbtest.Open(t)
+	home := t.TempDir()
+	insertItem(t, d, "SPIKE-1", "done")
+	for _, k := range []string{"SPIKE-1", "SPIKE-9"} {
+		if err := os.MkdirAll(Dir(home, k), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var lines []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		SweepLoop(ctx, d.DB, home, time.Hour, func(format string, args ...any) {
+			lines = append(lines, fmt.Sprintf(format, args...))
+			if len(lines) == 2 {
+				cancel()
+			}
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SweepLoop did not log both removals")
+	}
+	got := strings.Join(lines, "\n")
+	for _, k := range []string{"SPIKE-1", "SPIKE-9"} {
+		if !strings.Contains(got, k) {
+			t.Fatalf("log lines %q do not mention %s", lines, k)
+		}
 	}
 }
