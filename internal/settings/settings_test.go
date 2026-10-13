@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -378,5 +379,46 @@ func TestPutKeepsLowTokenMode(t *testing.T) {
 	got, _ := s.Get(ctx)
 	if !got.LowTokenMode {
 		t.Fatal("PUT reset low_token_mode")
+	}
+}
+
+func TestSetInstructionsIgnoresRetiredRoleModel(t *testing.T) {
+	s := newStore(t, kinds.Claude)
+	cur, _ := s.Get(ctx)
+	cur.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "claude-sonnet-5", "", ""}
+	if _, err := s.Put(ctx, cur); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLowTokenMode(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.Get(ctx)
+	evsBefore, _ := s.Events.After(ctx, 0, 50)
+
+	saved := catalogs[kinds.Claude]
+	catalogs[kinds.Claude] = saved[:2] // sonnet and haiku disappear
+	defer func() { catalogs[kinds.Claude] = saved }()
+
+	before.Instructions = "# New rules"
+	_, err := s.Put(ctx, before)
+	verr(t, err, "claude-sonnet-5 is no longer offered by Claude.")
+
+	if err := s.SetInstructions(ctx, "# New rules"); err != nil {
+		t.Fatalf("SetInstructions under a retired role model: %v", err)
+	}
+	after, _ := s.Get(ctx)
+	if after.Instructions != "# New rules" {
+		t.Fatalf("instructions = %q", after.Instructions)
+	}
+	want := before
+	if !reflect.DeepEqual(after, want) {
+		t.Fatalf("other fields changed:\n got %+v\nwant %+v", after, want)
+	}
+	if !after.LowTokenMode || after.Roles[kinds.RoleCoder].Model != "claude-sonnet-5" {
+		t.Fatalf("low-token or coder default changed: %+v", after)
+	}
+	evs, _ := s.Events.After(ctx, 0, 50)
+	if len(evs) != len(evsBefore)+1 || evs[len(evs)-1].Type != events.SettingsChanged {
+		t.Fatalf("events = %+v", evs)
 	}
 }

@@ -245,6 +245,36 @@ func (s *Store) SetLowTokenModeTx(ctx context.Context, tx *sql.Tx, on bool) erro
 	return err
 }
 
+// SetInstructions writes only the instructions text. It skips Put's
+// validation sweep on purpose: a role default whose model left the catalog
+// must not block an unrelated instructions write.
+func (s *Store) SetInstructions(ctx context.Context, text string) error {
+	err := s.DB.Tx(ctx, func(tx *sql.Tx) error { return s.SetInstructionsTx(ctx, tx, text) })
+	if err != nil {
+		return err
+	}
+	s.Events.Notify()
+	return nil
+}
+
+// SetInstructionsTx is SetInstructions inside the caller's transaction; the
+// caller notifies subscribers after commit.
+func (s *Store) SetInstructionsTx(ctx context.Context, tx *sql.Tx, text string) error {
+	cur, err := s.Get(ctx)
+	if err != nil {
+		return err
+	}
+	cur.Instructions = text
+	raw, _ := json.Marshal(text)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES ('instructions', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+		string(raw), db.Millis(s.Now())); err != nil {
+		return err
+	}
+	_, err = s.Events.Append(ctx, tx, events.SettingsChanged, cur)
+	return err
+}
+
 // reassignDefault is I18's own per-default logic: what a RoleDefault (a
 // role, or FallbackDefault) becomes when the agent it names gets disabled.
 // fallback (a zero value for every real role) is the roleDefaults entry to
