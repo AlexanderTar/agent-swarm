@@ -203,7 +203,7 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 	// a Draft or Ready foreign root is open to cross-root edits; an In progress one is not
 	setStatus(t, s, e2, items.InProgress)
 	_, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st2.Key, Title: "x"}, items.Orchestrator("agt_1", e1.ID))
-	if err == nil || err.Error() != "STORY-1 is outside EPIC-1, and its root is In progress or has a live orchestrator." || code(err) != items.CodeBadRequest {
+	if err == nil || err.Error() != "STORY-1 is outside EPIC-1, and its root is In progress; only a Draft or Ready root can be edited from outside." || code(err) != items.CodeBadRequest {
 		t.Fatalf("err = %v", err)
 	}
 	// An orchestrator may now propose a brand-new top-level item (the
@@ -216,7 +216,7 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 	}
 	p := "new"
 	_, err = s.Update(ctx, st2.Key, items.Patch{Title: &p, Revision: st2.Revision}, items.Orchestrator("agt_1", e1.ID))
-	if err == nil || err.Error() != "STORY-1 is outside EPIC-1, and its root is In progress or has a live orchestrator." {
+	if err == nil || err.Error() != "STORY-1 is outside EPIC-1, and its root is In progress; only a Draft or Ready root can be edited from outside." {
 		t.Fatalf("update err = %v", err)
 	}
 }

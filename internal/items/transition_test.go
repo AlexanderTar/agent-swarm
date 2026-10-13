@@ -1523,6 +1523,38 @@ func TestCrossRootEditsRefused(t *testing.T) {
 	}
 }
 
+// BUG-84: a spike's orchestrator waits 'queued' behind the agent limit with no session; that root has no
+// live orchestrator yet (active_agents is 0), so a top-level orchestrator may still edit its brief.
+func TestCrossRootEditAllowedWhileRootOrchestratorIsQueued(t *testing.T) {
+	s, foreign, _, orch := crossRootFixture(t, items.Draft)
+	exec(t, s.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		VALUES ('agt_q', 'agt_q', 'fake', 'm', 'orchestrator', ?, ?, 'b', 'queued', 1)`, foreign.ID, foreign.RootID)
+	if _, err := s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("context"), Revision: foreign.Revision}, orch); err != nil {
+		t.Fatalf("update with a queued root orchestrator: %v", err)
+	}
+	// once the orchestrator is active the door closes, and the message says why
+	exec(t, s.DB, `UPDATE agents SET state = 'active' WHERE id = 'agt_q'`)
+	cur := mustGet(t, s, foreign.Key)
+	_, err := s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("again"), Revision: cur.Revision}, orch)
+	if err == nil || !strings.Contains(err.Error(), "has a live orchestrator") || strings.Contains(err.Error(), "Draft") {
+		t.Fatalf("active root orchestrator: err = %v", err)
+	}
+}
+
+func TestCrossRootRefusalNamesItsCause(t *testing.T) {
+	s, foreign, _, orch := crossRootFixture(t, items.InProgress)
+	_, err := s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("x"), Revision: foreign.Revision}, orch)
+	if err == nil || strings.Contains(err.Error(), "live orchestrator") || !strings.Contains(err.Error(), "In progress") {
+		t.Fatalf("root status refusal: err = %v", err)
+	}
+	child := orch
+	child.Child = true
+	_, err = s.Update(ctx, foreign.Key, items.Patch{Brief: ptr("x"), Revision: foreign.Revision}, child)
+	if err == nil || !strings.Contains(err.Error(), "top-level orchestrator") {
+		t.Fatalf("child refusal: err = %v", err)
+	}
+}
+
 func TestCrossRootEditsRefusedOnOpenRoot(t *testing.T) {
 	for _, from := range []items.Status{items.InProgress, items.InReview, items.Done} {
 		s, _, story, orch := crossRootFixture(t, from)
