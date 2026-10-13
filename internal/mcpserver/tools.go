@@ -475,7 +475,7 @@ func artifactOut(a runtime.Artifact) map[string]any {
 func readTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_read",
-		Description: "Read items, artifacts, agents and checkpoints by ref or filter, search repos, and get changes since a cursor. filter.kind selects collections (item, agent, checkpoint, artifact, request, worktree); fields projects allowlisted fields; filter reads page with limit (default 50, max 200) and an opaque cursor; unresolvable refs return per-ref errors without failing the call.",
+		Description: "Read items, artifacts, agents and checkpoints by ref or filter (filter.kind picks the collection; limit/cursor page it), search repos, or poll changes since a cursor. recovery {agent} returns that agent's full checkpoint history (verification, findings), newest first, under recovery.checkpoints; top-level checkpoints is only the latest per item.",
 		Schema: objSchema(`"refs":{"type":"array","items":{"type":"string"},"description":"Item, artifact, agent or checkpoint refs to fetch"},
 			"filter":{"type":"object","description":"Filter listing by root, type, status or query","properties":{"kind":{"type":"string"},"root":{"type":"string"},"type":{"type":"string"},"status":{"type":"string"},"q":{"type":"string"}}},
 			"repos":{"type":"object","description":"Repo search","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
@@ -514,6 +514,16 @@ func readTool(s *Server) ToolDef {
 			}
 			if err := validateReadFields(returned, in.Fields); err != nil {
 				return nil, err
+			}
+			// A recovery-only read returns just the recovery bundle: beside it
+			// the general read's empty "checkpoints": [] read as "no
+			// checkpoints" (BUG-85).
+			if in.Recovery != nil && len(in.Refs) == 0 && in.Filter == nil && in.Repos == nil && in.SinceSeq == nil {
+				rec, err := s.recoveryOut(ctx, c, in.Recovery)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"recovery": rec}, nil
 			}
 			out := map[string]any{
 				"items": []any{}, "artifacts": []any{}, "agents": []any{},

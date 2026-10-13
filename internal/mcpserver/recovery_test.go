@@ -260,3 +260,52 @@ func TestReadRecoveryPagesTiedTimestampsExactlyOnce(t *testing.T) {
 		t.Fatalf("paged %d checkpoints, want all %d exactly once", len(seen), total)
 	}
 }
+
+// BUG-85: a reviewer reading a workflow coder's evidence with
+// swarm_read {recovery:{agent}} got the coder's history under recovery.checkpoints
+// but a top-level `"checkpoints": []` (the general read's empty collections)
+// beside it, and reported "no coder checkpoints". A recovery-only read returns
+// just the recovery bundle, and the tool says where the history is.
+func TestReadRecoveryOnlyReturnsTheRecoveryBundle(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	_, _, rootID := seedAgentAndSession(t, s, runtime.RoleOrchestrator, "", "")
+	coderID, coderSes, _ := seedAgentAndSession(t, s, runtime.RoleCoder, rootID, rootID)
+	revID, revSes, _ := seedAgentAndSession(t, s, runtime.RoleReviewer, rootID, rootID)
+	var coderName, revName string
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, coderID).Scan(&coderName)
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, revID).Scan(&revName)
+	coder := Caller{SessionID: coderSes, Role: runtime.RoleCoder, AgentID: coderID, AgentName: coderName}
+	if _, err := s.call(ctx, coder, "swarm_checkpoint",
+		`{"kind":"progress","summary":"red then green","next":["done"],"blockers":[],"verification":[{"cmd":"go test ./x","phase":"red","ok":false},{"cmd":"go test ./x","phase":"green","ok":true}]}`); err != nil {
+		t.Fatal(err)
+	}
+	rev := Caller{SessionID: revSes, Role: runtime.RoleReviewer, AgentID: revID, AgentName: revName}
+	out, err := s.call(ctx, rev, "swarm_read", `{"recovery":{"agent":"`+coderName+`"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.(map[string]any)
+	if len(got) != 1 || got["recovery"] == nil {
+		keys := make([]string, 0, len(got))
+		for k := range got {
+			keys = append(keys, k)
+		}
+		t.Fatalf("keys = %v, want only recovery (no empty top-level checkpoints beside it)", keys)
+	}
+
+	// With another selector the general read comes back too.
+	out, err = s.call(ctx, rev, "swarm_read", `{"recovery":{"agent":"`+coderName+`"},"refs":["`+coderName+`"]`+`}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.(map[string]any); got["recovery"] == nil || got["agents"] == nil {
+		t.Fatalf("combined read = %v, want recovery and the general collections", got)
+	}
+
+	for _, tool := range s.ToolsFor(rev) {
+		if tool.Name == "swarm_read" && !strings.Contains(tool.Description, "recovery.checkpoints") {
+			t.Fatalf("swarm_read description %q does not say where recovery history is", tool.Description)
+		}
+	}
+}
