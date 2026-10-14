@@ -419,9 +419,11 @@ struct AttachmentTile: View {
     private static let size: CGFloat = 48
     private static let radius: CGFloat = 6
 
-    /// Uppercase extension ("PDF"), or "FILE" when the name has none.
+    /// Uppercase extension, letters and digits only ("PDF"), or "FILE" when there is none.
+    /// Must match the web's `extLabel`.
     static func label(for name: String) -> String {
-        let ext = (name as NSString).pathExtension
+        let ext = String((name as NSString).pathExtension.unicodeScalars
+            .filter { $0.isASCII && CharacterSet.alphanumerics.contains($0) })
         return ext.isEmpty ? "FILE" : ext.uppercased()
     }
 

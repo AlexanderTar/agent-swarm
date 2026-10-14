@@ -27,7 +27,7 @@ import {
 import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, CreateSpikeResponse, Settings, SpikeIntent } from "../types";
 
 const SNIFFED_TYPES = /^image\/(png|jpe?g|gif|webp|heic|heif|tiff?)$/;
-const hasFiles =(e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+const hasFiles = (e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
 function Form(p: {
   settings: Settings;

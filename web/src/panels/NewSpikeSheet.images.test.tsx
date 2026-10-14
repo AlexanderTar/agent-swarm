@@ -333,12 +333,12 @@ describe("NewSpikeSheet request images: submit", () => {
   it("an image error never disables Start", async () => {
     vi.mocked(addImages).mockImplementationOnce(async () => ({
       added: [],
-      error: "bad.png is not an image Swarm can attach.",
+      error: "Swarm couldn't read bad.png.",
     }));
     const { sheet, request, user } = await open();
     await user.type(request, "Look");
     paste(request, "bad.png");
-    await within(sheet).findByText("bad.png is not an image Swarm can attach.");
+    await within(sheet).findByText("Swarm couldn't read bad.png.");
     expect(start(sheet)).toBeEnabled();
   });
 
@@ -350,7 +350,7 @@ describe("NewSpikeSheet request images: submit", () => {
     await user.type(request, "Look");
     paste(request, "folder");
     expect(
-      await within(sheet).findByText("folder is not an image Swarm can attach."),
+      await within(sheet).findByText("Swarm couldn't read folder."),
     ).toBeInTheDocument();
     expect(sheet.querySelector('li[aria-hidden="true"]')).toBeNull();
     expect(start(sheet)).toBeEnabled();

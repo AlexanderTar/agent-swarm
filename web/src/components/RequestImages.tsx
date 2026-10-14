@@ -17,9 +17,12 @@ export interface RequestImage {
 
 const MD = "(min-width: 768px)";
 
-// Generic-tile label: the name's last extension in capitals, FILE when there is none.
-const extLabel = (name: string) =>
-  name.split(".").slice(1).pop()?.replace(/[^a-z0-9]/gi, "").toUpperCase() || "FILE";
+// Generic-tile label: the name's last extension, letters and digits only, in capitals; FILE when
+// there is none (a dotfile has none). Must match the menubar's AttachmentTile.label(for:).
+export const extLabel = (name: string) => {
+  const dot = name.lastIndexOf(".");
+  return (dot > 0 ? name.slice(dot + 1).replace(/[^a-z0-9]/gi, "").toUpperCase() : "") || "FILE";
+};
 
 export function RequestImages(p: {
   images: RequestImage[];

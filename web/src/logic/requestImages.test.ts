@@ -219,7 +219,7 @@ describe("prepareImage", () => {
   it("rejects a non-web format when the encoder fails", async () => {
     const { encode } = encodeTo(null);
     const r = await prepareImage(sized(MB, BMP), "a.bmp", { decode: decodeTo(100, 100), encode });
-    expect(r).toEqual({ error: "a.bmp is not an image Swarm can attach." });
+    expect(r).toEqual({ error: "Swarm couldn't read a.bmp." });
   });
 
   it("falls back to the original when the encoder returns null, then enforces 10 MB", async () => {
@@ -255,7 +255,7 @@ describe("prepareImage", () => {
   it("rejects an undecodable blob", async () => {
     const decode = vi.fn().mockRejectedValue(new Error("nope"));
     const r = await prepareImage(sized(100, PNG), "x.png", { decode });
-    expect(r).toEqual({ error: "x.png is not an image Swarm can attach." });
+    expect(r).toEqual({ error: "Swarm couldn't read x.png." });
   });
 });
 
@@ -290,7 +290,7 @@ describe("prepareImage decoder fallback", () => {
       [0xff, 0xd8, 0xff, 0xe0],
     ]) {
       const r = await prepareImage(new Blob([new Uint8Array(magic)]), "x", deps);
-      expect(r).toEqual({ error: "x is not an image Swarm can attach." });
+      expect(r).toEqual({ error: "Swarm couldn't read x." });
     }
     expect(decoders.heic).not.toHaveBeenCalled();
     expect(decoders.tiff).not.toHaveBeenCalled();
@@ -308,7 +308,7 @@ describe("prepareImage decoder fallback", () => {
     const { decoders, deps } = mkDeps(nativeFails);
     decoders.heic.mockRejectedValue(new Error("corrupt"));
     const r = await prepareImage(fixture("tiny.heic"), "bad.heic", deps);
-    expect(r).toEqual({ error: "bad.heic is not an image Swarm can attach." });
+    expect(r).toEqual({ error: "Swarm couldn't read bad.heic." });
   });
 });
 

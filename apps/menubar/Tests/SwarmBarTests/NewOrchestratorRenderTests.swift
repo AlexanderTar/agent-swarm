@@ -565,6 +565,8 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertEqual(AttachmentTile.label(for: "LICENSE"), "FILE")
         XCTAssertEqual(AttachmentTile.label(for: ".env"), "FILE", "a dotfile has no extension")
         XCTAssertEqual(AttachmentTile.label(for: "archive."), "FILE")
+        XCTAssertEqual(AttachmentTile.label(for: "main.c++"), "C", "symbols are dropped, as on the web")
+        XCTAssertEqual(AttachmentTile.label(for: "odd.$$"), "FILE", "an all-symbol extension reads FILE")
     }
 
     private func tileHost(_ name: String, data: Data, isImage: Bool) -> NSHostingView<some View> {
