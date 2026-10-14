@@ -45,24 +45,50 @@ func TestDecodeRefusals(t *testing.T) {
 		eleven = append(eleven, in("a.png", png(t)))
 	}
 	_, err := Decode(eleven)
-	badRequest(t, err, "At most 10 images.")
+	badRequest(t, err, "At most 10 attachments.")
 
-	_, err = Decode([]Input{in("notes.png", []byte("just text, not an image"))})
-	badRequest(t, err, `Image "notes.png" is not a PNG, JPEG, GIF or WebP.`)
-
-	_, err = Decode([]Input{{Name: "x.png", Data: "%%%"}})
-	badRequest(t, err, `Image "x.png" is not valid base64.`)
+	_, err = Decode([]Input{{Name: "x.pdf", Data: "%%%"}})
+	badRequest(t, err, `Attachment "x.pdf" is not valid base64.`)
 
 	big := append(png(t), make([]byte, MaxBytes)...)
 	_, err = Decode([]Input{in("big.png", big)})
-	badRequest(t, err, `Image "big.png" is larger than 10 MB.`)
+	badRequest(t, err, `Attachment "big.png" is larger than 10 MB.`)
+
+	_, err = Decode([]Input{in("big.pdf", make([]byte, MaxBytes+1))})
+	badRequest(t, err, `Attachment "big.pdf" is larger than 10 MB.`)
+}
+
+func TestDecodeAcceptsAnyFileAndKeepsTheSanitizedNameExtension(t *testing.T) {
+	for name, want := range map[string]string{
+		"Spec.PDF":           ".pdf",
+		"notes.md":           ".md",
+		"backup.tar.gz":      ".gz",
+		"Makefile":           "",
+		"weird.c++":          ".c",
+		"x.abcdefghijklmnop": ".abcdefghij",
+		"text-posing-as.png": ".png",
+		"trailing-dot.":      "",
+		"archive.zip":        ".zip",
+	} {
+		files, err := Decode([]Input{in(name, []byte("plain bytes, not an image"))})
+		if err != nil || len(files) != 1 || files[0].Ext != want || files[0].Name != name {
+			t.Errorf("Decode(%q) = %+v, %v, want ext %q", name, files, err, want)
+		}
+	}
+}
+
+func TestDecodeImageExtensionWinsOverTheName(t *testing.T) {
+	files, err := Decode([]Input{in("photo.pdf", png(t))})
+	if err != nil || files[0].Ext != ".png" {
+		t.Fatalf("Decode = %+v, %v, want sniffed .png", files, err)
+	}
 }
 
 func TestSafeName(t *testing.T) {
 	for in, want := range map[string]string{
 		"Login bug.png":         "login-bug.png",
 		"../../etc/passwd":      "etc-passwd",
-		"   ":                   "image",
+		"   ":                   "attachment",
 		strings.Repeat("a", 90): strings.Repeat("a", 60),
 	} {
 		if got := safeName(in); got != want {
@@ -90,6 +116,23 @@ func TestSaveWritesPrivateNumberedFiles(t *testing.T) {
 	}
 }
 
+func TestSaveNamesFilesByTheirSanitizedExtension(t *testing.T) {
+	home := t.TempDir()
+	files, err := Decode([]Input{in("Spec Sheet.PDF", []byte("%PDF-1.4")), in("README", []byte("hi")), in("notes.md", []byte("# hi")), in("shot.png", png(t))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := Save(home, "SPIKE-7", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"01-spec-sheet.pdf", "02-readme", "03-notes.md", "04-shot.png"} {
+		if got := filepath.Base(saved[i].Path); got != want {
+			t.Errorf("saved[%d] = %q, want %q", i, got, want)
+		}
+	}
+}
+
 func TestSaveFailureLeavesNoDir(t *testing.T) {
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "attachments"), nil, 0o600); err != nil { // a file blocks the dir
@@ -103,12 +146,12 @@ func TestSaveFailureLeavesNoDir(t *testing.T) {
 
 func TestBriefSections(t *testing.T) {
 	got := BriefSection([]Saved{{Path: "/h/attachments/SPIKE-12/01-login-bug.png", Name: "Login bug.png"}})
-	want := "## Attachments\n\nThe user attached these images to the request. Open each one with your file or image tool before you plan, and pass the paths that matter to children in their briefs.\n\n- /h/attachments/SPIKE-12/01-login-bug.png (Login bug.png)"
+	want := "## Attachments\n\nThe user attached these files to the request. Open each one with your file or image tool before you plan, and pass the paths that matter to children in their briefs.\n\n- /h/attachments/SPIKE-12/01-login-bug.png (Login bug.png)"
 	if got != want {
 		t.Errorf("BriefSection =\n%s\nwant\n%s", got, want)
 	}
 	got = FailureSection(3, errors.New("disk full"))
-	want = "## Attachments\n\nThe user attached 3 images, but Swarm could not save them (disk full). Ask the user to share them another way."
+	want = "## Attachments\n\nThe user attached 3 files, but Swarm could not save them (disk full). Ask the user to share them another way."
 	if got != want {
 		t.Errorf("FailureSection = %q", got)
 	}

@@ -209,7 +209,7 @@ func TestCreateSpikeWithElevenAttachmentsIs400AndCreatesNoItem(t *testing.T) {
 		Error struct{ Code, Message string }
 	}
 	json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.Error.Message != "At most 10 images." {
+	if body.Error.Message != "At most 10 attachments." {
 		t.Fatalf("message = %q", body.Error.Message)
 	}
 	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&n)
@@ -218,28 +218,33 @@ func TestCreateSpikeWithElevenAttachmentsIs400AndCreatesNoItem(t *testing.T) {
 	}
 }
 
-// (c) a non-image is a 400 and creates no item.
-func TestCreateSpikeWithUnsupportedAttachmentIs400AndCreatesNoItem(t *testing.T) {
+// (c) non-image files are accepted: .png, .pdf and .md land on disk with
+// matching suffixes and the brief lists all three.
+func TestCreateSpikeAcceptsArbitraryFileAttachments(t *testing.T) {
 	s, _ := newRuntimeServer(t)
-	var before int
-	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&before)
-	notImage := base64.StdEncoding.EncodeToString([]byte("just text, not an image"))
-	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r3","name":"Bad file",
-		"intent":"debug","agent":"fake","model":"fake-1","attachments":[{"name":"notes.png","data":%q}]}`, notImage))
-	if rec.Code != 400 {
+	pdf := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 fake"))
+	md := base64.StdEncoding.EncodeToString([]byte("# Notes\n"))
+	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r3","name":"Mixed files",
+		"intent":"debug","agent":"fake","model":"fake-1","request":"See attached.",
+		"attachments":[{"name":"shot.png","data":%q},{"name":"Spec.PDF","data":%q},{"name":"notes.md","data":%q}]}`,
+		onePNGBase64, pdf, md))
+	if rec.Code != 200 {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 	}
 	var body struct {
-		Error struct{ Code, Message string }
+		Item map[string]any `json:"item"`
 	}
 	json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.Error.Message != `Image "notes.png" is not a PNG, JPEG, GIF or WebP.` {
-		t.Fatalf("message = %q", body.Error.Message)
-	}
-	var after int
-	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&after)
-	if after != before {
-		t.Fatalf("an item was created despite the 400: %d -> %d", before, after)
+	key, _ := body.Item["key"].(string)
+	dir := filepath.Join(s.RT.Home, "attachments", key)
+	brief, _ := body.Item["brief"].(string)
+	for _, want := range []string{"01-shot.png", "02-spec.pdf", "03-notes.md"} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Errorf("missing %s: %v", want, err)
+		}
+		if !strings.Contains(brief, filepath.Join(dir, want)) {
+			t.Errorf("brief missing %s: %q", want, brief)
+		}
 	}
 }
 
