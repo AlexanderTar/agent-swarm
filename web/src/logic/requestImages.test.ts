@@ -53,7 +53,7 @@ describe("addImages", () => {
   it("stops at the 10th image with the too-many error", async () => {
     const r = await addImages(9, [png("a.png"), png("b.png"), png("c.png")], { decode });
     expect(r.added.map((i) => i.name)).toEqual(["a.png"]);
-    expect(r.error).toBe("Up to 10 images.");
+    expect(r.error).toBe("Up to 10 attachments.");
   });
 
   it("reports the first error of a batch and keeps the images that worked", async () => {
@@ -76,10 +76,33 @@ describe("addImages", () => {
     expect(r.error).toBe("one.pdf is not an image Swarm can attach.");
   });
 
+  it("passes a non-image file through unchanged without decoding it", async () => {
+    const pdfBlob = new Blob([new Uint8Array(ascii("%PDF-1.4"))], { type: "application/pdf" });
+    const dec = vi.fn(async () => bmp);
+    const r = await addImages(0, [{ name: "Spec.pdf", blob: pdfBlob }], { decode: dec });
+    expect(r.error).toBeUndefined();
+    expect(r.added).toEqual([{ name: "Spec.pdf", blob: pdfBlob }]);
+    expect(dec).not.toHaveBeenCalled();
+  });
+
+  it("counts images and files in one pool of 10", async () => {
+    const md = { name: "n.md", blob: new Blob(["# hi"], { type: "text/markdown" }) };
+    const r = await addImages(8, [png("a.png"), md, png("b.png")], { decode });
+    expect(r.added.map((i) => i.name)).toEqual(["a.png", "n.md"]);
+    expect(r.error).toBe("Up to 10 attachments.");
+  });
+
+  it("rejects a non-image file over 10 MB", async () => {
+    const big = { name: "big.zip", blob: new Blob([new Uint8Array((10 << 20) + 1)]) };
+    const r = await addImages(0, [big]);
+    expect(r.added).toEqual([]);
+    expect(r.error).toBe("big.zip is larger than 10 MB.");
+  });
+
   it("lets the too-many error win over a later unsupported file", async () => {
     const r = await addImages(10, [png("a.png")], { decode });
     expect(r.added).toEqual([]);
-    expect(r.error).toBe("Up to 10 images.");
+    expect(r.error).toBe("Up to 10 attachments.");
   });
 });
 

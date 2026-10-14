@@ -55,13 +55,13 @@ describe("RequestImages", () => {
     expect(screen.getByText("3 of 10")).toBeInTheDocument();
   });
 
-  it("disables Add images… at 10", () => {
+  it("disables Add files… at 10", () => {
     const { rerender } = render(
       <RequestImages images={imgs(9)} pending={0} onAdd={vi.fn()} onRemove={vi.fn()} />,
     );
-    expect(screen.getByRole("button", { name: "Add images…" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add files…" })).toBeEnabled();
     rerender(<RequestImages images={imgs(10)} pending={0} onAdd={vi.fn()} onRemove={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Add images…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add files…" })).toBeDisabled();
     expect(screen.getByText("10 of 10")).toBeInTheDocument();
   });
 
@@ -77,7 +77,7 @@ describe("RequestImages", () => {
     expect(input).toHaveAttribute("aria-hidden", "true");
     expect(input).toHaveAttribute("tabindex", "-1");
     const click = vi.spyOn(input as HTMLInputElement, "click");
-    await userEvent.click(screen.getByRole("button", { name: "Add images…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add files…" }));
     expect(click).toHaveBeenCalled();
   });
 
@@ -124,12 +124,12 @@ describe("RequestImages", () => {
       <RequestImages
         images={[]}
         pending={0}
-        error="Up to 10 images."
+        error="Up to 10 attachments."
         onAdd={vi.fn()}
         onRemove={vi.fn()}
       />,
     );
-    expect(container.querySelector('p[aria-live="polite"]')).toHaveTextContent("Up to 10 images.");
+    expect(container.querySelector('p[aria-live="polite"]')).toHaveTextContent("Up to 10 attachments.");
     expect(container.querySelector('p[aria-live="polite"]')).toBe(p);
   });
 
@@ -145,7 +145,7 @@ describe("RequestImages", () => {
     expect(revoke).toHaveBeenCalledWith("blob:mock/3");
   });
 
-  it("moves focus after a remove: next remove button, else previous, else Add images…", async () => {
+  it("moves focus after a remove: next remove button, else previous, else Add files…", async () => {
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     render(<Harness initial={imgs(3)} />);
     await userEvent.click(screen.getByRole("button", { name: "Remove shot-2.png" }));
@@ -153,7 +153,7 @@ describe("RequestImages", () => {
     await userEvent.click(screen.getByRole("button", { name: "Remove shot-3.png" }));
     expect(screen.getByRole("button", { name: "Remove shot-1.png" })).toHaveFocus();
     await userEvent.click(screen.getByRole("button", { name: "Remove shot-1.png" }));
-    expect(screen.getByRole("button", { name: "Add images…" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Add files…" })).toHaveFocus();
   });
 
   it("orders the DOM like the visual order: button row first on phone, strip first from md", () => {
@@ -161,7 +161,7 @@ describe("RequestImages", () => {
     const phone = render(
       <RequestImages images={imgs(2)} pending={0} onAdd={vi.fn()} onRemove={vi.fn()} />,
     );
-    const add = screen.getByRole("button", { name: "Add images…" });
+    const add = screen.getByRole("button", { name: "Add files…" });
     const first = screen.getByRole("button", { name: "Remove shot-1.png" });
     expect(add.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(phone.container.querySelector("ul")).toHaveClass(
@@ -176,7 +176,7 @@ describe("RequestImages", () => {
     expect(
       screen
         .getByRole("button", { name: "Remove shot-1.png" })
-        .compareDocumentPosition(screen.getByRole("button", { name: "Add images…" })) &
+        .compareDocumentPosition(screen.getByRole("button", { name: "Add files…" })) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(desk.container.querySelector("ul")).toHaveClass("flex", "overflow-x-auto");

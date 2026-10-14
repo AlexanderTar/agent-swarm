@@ -66,15 +66,15 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     const zone = request.closest("[data-drop-zone]") as HTMLElement;
     expect(zone).not.toBeNull();
     fireEvent.dragEnter(zone, textDrag());
-    expect(within(sheet).queryByText("Drop images to attach")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
     fireEvent.dragEnter(zone, filesDrag());
-    expect(within(sheet).getByText("Drop images to attach")).toBeInTheDocument();
+    expect(within(sheet).getByText("Drop files to attach")).toBeInTheDocument();
     // entering a child then leaving the zone's edge must not flicker the overlay
     fireEvent.dragEnter(request, filesDrag());
     fireEvent.dragLeave(zone, filesDrag());
-    expect(within(sheet).getByText("Drop images to attach")).toBeInTheDocument();
+    expect(within(sheet).getByText("Drop files to attach")).toBeInTheDocument();
     fireEvent.dragLeave(request, filesDrag());
-    expect(within(sheet).queryByText("Drop images to attach")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
   });
 
   it("adds dropped files, naming an unnamed one 'Dropped image.png', and hides the overlay", async () => {
@@ -85,7 +85,7 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     fireEvent.drop(zone, filesDrag(files));
     expect(await within(sheet).findByRole("img", { name: "one.png" })).toBeInTheDocument();
     expect(within(sheet).getByRole("img", { name: "Dropped image.png" })).toBeInTheDocument();
-    expect(within(sheet).queryByText("Drop images to attach")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
   });
 
   it("leaves a text drag alone inside the zone", async () => {
@@ -141,7 +141,7 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     const mac = await open();
     expect(mac.request).toHaveAttribute(
       "placeholder",
-      "⌘V pastes an image; dropping an image file adds it",
+      "⌘V pastes an image or file; dropping files adds them",
     );
     mac.unmount();
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (X11; Linux x86_64)");
@@ -149,7 +149,7 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     await waitFor(() =>
       expect(other.request).toHaveAttribute(
         "placeholder",
-        "Ctrl+V pastes an image; dropping an image file adds it",
+        "Ctrl+V pastes an image or file; dropping files adds them",
       ),
     );
   });
@@ -237,7 +237,7 @@ describe("NewSpikeSheet request images: submit", () => {
     });
     await user.click(start(sheet));
     const alert = await within(sheet).findByText(
-      "Started, but the images could not be saved. Share them with the orchestrator another way.",
+      "Started, but the attachments could not be saved. Share them with the orchestrator another way.",
     );
     expect(alert.closest('[role="alert"]')).toBeInTheDocument();
     expect(top).toBe(0);
@@ -376,7 +376,7 @@ describe("NewSpikeSheet request images: submit", () => {
     await user.click(start(sheet));
     expect(
       await within(sheet).findByText(
-        "The images are too large to send over remote access. Remove some and try again.",
+        "The attachments are too large to send over remote access. Remove some and try again.",
       ),
     ).toBeInTheDocument();
     expect(

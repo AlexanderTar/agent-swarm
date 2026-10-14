@@ -28,7 +28,7 @@ describe("spawn form rules (§16.3, §16.10)", () => {
   it("maps a 413 to the remote-access detail", () => {
     expect(mapSubmitError(new ApiError(413, "bad_request", "Request body too large"))).toEqual({
       banner: "Couldn't start orchestrator. Your entries are saved.",
-      detail: "The images are too large to send over remote access. Remove some and try again.",
+      detail: "The attachments are too large to send over remote access. Remove some and try again.",
     });
   });
 
@@ -91,5 +91,11 @@ describe("spikePayload name, request and attachments", () => {
     const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])], { type: "image/png" });
     const body = await build({ name: "", request: "See shot", images: [{ name: "shot.png", blob: png }] });
     expect(body.attachments).toEqual([{ name: "shot.png", data: "iVBORw0K" }]);
+  });
+
+  it("sends a non-image file with its original name and bytes", async () => {
+    const pdf = new Blob([new TextEncoder().encode("%PDF")], { type: "application/pdf" });
+    const body = await build({ name: "", request: "", images: [{ name: "Spec.pdf", blob: pdf }] });
+    expect(body.attachments).toEqual([{ name: "Spec.pdf", data: "JVBERg==" }]);
   });
 });

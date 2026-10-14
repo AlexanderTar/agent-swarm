@@ -120,7 +120,9 @@ export async function addImages(
       error ??= C.imageTooMany;
       break;
     }
-    const r = await prepareImage(f.blob, f.name, deps);
+    // Anything that is not a recognised image goes through unchanged; only the size cap applies.
+    const isImage = sniff(new Uint8Array(await f.blob.slice(0, 16).arrayBuffer())) !== null;
+    const r = isImage ? await prepareImage(f.blob, f.name, deps) : finish(f.blob, f.name);
     if ("error" in r) error ??= r.error;
     else added.push({ name: f.name, blob: r.blob });
   }
