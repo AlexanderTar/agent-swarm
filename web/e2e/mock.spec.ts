@@ -856,7 +856,7 @@ test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   const width = page.viewportSize()?.width ?? 0;
   const phone = width < 768;
-  const add = sheet.getByRole("button", { name: "Add images…" });
+  const add = sheet.getByRole("button", { name: "Add files…" });
   const remove = sheet.getByRole("button", { name: /^Remove shot-/ });
   const input = sheet.locator('input[type="file"]');
 
@@ -897,6 +897,25 @@ test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized
   await sheet.getByRole("textbox", { name: "Request (optional)" }).fill("Fix the login redirect loop");
   await sheet.getByRole("button", { name: /^(Start|Queue) orchestrator$/ }).click();
   await expect(page).toHaveURL(/item=CHORE-\d+/);
+});
+
+test("New orchestrator request attachments: a PDF sits in the strip beside images and can be removed", async ({ page }) => {
+  await page.goto("/");
+  await openNewOrchestrator(page);
+  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+  const input = sheet.locator('input[type="file"]');
+  const pdf = { name: "Spec.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4") };
+  await input.setInputFiles([...shots(2), pdf]);
+  await expect(sheet.getByText("3 of 10")).toBeVisible();
+  const tile = sheet.locator("li", { has: page.getByRole("img", { name: "Spec.pdf" }) });
+  await expect(tile).toContainText("PDF");
+  const [pdfBox, pngBox] = await Promise.all([tile.boundingBox(), sheet.locator("li:has(img)").first().boundingBox()]);
+  expect(pdfBox?.width).toBeCloseTo(pngBox?.width ?? 0, 0);
+  expect(pdfBox?.height).toBeCloseTo(pngBox?.height ?? 0, 0);
+  await noHorizontalOverflow(page);
+  await sheet.getByRole("button", { name: "Remove Spec.pdf" }).click();
+  await expect(sheet.getByText("2 of 10")).toBeVisible();
+  await expect(tile).toHaveCount(0);
 });
 
 for (const width of [375, 430, 768]) {

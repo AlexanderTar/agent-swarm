@@ -1,11 +1,16 @@
-// Package attachments stores the images a user attaches to a New orchestrator
-// request (spec docs/specs/2026-09-28-request-images.md). The directory
+// Package attachments stores the files a user attaches to a New orchestrator
+// request: images and arbitrary files (pdf, md, zip...) share one list (spec
+// docs/specs/2026-09-28-request-images.md). Images are sniffed and saved with
+// their real type's suffix; any other file keeps its sanitized name extension. The directory
 // <SWARM_HOME>/attachments/<ITEM-KEY>/ is the only record; Sweep removes it once
 // the item's root is Done, Cancelled or the item is gone. The directory belongs
 // to the daemon: agents must not write into it (screenshots and review evidence
 // go under <SWARM_HOME>/screenshots/<ITEM-KEY>/, which nothing sweeps).
 //
 // # Which agent kinds can view an attached image
+//
+// (Non-image files are saved the same way; every kind can open them as text
+// or bytes with its file tools.)
 //
 // Every kind gets the saved paths in its kickoff prompt (see the runtime's
 // prompt assembly); only some can actually open the file. Probed live
@@ -68,30 +73,45 @@ func bad(format string, a ...any) error {
 	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(format, a...)}
 }
 
-// Decode validates every image before anything is created; it never touches disk.
+// Decode validates every attachment before anything is created; it never touches disk.
+// Images get their sniffed extension; any other file keeps its name's
+// extension, lowercased, [a-z0-9] only, at most 10 chars (none: no suffix).
 func Decode(in []Input) ([]File, error) {
 	if len(in) > MaxCount {
-		return nil, bad("At most 10 images.")
+		return nil, bad("At most 10 attachments.")
 	}
 	out := make([]File, 0, len(in))
 	for _, a := range in {
 		if base64.StdEncoding.DecodedLen(len(a.Data)) > MaxBytes+3 {
-			return nil, bad("Image %q is larger than 10 MB.", a.Name)
+			return nil, bad("Attachment %q is larger than 10 MB.", a.Name)
 		}
 		body, err := base64.StdEncoding.DecodeString(a.Data)
 		if err != nil {
-			return nil, bad("Image %q is not valid base64.", a.Name)
+			return nil, bad("Attachment %q is not valid base64.", a.Name)
 		}
 		if len(body) > MaxBytes {
-			return nil, bad("Image %q is larger than 10 MB.", a.Name)
+			return nil, bad("Attachment %q is larger than 10 MB.", a.Name)
 		}
 		ext, ok := exts[http.DetectContentType(body)]
 		if !ok {
-			return nil, bad("Image %q is not a PNG, JPEG, GIF or WebP.", a.Name)
+			ext = nameExt(a.Name)
 		}
 		out = append(out, File{Name: a.Name, Ext: ext, Body: body})
 	}
 	return out, nil
+}
+
+var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+
+func nameExt(name string) string {
+	e := nonAlnum.ReplaceAllString(strings.ToLower(filepath.Ext(name)), "")
+	if len(e) > 10 {
+		e = e[:10]
+	}
+	if e == "" {
+		return ""
+	}
+	return "." + e
 }
 
 func Dir(home, key string) string { return filepath.Join(home, "attachments", key) }
@@ -104,7 +124,7 @@ func safeName(name string) string {
 		s = string(r[:60])
 	}
 	if s == "" {
-		return "image"
+		return "attachment"
 	}
 	return s
 }
@@ -126,7 +146,7 @@ func Save(home, key string, files []File) (saved []Saved, err error) {
 	for i, f := range files {
 		base := strings.TrimSuffix(safeName(f.Name), filepath.Ext(safeName(f.Name)))
 		if base == "" {
-			base = "image"
+			base = "attachment"
 		}
 		p := filepath.Join(dir, fmt.Sprintf("%02d-%s%s", i+1, base, f.Ext))
 		if err := os.WriteFile(p, f.Body, 0o600); err != nil {
@@ -139,7 +159,7 @@ func Save(home, key string, files []File) (saved []Saved, err error) {
 
 func BriefSection(saved []Saved) string {
 	var b strings.Builder
-	b.WriteString("## Attachments\n\nThe user attached these images to the request. Open each one with your file or image tool before you plan, and pass the paths that matter to children in their briefs.\n")
+	b.WriteString("## Attachments\n\nThe user attached these files to the request. Open each one with your file or image tool before you plan, and pass the paths that matter to children in their briefs.\n")
 	for _, s := range saved {
 		fmt.Fprintf(&b, "\n- %s (%s)", s.Path, s.Name)
 	}
@@ -147,11 +167,11 @@ func BriefSection(saved []Saved) string {
 }
 
 func FailureSection(count int, err error) string {
-	return fmt.Sprintf("## Attachments\n\nThe user attached %d images, but Swarm could not save them (%v). Ask the user to share them another way.", count, err)
+	return fmt.Sprintf("## Attachments\n\nThe user attached %d files, but Swarm could not save them (%v). Ask the user to share them another way.", count, err)
 }
 
 // Sweep removes a key's attachments once its item's root is Done, Cancelled or
-// the item is gone; the item's own status does not matter. ponytail: reopening an item after a sweep leaves it without images.
+// the item is gone; the item's own status does not matter. ponytail: reopening an item after a sweep leaves it without attachments.
 func Sweep(ctx context.Context, db *sql.DB, home string) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(home, "attachments"))
 	if os.IsNotExist(err) {

@@ -9,12 +9,13 @@ import { NewSpikeSheet } from "./NewSpikeSheet";
 vi.mock("../logic/requestImages", async (orig) => ({
   ...(await orig<typeof import("../logic/requestImages")>()),
   addImages: vi.fn(async (_n: number, files: { blob: Blob; name: string }[]) => ({
-    added: files.map((f) => ({ name: f.name, blob: f.blob })),
+    added: files.map((f) => ({ name: f.name, blob: f.blob, image: f.blob.type.startsWith("image/") })),
   })),
 }));
 
 const png = (name = "a.png") =>
   new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+const pdf = (name = "Spec.pdf") => new File(["%PDF-1.4"], name, { type: "application/pdf" });
 const filesDrag = (files: File[] = []) => ({
   dataTransfer: { types: ["Files"], files, dropEffect: "" },
 });
@@ -50,6 +51,26 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     expect(within(sheet).getByText("1 of 10")).toBeInTheDocument();
   });
 
+  it("adds a pasted PDF as a generic tile in the same strip", async () => {
+    const { sheet, request } = await open();
+    fireEvent.paste(request, {
+      clipboardData: { files: [pdf(), png("shot.png")], types: ["Files"], getData: () => "" },
+    });
+    expect(await within(sheet).findByRole("img", { name: "Spec.pdf" })).toBeInTheDocument();
+    expect(within(sheet).getByText("PDF")).toBeInTheDocument();
+    expect(within(sheet).getByText("2 of 10")).toBeInTheDocument();
+    expect(request).toHaveValue("");
+  });
+
+  it("adds a dropped PDF, and lets it be removed", async () => {
+    const { sheet, request, user } = await open();
+    const zone = request.closest("[data-drop-zone]") as HTMLElement;
+    fireEvent.drop(zone, filesDrag([pdf()]));
+    expect(await within(sheet).findByText("PDF")).toBeInTheDocument();
+    await user.click(within(sheet).getByRole("button", { name: "Remove Spec.pdf" }));
+    expect(within(sheet).queryByText("PDF")).not.toBeInTheDocument();
+  });
+
   it("keeps a clipboard file's own name and lets plain text paste through", async () => {
     const { sheet, request, user } = await open();
     fireEvent.paste(request, {
@@ -66,15 +87,15 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     const zone = request.closest("[data-drop-zone]") as HTMLElement;
     expect(zone).not.toBeNull();
     fireEvent.dragEnter(zone, textDrag());
-    expect(within(sheet).queryByText("Drop images to attach")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
     fireEvent.dragEnter(zone, filesDrag());
-    expect(within(sheet).getByText("Drop images to attach")).toBeInTheDocument();
+    expect(within(sheet).getByText("Drop files to attach")).toBeInTheDocument();
     // entering a child then leaving the zone's edge must not flicker the overlay
     fireEvent.dragEnter(request, filesDrag());
     fireEvent.dragLeave(zone, filesDrag());
-    expect(within(sheet).getByText("Drop images to attach")).toBeInTheDocument();
+    expect(within(sheet).getByText("Drop files to attach")).toBeInTheDocument();
     fireEvent.dragLeave(request, filesDrag());
-    expect(within(sheet).queryByText("Drop images to attach")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
   });
 
   it("adds dropped files, naming an unnamed one 'Dropped image.png', and hides the overlay", async () => {
@@ -85,7 +106,26 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     fireEvent.drop(zone, filesDrag(files));
     expect(await within(sheet).findByRole("img", { name: "one.png" })).toBeInTheDocument();
     expect(within(sheet).getByRole("img", { name: "Dropped image.png" })).toBeInTheDocument();
-    expect(within(sheet).queryByText("Drop images to attach")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
+  });
+
+  it("names an unnamed dropped non-image 'Dropped file', with no image extension", async () => {
+    const { sheet, request } = await open();
+    const zone = request.closest("[data-drop-zone]") as HTMLElement;
+    const files = [pdf("")];
+    fireEvent.dragEnter(zone, filesDrag(files));
+    fireEvent.drop(zone, filesDrag(files));
+    expect(await within(sheet).findByRole("img", { name: "Dropped file" })).toBeInTheDocument();
+    expect(within(sheet).getByText("FILE")).toBeInTheDocument();
+  });
+
+  it("names an unnamed dropped image the sniffer does not know (BMP) 'Dropped file', not '.png'", async () => {
+    const { sheet, request } = await open();
+    const zone = request.closest("[data-drop-zone]") as HTMLElement;
+    const files = [new File([new Uint8Array([0x42, 0x4d])], "", { type: "image/bmp" })];
+    fireEvent.dragEnter(zone, filesDrag(files));
+    fireEvent.drop(zone, filesDrag(files));
+    expect(await within(sheet).findByRole("img", { name: "Dropped file" })).toBeInTheDocument();
   });
 
   it("leaves a text drag alone inside the zone", async () => {
@@ -141,7 +181,7 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     const mac = await open();
     expect(mac.request).toHaveAttribute(
       "placeholder",
-      "⌘V pastes an image; dropping an image file adds it",
+      "⌘V pastes an image or file; dropping files adds them",
     );
     mac.unmount();
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (X11; Linux x86_64)");
@@ -149,7 +189,7 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     await waitFor(() =>
       expect(other.request).toHaveAttribute(
         "placeholder",
-        "Ctrl+V pastes an image; dropping an image file adds it",
+        "Ctrl+V pastes an image or file; dropping files adds them",
       ),
     );
   });
@@ -199,7 +239,7 @@ describe("NewSpikeSheet request images: submit", () => {
     });
     vi.mocked(addImages).mockImplementationOnce(async (_n, files) => {
       await gate;
-      return { added: files };
+      return { added: files.map((f) => ({ ...f, image: true })) };
     });
     const { sheet, request, user } = await open();
     await user.type(request, "Look");
@@ -237,7 +277,7 @@ describe("NewSpikeSheet request images: submit", () => {
     });
     await user.click(start(sheet));
     const alert = await within(sheet).findByText(
-      "Started, but the images could not be saved. Share them with the orchestrator another way.",
+      "Started, but the attachments could not be saved. Share them with the orchestrator another way.",
     );
     expect(alert.closest('[role="alert"]')).toBeInTheDocument();
     expect(top).toBe(0);
@@ -376,7 +416,7 @@ describe("NewSpikeSheet request images: submit", () => {
     await user.click(start(sheet));
     expect(
       await within(sheet).findByText(
-        "The images are too large to send over remote access. Remove some and try again.",
+        "The attachments are too large to send over remote access. Remove some and try again.",
       ),
     ).toBeInTheDocument();
     expect(

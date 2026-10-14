@@ -26,7 +26,8 @@ import {
 } from "../logic/spawnForm";
 import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, CreateSpikeResponse, Settings, SpikeIntent } from "../types";
 
-const hasFiles = (e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+const SNIFFED_TYPES = /^image\/(png|jpe?g|gif|webp|heic|heif|tiff?)$/;
+const hasFiles =(e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
 function Form(p: {
   settings: Settings;
@@ -113,12 +114,16 @@ function Form(p: {
   const addFiles = (files: File[], fallbackName: string, usable: (n: string) => boolean = (n) => n !== "") => {
     if (files.length === 0) return;
     setPending((n) => n + files.length);
-    const named = files.map((f) => ({ blob: f, name: usable(f.name) ? f.name : fallbackName }));
+    // The fallback names are .png; an unnamed file the image sniffer would not recognise (BMP, SVG, a PDF) must not get one.
+    const named = files.map((f) => ({
+      blob: f,
+      name: usable(f.name) ? f.name : SNIFFED_TYPES.test(f.type) ? fallbackName : C.unnamedFileName,
+    }));
     queue.current = queue.current.then(async () => {
       try {
         const r = await addImages(imagesRef.current.length, named);
         if (!alive.current) return;
-        const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob) }));
+        const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob), image: a.image }));
         imagesRef.current = [...imagesRef.current, ...fresh];
         setImages(imagesRef.current);
         setImageError(r.error);
@@ -136,7 +141,7 @@ function Form(p: {
     setImageError(undefined);
   };
   const onPaste = (e: React.ClipboardEvent) => {
-    const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+    const files = Array.from(e.clipboardData.files);
     if (files.length === 0) return;
     e.preventDefault();
     // Browsers name every clipboard screenshot "image.png"; a pasted file that really is called that is renamed too.

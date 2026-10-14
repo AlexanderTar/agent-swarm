@@ -227,3 +227,19 @@ Deleted: nothing.
 - Copying images into worktrees or git.
 - Non-image files (PDF, logs).
 - Reopened items getting their images back.
+
+## Amendment 2026-10-14: arbitrary file attachments
+
+The attachment list is no longer images only. The daemon, web app and menubar
+accept any file (pdf, md, txt, zip...) next to images, in one pool.
+
+- Wire unchanged: `attachments: [{name, data}]`; `name` keeps the original filename and extension.
+- No allowlist. Images keep the old path (sniffed, converted, downscaled by the clients). Other files are sent as-is.
+- Limits: 10 MB per file, at most 10 attachments in total (images and files together). Errors read "At most 10 attachments." and `Attachment "x" is larger than 10 MB.`
+- Saved name `NN-<safe-name><ext>`: an image gets its sniffed suffix; any other file gets its name's extension, lowercased, `[a-z0-9]` only, at most 10 characters. No extension means no suffix.
+- A text file renamed `.png` is no longer a 400; it is saved as a plain file with a `.png` suffix.
+- Brief section: "The user attached these files to the request. ..."
+- Composer: one strip. A non-image shows a generic tile with the uppercase extension (`PDF`, `MD`), or `FILE` when there is none, same size, radius, border and remove button as an image tile.
+- Identifiers keep their image names (`RequestImage`, `addImages`, `requestImages.ts`); only behaviour and copy changed.
+
+The "Non-image files" out-of-scope line and the "11 images" test line above describe the original scope.
