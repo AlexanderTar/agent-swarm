@@ -26,7 +26,8 @@ import {
 } from "../logic/spawnForm";
 import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, CreateSpikeResponse, Settings, SpikeIntent } from "../types";
 
-const hasFiles = (e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+const SNIFFED_TYPES = /^image\/(png|jpe?g|gif|webp|heic|heif|tiff?)$/;
+const hasFiles =(e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
 function Form(p: {
   settings: Settings;
@@ -113,10 +114,10 @@ function Form(p: {
   const addFiles = (files: File[], fallbackName: string, usable: (n: string) => boolean = (n) => n !== "") => {
     if (files.length === 0) return;
     setPending((n) => n + files.length);
-    // The fallback names are .png; an unnamed file that is not an image must not get an image suffix.
+    // The fallback names are .png; an unnamed file the image sniffer would not recognise (BMP, SVG, a PDF) must not get one.
     const named = files.map((f) => ({
       blob: f,
-      name: usable(f.name) ? f.name : f.type.startsWith("image/") ? fallbackName : C.unnamedFileName,
+      name: usable(f.name) ? f.name : SNIFFED_TYPES.test(f.type) ? fallbackName : C.unnamedFileName,
     }));
     queue.current = queue.current.then(async () => {
       try {

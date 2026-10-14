@@ -119,6 +119,15 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     expect(within(sheet).getByText("FILE")).toBeInTheDocument();
   });
 
+  it("names an unnamed dropped image the sniffer does not know (BMP) 'Dropped file', not '.png'", async () => {
+    const { sheet, request } = await open();
+    const zone = request.closest("[data-drop-zone]") as HTMLElement;
+    const files = [new File([new Uint8Array([0x42, 0x4d])], "", { type: "image/bmp" })];
+    fireEvent.dragEnter(zone, filesDrag(files));
+    fireEvent.drop(zone, filesDrag(files));
+    expect(await within(sheet).findByRole("img", { name: "Dropped file" })).toBeInTheDocument();
+  });
+
   it("leaves a text drag alone inside the zone", async () => {
     const { request } = await open();
     const zone = request.closest("[data-drop-zone]") as HTMLElement;
