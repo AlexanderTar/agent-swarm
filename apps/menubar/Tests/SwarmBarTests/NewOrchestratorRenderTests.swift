@@ -513,7 +513,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let form = model.makeNewOrchestratorForm()
         await form.load()
         for i in 0..<10 { form.addImage(data: pngData, name: "\(i).png") }
-        // The Add images… button's disabled binding is form.images.count >= 10, exercised at the
+        // The Add files… button's disabled binding is form.images.count >= 10, exercised at the
         // model layer (testAddImageCapsAtTen); this just confirms the maxed-out strip still renders.
         XCTAssertEqual(form.images.count, 10)
         let h = host(form)
@@ -526,11 +526,11 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await model.refresh()
         let form = model.makeNewOrchestratorForm()
         await form.load()
-        form.addImage(data: Data("text".utf8), name: "n.txt")
+        form.addImage(data: Data(count: (10 << 20) + 1), name: "n.pdf")
         let h = host(form)
         // OCR occasionally misreads a lowercase "i" as "I" in this small caption font; compare
         // case-insensitively rather than assert exact-case text a human never sees compared.
-        XCTAssertTrue(try visibleText(h).lowercased().contains(Copy.imageUnsupported("n.txt").lowercased()))
+        XCTAssertTrue(try visibleText(h).lowercased().contains(Copy.imageTooLarge("n.pdf").lowercased()))
     }
 
     func testStartedWithUnsavedImagesShowsWarningAndDoneButton() async throws {

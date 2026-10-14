@@ -111,13 +111,12 @@ public enum Copy {
     public static let startOrchestrator = "Start orchestrator"
     public static let queueOrchestrator = "Queue orchestrator"
     public static let tryAgain = "Try again"
-    public static let addImages = "Add images…"
+    public static let addImages = "Add files…"
     public static func removeImage(_ name: String) -> String { "Remove \(name)" }
     public static func imageCount(_ n: Int) -> String { "\(n) of 10" }
-    public static let imageTooMany = "Up to 10 images."
+    public static let imageTooMany = "Up to 10 attachments."
     public static func imageTooLarge(_ name: String) -> String { "\(name) is larger than 10 MB." }
-    public static func imageUnsupported(_ name: String) -> String { "\(name) is not an image Swarm can attach." }
-    public static let imagesNotSaved = "Started, but the images could not be saved. Share them with the orchestrator another way."
+    public static let imagesNotSaved = "Started, but the attachments could not be saved. Share them with the orchestrator another way."
     public static let done = "Done"
     public static let progressDone = "Done"
 

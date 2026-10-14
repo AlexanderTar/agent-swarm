@@ -2,13 +2,16 @@ import AppKit
 import Foundation
 import Observation
 
-/// One image attached to the request. `data` is what gets uploaded: original bytes for a web
-/// format, PNG bytes for anything `addImage` converted. The thumbnail is derived in the view
-/// (`NSImage(data:)`), not stored here, so this stays `Equatable`.
+/// One attachment on the request, an image or any other file. `data` is what gets uploaded:
+/// original bytes for a web format or a non-image file, PNG bytes for an image `addImage`
+/// converted. The thumbnail is derived in the view (`NSImage(data:)`) for images only, not stored
+/// here, so this stays `Equatable`.
 public struct RequestImage: Identifiable, Equatable {
     public let id: UUID
     public var name: String
     public var data: Data
+    /// False for a file Swarm can't read as an image; the strip draws an extension tile for it.
+    public var isImage: Bool
 }
 
 /// The New orchestrator window (§16.3). Starting creates a spike through `POST /api/spikes`.
@@ -202,22 +205,21 @@ public final class NewOrchestratorForm {
         }
     }
 
-    /// PNG, JPEG, GIF and WebP bytes are kept as-is; anything else `NSImage` can read is converted
-    /// to PNG. An 11th image, an unreadable file, or one over 10 MB sets `imageError` instead.
+    /// PNG, JPEG, GIF and WebP bytes are kept as-is; any other image `NSImage` can read is converted
+    /// to PNG; every other file passes through unchanged. An 11th attachment or one over 10 MB sets
+    /// `imageError` instead.
     public func addImage(data: Data, name: String) {
         guard images.count < Self.maxImageCount else {
             imageError = Copy.imageTooMany
             return
         }
-        guard let uploadable = Self.uploadable(data) else {
-            imageError = Copy.imageUnsupported(name)
-            return
-        }
+        let converted = Self.uploadable(data)
+        let uploadable = converted ?? data
         guard uploadable.count <= Self.maxImageBytes else {
             imageError = Copy.imageTooLarge(name)
             return
         }
-        images.append(RequestImage(id: UUID(), name: name, data: uploadable))
+        images.append(RequestImage(id: UUID(), name: name, data: uploadable, isImage: converted != nil))
         imageError = nil
     }
 
@@ -231,7 +233,7 @@ public final class NewOrchestratorForm {
     private static let gifMagic: [UInt8] = [0x47, 0x49, 0x46, 0x38]
 
     /// Web formats pass through unchanged (sniffed by magic bytes); anything else `NSImage` can
-    /// read is converted to PNG. `nil` when the bytes aren't a readable image at all.
+    /// read is converted to PNG. `nil` when the bytes aren't a readable image (a plain file).
     static func uploadable(_ data: Data) -> Data? {
         if data.starts(with: pngMagic) || data.starts(with: jpegMagic) || data.starts(with: gifMagic) { return data }
         if data.count >= 12, data.prefix(4).elementsEqual([0x52, 0x49, 0x46, 0x46]),
