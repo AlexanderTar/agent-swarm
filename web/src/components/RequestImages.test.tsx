@@ -9,6 +9,7 @@ const img = (n: number): RequestImage => ({
   name: `shot-${n}.png`,
   blob: new Blob(["x"], { type: "image/png" }),
   url: `blob:mock/${n}`,
+  image: true,
 });
 const imgs = (n: number) => Array.from({ length: n }, (_, i) => img(i + 1));
 
@@ -50,6 +51,7 @@ const file = (id: string, name: string): RequestImage => ({
   name,
   blob: new Blob(["x"], { type: "application/pdf" }),
   url: `blob:mock/${id}`,
+  image: false,
 });
 
 describe("RequestImages file tiles", () => {
@@ -76,6 +78,32 @@ describe("RequestImages file tiles", () => {
     await userEvent.click(screen.getByRole("button", { name: "Remove Spec.pdf" }));
     expect(screen.queryByText("PDF")).not.toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+});
+
+describe("RequestImages tile kind", () => {
+  it("draws an <img> for an image with an empty MIME type", () => {
+    const tile = { ...img(1), blob: new Blob(["x"], { type: "" }) };
+    render(<Harness initial={[tile]} />);
+    expect(document.querySelectorAll("img")).toHaveLength(1);
+    expect(screen.queryByText("FILE")).not.toBeInTheDocument();
+  });
+
+  it("draws a file tile for an image/* file that was not recognised as an image", () => {
+    const psd = {
+      ...file("f1", "mock.psd"),
+      blob: new Blob(["x"], { type: "image/vnd.adobe.photoshop" }),
+    };
+    render(<Harness initial={[psd]} />);
+    expect(document.querySelectorAll("img")).toHaveLength(0);
+    expect(screen.getByText("PSD")).toBeInTheDocument();
+  });
+
+  it("keeps the label out of the remove button's corner by anchoring it to the bottom", () => {
+    render(<Harness initial={[file("f1", "Spec.pdf")]} />);
+    const wrap = screen.getByText("PDF").parentElement;
+    expect(wrap?.className).toMatch(/\bitems-end\b/);
+    expect(wrap?.className).not.toMatch(/place-items-center/);
   });
 });
 

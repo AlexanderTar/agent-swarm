@@ -113,12 +113,16 @@ function Form(p: {
   const addFiles = (files: File[], fallbackName: string, usable: (n: string) => boolean = (n) => n !== "") => {
     if (files.length === 0) return;
     setPending((n) => n + files.length);
-    const named = files.map((f) => ({ blob: f, name: usable(f.name) ? f.name : fallbackName }));
+    // The fallback names are .png; an unnamed file that is not an image must not get an image suffix.
+    const named = files.map((f) => ({
+      blob: f,
+      name: usable(f.name) ? f.name : f.type.startsWith("image/") ? fallbackName : C.unnamedFileName,
+    }));
     queue.current = queue.current.then(async () => {
       try {
         const r = await addImages(imagesRef.current.length, named);
         if (!alive.current) return;
-        const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob) }));
+        const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob), image: a.image }));
         imagesRef.current = [...imagesRef.current, ...fresh];
         setImages(imagesRef.current);
         setImageError(r.error);

@@ -225,6 +225,7 @@ export const C = {
   done: "Done",
   pastedImageName: "Pasted image.png",
   droppedImageName: "Dropped image.png",
+  unnamedFileName: "Dropped file",
   requestImageHintMac: "⌘V pastes an image or file; dropping files adds them",
   requestImageHint: "Ctrl+V pastes an image or file; dropping files adds them",
   dropImages: "Drop files to attach",

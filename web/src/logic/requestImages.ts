@@ -112,8 +112,8 @@ export async function addImages(
   current: number,
   files: { blob: Blob; name: string }[],
   deps?: Deps,
-): Promise<{ added: { name: string; blob: Blob }[]; error?: string }> {
-  const added: { name: string; blob: Blob }[] = [];
+): Promise<{ added: { name: string; blob: Blob; image: boolean }[]; error?: string }> {
+  const added: { name: string; blob: Blob; image: boolean }[] = [];
   let error: string | undefined;
   for (const f of files) {
     if (current + added.length >= MAX_IMAGES) {
@@ -121,10 +121,13 @@ export async function addImages(
       break;
     }
     // Anything that is not a recognised image goes through unchanged; only the size cap applies.
-    const isImage = sniff(new Uint8Array(await f.blob.slice(0, 16).arrayBuffer())) !== null;
-    const r = isImage ? await prepareImage(f.blob, f.name, deps) : finish(f.blob, f.name);
+    const sniffed = sniff(new Uint8Array(await f.blob.slice(0, 16).arrayBuffer())) !== null;
+    let r = sniffed ? await prepareImage(f.blob, f.name, deps) : finish(f.blob, f.name);
+    // An image the browser cannot decode (truncated, no wasm decoder) is still a file the daemon can keep.
+    const image = sniffed && "blob" in r;
+    if (sniffed && "error" in r && r.error === T.imageUnsupported(f.name)) r = finish(f.blob, f.name);
     if ("error" in r) error ??= r.error;
-    else added.push({ name: f.name, blob: r.blob });
+    else added.push({ name: f.name, blob: r.blob, image });
   }
   return error ? { added, error } : { added };
 }

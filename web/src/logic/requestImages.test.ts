@@ -56,24 +56,47 @@ describe("addImages", () => {
     expect(r.error).toBe("Up to 10 attachments.");
   });
 
-  it("reports the first error of a batch and keeps the images that worked", async () => {
-    const failing = vi.fn(async (b: Blob) => {
-      if ((b as Blob & { bad?: boolean }).bad) throw new Error("undecodable");
-      return bmp;
+  it("reports the first error of a batch and keeps the files that worked", async () => {
+    const big = (name: string) => ({ name, blob: new Blob([new Uint8Array((10 << 20) + 1)]) });
+    const r = await addImages(0, [png("a.png"), big("one.zip"), big("two.zip"), png("b.png")], {
+      decode,
     });
-    const bad = (name: string) => Object.assign(png(name).blob, { bad: true });
-    const r = await addImages(
-      0,
-      [
-        png("a.png"),
-        { name: "one.pdf", blob: bad("one.pdf") },
-        { name: "two.pdf", blob: bad("two.pdf") },
-        png("b.png"),
-      ],
-      { decode: failing },
-    );
     expect(r.added.map((i) => i.name)).toEqual(["a.png", "b.png"]);
-    expect(r.error).toBe("one.pdf is not an image Swarm can attach.");
+    expect(r.error).toBe("one.zip is larger than 10 MB.");
+  });
+
+  it("marks a decoded image as an image and a pass-through file as not", async () => {
+    const r = await addImages(0, [png("a.png"), { name: "n.md", blob: new Blob(["# hi"]) }], {
+      decode,
+    });
+    expect(r.added.map((i) => [i.name, i.image])).toEqual([
+      ["a.png", true],
+      ["n.md", false],
+    ]);
+  });
+
+  it("decides image from the bytes, not the MIME type", async () => {
+    const noMime = { name: "shot", blob: new Blob([png("x").blob], { type: "" }) };
+    const psd = {
+      name: "mock.psd",
+      blob: new Blob(["8BPS"], { type: "image/vnd.adobe.photoshop" }),
+    };
+    const r = await addImages(0, [noMime, psd], { decode });
+    expect(r.added.map((i) => [i.name, i.image])).toEqual([
+      ["shot", true],
+      ["mock.psd", false],
+    ]);
+    expect(r.error).toBeUndefined();
+  });
+
+  it("attaches a sniffed image the browser cannot decode as a plain file", async () => {
+    const failing = vi.fn(async () => {
+      throw new Error("undecodable");
+    });
+    const truncated = png("cut.png");
+    const r = await addImages(0, [truncated], { decode: failing });
+    expect(r.error).toBeUndefined();
+    expect(r.added).toEqual([{ name: "cut.png", blob: truncated.blob, image: false }]);
   });
 
   it("passes a non-image file through unchanged without decoding it", async () => {
@@ -81,7 +104,7 @@ describe("addImages", () => {
     const dec = vi.fn(async () => bmp);
     const r = await addImages(0, [{ name: "Spec.pdf", blob: pdfBlob }], { decode: dec });
     expect(r.error).toBeUndefined();
-    expect(r.added).toEqual([{ name: "Spec.pdf", blob: pdfBlob }]);
+    expect(r.added).toEqual([{ name: "Spec.pdf", blob: pdfBlob, image: false }]);
     expect(dec).not.toHaveBeenCalled();
   });
 

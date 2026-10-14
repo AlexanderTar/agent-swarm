@@ -9,7 +9,7 @@ import { NewSpikeSheet } from "./NewSpikeSheet";
 vi.mock("../logic/requestImages", async (orig) => ({
   ...(await orig<typeof import("../logic/requestImages")>()),
   addImages: vi.fn(async (_n: number, files: { blob: Blob; name: string }[]) => ({
-    added: files.map((f) => ({ name: f.name, blob: f.blob })),
+    added: files.map((f) => ({ name: f.name, blob: f.blob, image: f.blob.type.startsWith("image/") })),
   })),
 }));
 
@@ -107,6 +107,16 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     expect(await within(sheet).findByRole("img", { name: "one.png" })).toBeInTheDocument();
     expect(within(sheet).getByRole("img", { name: "Dropped image.png" })).toBeInTheDocument();
     expect(within(sheet).queryByText("Drop files to attach")).not.toBeInTheDocument();
+  });
+
+  it("names an unnamed dropped non-image 'Dropped file', with no image extension", async () => {
+    const { sheet, request } = await open();
+    const zone = request.closest("[data-drop-zone]") as HTMLElement;
+    const files = [pdf("")];
+    fireEvent.dragEnter(zone, filesDrag(files));
+    fireEvent.drop(zone, filesDrag(files));
+    expect(await within(sheet).findByRole("img", { name: "Dropped file" })).toBeInTheDocument();
+    expect(within(sheet).getByText("FILE")).toBeInTheDocument();
   });
 
   it("leaves a text drag alone inside the zone", async () => {
@@ -220,7 +230,7 @@ describe("NewSpikeSheet request images: submit", () => {
     });
     vi.mocked(addImages).mockImplementationOnce(async (_n, files) => {
       await gate;
-      return { added: files };
+      return { added: files.map((f) => ({ ...f, image: true })) };
     });
     const { sheet, request, user } = await open();
     await user.type(request, "Look");

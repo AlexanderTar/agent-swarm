@@ -11,6 +11,8 @@ export interface RequestImage {
   name: string;
   blob: Blob;
   url: string;
+  // True when addImages recognised the bytes as an image it could decode; anything else is a file tile.
+  image: boolean;
 }
 
 const MD = "(min-width: 768px)";
@@ -75,13 +77,13 @@ export function RequestImages(p: {
     >
       {p.images.map((i) => (
         <li key={i.id} className={tile} title={i.name}>
-          {i.blob.type.startsWith("image/") ? (
+          {i.image ? (
             <img src={i.url} alt={i.name} className="size-full object-cover" draggable={false} />
           ) : (
             <span
               role="img"
               aria-label={i.name}
-              className="grid size-full place-items-center px-1 text-[10px] font-semibold tracking-wide text-muted-foreground"
+              className="flex size-full items-end justify-center px-1 pb-1 text-[10px] font-semibold tracking-wide text-muted-foreground"
             >
               <span className="max-w-full truncate">{extLabel(i.name)}</span>
             </span>
