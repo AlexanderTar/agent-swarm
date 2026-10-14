@@ -136,7 +136,7 @@ function Form(p: {
     setImageError(undefined);
   };
   const onPaste = (e: React.ClipboardEvent) => {
-    const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+    const files = Array.from(e.clipboardData.files);
     if (files.length === 0) return;
     e.preventDefault();
     // Browsers name every clipboard screenshot "image.png"; a pasted file that really is called that is renamed too.

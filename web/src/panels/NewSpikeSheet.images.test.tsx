@@ -15,6 +15,7 @@ vi.mock("../logic/requestImages", async (orig) => ({
 
 const png = (name = "a.png") =>
   new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+const pdf = (name = "Spec.pdf") => new File(["%PDF-1.4"], name, { type: "application/pdf" });
 const filesDrag = (files: File[] = []) => ({
   dataTransfer: { types: ["Files"], files, dropEffect: "" },
 });
@@ -48,6 +49,26 @@ describe("NewSpikeSheet request images: paste and drop", () => {
     expect(await within(sheet).findByRole("img", { name: "Pasted image.png" })).toBeInTheDocument();
     expect(request).toHaveValue("");
     expect(within(sheet).getByText("1 of 10")).toBeInTheDocument();
+  });
+
+  it("adds a pasted PDF as a generic tile in the same strip", async () => {
+    const { sheet, request } = await open();
+    fireEvent.paste(request, {
+      clipboardData: { files: [pdf(), png("shot.png")], types: ["Files"], getData: () => "" },
+    });
+    expect(await within(sheet).findByRole("img", { name: "Spec.pdf" })).toBeInTheDocument();
+    expect(within(sheet).getByText("PDF")).toBeInTheDocument();
+    expect(within(sheet).getByText("2 of 10")).toBeInTheDocument();
+    expect(request).toHaveValue("");
+  });
+
+  it("adds a dropped PDF, and lets it be removed", async () => {
+    const { sheet, request, user } = await open();
+    const zone = request.closest("[data-drop-zone]") as HTMLElement;
+    fireEvent.drop(zone, filesDrag([pdf()]));
+    expect(await within(sheet).findByText("PDF")).toBeInTheDocument();
+    await user.click(within(sheet).getByRole("button", { name: "Remove Spec.pdf" }));
+    expect(within(sheet).queryByText("PDF")).not.toBeInTheDocument();
   });
 
   it("keeps a clipboard file's own name and lets plain text paste through", async () => {

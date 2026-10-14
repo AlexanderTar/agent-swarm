@@ -15,6 +15,10 @@ export interface RequestImage {
 
 const MD = "(min-width: 768px)";
 
+// Generic-tile label: the name's last extension in capitals, FILE when there is none.
+const extLabel = (name: string) =>
+  name.split(".").slice(1).pop()?.replace(/[^a-z0-9]/gi, "").toUpperCase() || "FILE";
+
 export function RequestImages(p: {
   images: RequestImage[];
   pending: number;
@@ -71,7 +75,17 @@ export function RequestImages(p: {
     >
       {p.images.map((i) => (
         <li key={i.id} className={tile} title={i.name}>
-          <img src={i.url} alt={i.name} className="size-full object-cover" draggable={false} />
+          {i.blob.type.startsWith("image/") ? (
+            <img src={i.url} alt={i.name} className="size-full object-cover" draggable={false} />
+          ) : (
+            <span
+              role="img"
+              aria-label={i.name}
+              className="grid size-full place-items-center px-1 text-[10px] font-semibold tracking-wide text-muted-foreground"
+            >
+              <span className="max-w-full truncate">{extLabel(i.name)}</span>
+            </span>
+          )}
           <Button
             type="button"
             variant="ghost"
@@ -119,7 +133,6 @@ export function RequestImages(p: {
       <Input
         ref={input}
         type="file"
-        accept="image/*"
         multiple
         hidden
         className="hidden"

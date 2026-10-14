@@ -7,7 +7,7 @@ import { type RequestImage, RequestImages } from "./RequestImages";
 const img = (n: number): RequestImage => ({
   id: `i${n}`,
   name: `shot-${n}.png`,
-  blob: new Blob(["x"]),
+  blob: new Blob(["x"], { type: "image/png" }),
   url: `blob:mock/${n}`,
 });
 const imgs = (n: number) => Array.from({ length: n }, (_, i) => img(i + 1));
@@ -45,6 +45,40 @@ const media = (matches: boolean) =>
       }) as MediaQueryList,
   );
 
+const file = (id: string, name: string): RequestImage => ({
+  id,
+  name,
+  blob: new Blob(["x"], { type: "application/pdf" }),
+  url: `blob:mock/${id}`,
+});
+
+describe("RequestImages file tiles", () => {
+  it("shows a non-image as a generic tile labelled with its uppercase extension, no <img>", () => {
+    render(<Harness initial={[file("f1", "Spec.pdf"), file("f2", "notes.md"), img(1)]} />);
+    expect(screen.getByText("PDF")).toBeInTheDocument();
+    expect(screen.getByText("MD")).toBeInTheDocument();
+    expect(screen.getAllByRole("img")).toHaveLength(3);
+    expect(document.querySelectorAll("img")).toHaveLength(1);
+    expect(screen.getByRole("img", { name: "Spec.pdf" })).toBeInTheDocument();
+    expect(screen.getByText("3 of 10")).toBeInTheDocument();
+  });
+
+  it("labels a file without an extension FILE and a dotted one by its last extension", () => {
+    render(<Harness initial={[file("f1", "Makefile"), file("f2", "backup.tar.gz")]} />);
+    expect(screen.getByText("FILE")).toBeInTheDocument();
+    expect(screen.getByText("GZ")).toBeInTheDocument();
+  });
+
+  it("gives a file tile the image tile footprint and a remove button that removes it", async () => {
+    render(<Harness initial={[file("f1", "Spec.pdf"), img(1)]} />);
+    const tiles = screen.getAllByRole("listitem");
+    expect(tiles[0]?.className).toBe(tiles[1]?.className);
+    await userEvent.click(screen.getByRole("button", { name: "Remove Spec.pdf" }));
+    expect(screen.queryByText("PDF")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+});
+
 describe("RequestImages", () => {
   it("hides the counter at 0 and shows 'N of 10' otherwise", () => {
     const { rerender } = render(
@@ -65,12 +99,12 @@ describe("RequestImages", () => {
     expect(screen.getByText("10 of 10")).toBeInTheDocument();
   });
 
-  it("uses a hidden multi-file image input without capture, and opens it from the button", async () => {
+  it("uses a hidden multi-file input that accepts any file, without capture, and opens it from the button", async () => {
     const { container } = render(
       <RequestImages images={[]} pending={0} onAdd={vi.fn()} onRemove={vi.fn()} />,
     );
     const input = container.querySelector<HTMLInputElement>('input[type="file"]');
-    expect(input).toHaveAttribute("accept", "image/*");
+    expect(input).not.toHaveAttribute("accept");
     expect(input).toHaveAttribute("multiple");
     expect(input).not.toHaveAttribute("capture");
     expect(input).toHaveAttribute("hidden");
