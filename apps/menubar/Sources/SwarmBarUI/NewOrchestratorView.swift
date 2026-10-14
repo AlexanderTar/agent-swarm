@@ -294,8 +294,8 @@ private struct ImagePasteTextEditor: NSViewRepresentable {
     }
 }
 
-/// An `NSTextView` that hands an image — pasted from the clipboard, dropped as a file, or a
-/// pasted/dropped image file's URL — to the New orchestrator form instead of inserting it as text.
+/// An `NSTextView` that hands an attachment — an image pasted from the clipboard, or any file
+/// pasted or dropped by URL — to the New orchestrator form instead of inserting it as text.
 /// Plain text paste and drop still land in the text normally: `NSTextView` owns paste and drop
 /// itself once it is first responder, so interception has to happen at this level, not with
 /// `.onPasteCommand`/`.onDrop` on a SwiftUI wrapper (those never see it — verified empirically).
@@ -314,16 +314,19 @@ final class ImagePasteTextView: NSTextView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        canHandle(sender.draggingPasteboard) ? .copy : super.draggingEntered(sender)
+        canHandleDrop(sender.draggingPasteboard) ? .copy : super.draggingEntered(sender)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        canHandle(sender.draggingPasteboard) || super.prepareForDragOperation(sender)
+        canHandleDrop(sender.draggingPasteboard) || super.prepareForDragOperation(sender)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let pboard = sender.draggingPasteboard
-        if let urls = imageFileURLs(pboard) {
+        performDrop(from: sender.draggingPasteboard) || super.performDragOperation(sender)
+    }
+
+    func performDrop(from pboard: NSPasteboard) -> Bool {
+        if let urls = fileURLs(pboard) {
             onImageURLs(urls)
             return true
         }
@@ -333,10 +336,10 @@ final class ImagePasteTextView: NSTextView {
                 return true
             }
         }
-        return super.performDragOperation(sender)
+        return false
     }
 
-    /// True (and the callback fired) when `type` is an image or an image file's URL — nothing is
+    /// True (and the callback fired) when `type` is an image or a file URL — nothing is
     /// inserted as text in that case. False, unhandled, for anything else (plain text included).
     @discardableResult
     private func handle(_ pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
@@ -344,28 +347,32 @@ final class ImagePasteTextView: NSTextView {
             onImageData(data, "Pasted image.png")
             return true
         }
-        if type == .fileURL, let urls = imageFileURLs(pboard) {
+        if type == .fileURL, let urls = fileURLs(pboard) {
             onImageURLs(urls)
             return true
         }
         return false
     }
 
-    private func canHandle(_ pboard: NSPasteboard) -> Bool {
-        imageFileURLs(pboard) != nil || Self.imageTypes.contains { pboard.data(forType: $0) != nil }
+    func canHandleDrop(_ pboard: NSPasteboard) -> Bool {
+        fileURLs(pboard) != nil || Self.imageTypes.contains { pboard.data(forType: $0) != nil }
     }
 
-    private func imageFileURLs(_ pboard: NSPasteboard) -> [URL]? {
+    /// Every file (not folder) URL on the pasteboard, whatever its type; `nil` when there are none.
+    private func fileURLs(_ pboard: NSPasteboard) -> [URL]? {
         guard let urls = pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else { return nil }
-        let images = urls.filter { (try? $0.resourceValues(forKeys: [.contentTypeKey]))?.contentType?.conforms(to: .image) == true }
-        return images.isEmpty ? nil : images
+        let files = urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true }
+        return files.isEmpty ? nil : files
     }
 }
 
-/// Thumbnail strip under the request editor (spec Screens): 0 images shows only the Add images…
-/// button; the counter is hidden until the first image; the button disables at 10.
+/// Attachment strip under the request editor (spec Screens): 0 attachments shows only the Add
+/// files… button; the counter is hidden until the first one; the button disables at 10.
 struct RequestImageStrip: View {
     @Bindable var form: NewOrchestratorForm
+
+    /// Any file, not just images.
+    static let pickerContentTypes: [UTType] = [.item]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -416,7 +423,7 @@ struct RequestImageStrip: View {
 
     private func addImages() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = Self.pickerContentTypes
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = false

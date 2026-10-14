@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Vision
+import UniformTypeIdentifiers
 import XCTest
 @testable import SwarmBarKit
 @testable import SwarmBarUI
@@ -587,6 +588,55 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertTrue(handled)
         XCTAssertEqual(received, [url])
         XCTAssertEqual(textView.string, "", "the path must not land in the request text")
+    }
+
+    func testReadSelectionRoutesNonImageFileURLsToCallback() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pdf = dir.appendingPathComponent("spec.pdf")
+        let md = dir.appendingPathComponent("notes.md")
+        let bare = dir.appendingPathComponent("LICENSE")
+        for url in [pdf, md, bare] { try Data("x".utf8).write(to: url) }
+        let pboard = testPasteboard()
+        pboard.writeObjects([pdf, md, bare].map { $0 as NSURL })
+        let textView = ImagePasteTextView()
+        var received: [URL]?
+        textView.onImageURLs = { received = $0 }
+        XCTAssertTrue(textView.readSelection(from: pboard, type: .fileURL))
+        XCTAssertEqual(received, [pdf, md, bare])
+        XCTAssertEqual(textView.string, "", "the path must not land in the request text")
+    }
+
+    func testDropOfNonImageFileURLRoutesToCallback() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
+        try Data("x".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pboard = testPasteboard()
+        pboard.writeObjects([url as NSURL])
+        let textView = ImagePasteTextView()
+        var received: [URL]?
+        textView.onImageURLs = { received = $0 }
+        XCTAssertTrue(textView.canHandleDrop(pboard))
+        XCTAssertTrue(textView.performDrop(from: pboard))
+        XCTAssertEqual(received, [url])
+    }
+
+    func testDropOfFolderIsLeftToTheTextView() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pboard = testPasteboard()
+        pboard.writeObjects([dir as NSURL])
+        let textView = ImagePasteTextView()
+        XCTAssertFalse(textView.canHandleDrop(pboard))
+    }
+
+    func testPickerAcceptsAnyFileType() {
+        for ext in ["pdf", "md", "txt", "zip", "png"] {
+            let type = UTType(filenameExtension: ext)!
+            XCTAssertTrue(RequestImageStrip.pickerContentTypes.contains { type.conforms(to: $0) }, ext)
+        }
     }
 
     func testReadSelectionInsertsPlainTextNormally() {
