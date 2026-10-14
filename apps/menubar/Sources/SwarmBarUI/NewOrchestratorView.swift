@@ -380,7 +380,7 @@ struct RequestImageStrip: View {
                 if !form.images.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing: 8) {
-                            ForEach(form.images) { image in thumbnail(image) }
+                            ForEach(form.images) { image in AttachmentTile(image: image, onRemove: { form.removeImage(image.id) }) }
                         }
                         .background(SubtleScrollerConfig())
                     }
@@ -399,28 +399,6 @@ struct RequestImageStrip: View {
         }
     }
 
-    private func thumbnail(_ image: RequestImage) -> some View {
-        ZStack(alignment: .topTrailing) {
-            Group {
-                if let nsImage = NSImage(data: image.data) {
-                    Image(nsImage: nsImage).resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.secondary.opacity(0.2)
-                }
-            }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            Button { form.removeImage(image.id) } label: {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(.white, .black.opacity(0.6))
-            }
-            .buttonStyle(.plain)
-            .offset(x: 4, y: -4)
-            .accessibilityLabel(Copy.removeImage(image.name))
-            .help(image.name)
-        }
-        .frame(width: 48, height: 48)
-    }
-
     private func addImages() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = Self.pickerContentTypes
@@ -429,6 +407,57 @@ struct RequestImageStrip: View {
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         form.addImages(from: panel.urls)
+    }
+}
+
+/// One 48×48 attachment tile: the image's thumbnail, or for any other file a neutral tile labelled
+/// with its extension. Both share the size, corner radius, hairline border and remove button.
+struct AttachmentTile: View {
+    let image: RequestImage
+    let onRemove: () -> Void
+
+    private static let size: CGFloat = 48
+    private static let radius: CGFloat = 6
+
+    /// Uppercase extension ("PDF"), or "FILE" when the name has none.
+    static func label(for name: String) -> String {
+        let ext = (name as NSString).pathExtension
+        return ext.isEmpty ? "FILE" : ext.uppercased()
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if image.isImage, let nsImage = NSImage(data: image.data) {
+                    Image(nsImage: nsImage).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    fileFace
+                }
+            }
+            .frame(width: Self.size, height: Self.size)
+            .clipShape(RoundedRectangle(cornerRadius: Self.radius))
+            .overlay(RoundedRectangle(cornerRadius: Self.radius).strokeBorder(Color.secondary.opacity(0.35), lineWidth: 0.5))
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(.white, .black.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 4, y: -4)
+            .accessibilityLabel(Copy.removeImage(image.name))
+            .help(image.name)
+        }
+        .frame(width: Self.size, height: Self.size)
+    }
+
+    private var fileFace: some View {
+        ZStack {
+            Color.secondary.opacity(0.2)
+            Image(systemName: "doc").font(.system(size: 30, weight: .ultraLight)).foregroundStyle(.secondary.opacity(0.35))
+            Text(Self.label(for: image.name))
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .padding(.horizontal, 4)
+        }
     }
 }
 

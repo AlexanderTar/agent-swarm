@@ -556,6 +556,44 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertTrue(try visibleText(h).contains(Copy.imagesNotSaved))
     }
 
+    // MARK: attachment tiles
+
+    func testFileTileLabelIsUppercaseExtensionOrFILE() {
+        XCTAssertEqual(AttachmentTile.label(for: "spec.pdf"), "PDF")
+        XCTAssertEqual(AttachmentTile.label(for: "notes.md"), "MD")
+        XCTAssertEqual(AttachmentTile.label(for: "Report.final.Docx"), "DOCX")
+        XCTAssertEqual(AttachmentTile.label(for: "LICENSE"), "FILE")
+        XCTAssertEqual(AttachmentTile.label(for: ".env"), "FILE", "a dotfile has no extension")
+        XCTAssertEqual(AttachmentTile.label(for: "archive."), "FILE")
+    }
+
+    private func tileHost(_ name: String, data: Data, isImage: Bool) -> NSHostingView<some View> {
+        let image = RequestImage(id: UUID(), name: name, data: data, isImage: isImage)
+        return NSHostingView(rootView: AttachmentTile(image: image, onRemove: {}))
+    }
+
+    func testFileTileMatchesImageTileSize() {
+        let image = tileHost("a.png", data: pngData, isImage: true).fittingSize
+        let pdf = tileHost("a.pdf", data: Data("x".utf8), isImage: false).fittingSize
+        let bare = tileHost("LICENSE", data: Data("x".utf8), isImage: false).fittingSize
+        XCTAssertEqual(image, CGSize(width: 48, height: 48))
+        XCTAssertEqual(pdf, image)
+        XCTAssertEqual(bare, image)
+    }
+
+    func testFileTileDrawsItsLabel() throws {
+        for (name, label) in [("spec.pdf", "PDF"), ("LICENSE", "FILE")] {
+            let tile = AttachmentTile(image: RequestImage(id: UUID(), name: name, data: Data("x".utf8), isImage: false), onRemove: {})
+            let renderer = ImageRenderer(content: tile.padding(8).background(Color.white).environment(\.colorScheme, .light))
+            renderer.scale = 8
+            let cg = try XCTUnwrap(renderer.cgImage)
+            let request = VNRecognizeTextRequest()
+            try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
+            let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            XCTAssertTrue(text.uppercased().contains(label), "\(name): \(text)")
+        }
+    }
+
     // MARK: ImagePasteTextView
 
     private func testPasteboard() -> NSPasteboard { NSPasteboard(name: NSPasteboard.Name("swarm-test-\(UUID().uuidString)")) }
