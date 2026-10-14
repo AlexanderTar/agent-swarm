@@ -123,9 +123,9 @@ export async function addImages(
     // Anything that is not a recognised image goes through unchanged; only the size cap applies.
     const sniffed = sniff(new Uint8Array(await f.blob.slice(0, 16).arrayBuffer())) !== null;
     let r = sniffed ? await prepareImage(f.blob, f.name, deps) : finish(f.blob, f.name);
-    // An image the browser cannot decode (truncated, no wasm decoder) is still a file the daemon can keep.
+    // An image the browser cannot decode or convert (truncated, no wasm decoder, output over the cap) is still a file the daemon can keep.
     const image = sniffed && "blob" in r;
-    if (sniffed && "error" in r && r.error === T.imageUnsupported(f.name)) r = finish(f.blob, f.name);
+    if (sniffed && "error" in r) r = finish(f.blob, f.name);
     if ("error" in r) error ??= r.error;
     else added.push({ name: f.name, blob: r.blob, image });
   }

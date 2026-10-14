@@ -99,6 +99,17 @@ describe("addImages", () => {
     expect(r.added).toEqual([{ name: "cut.png", blob: truncated.blob, image: false }]);
   });
 
+  it("keeps the original when the converted image would exceed the size cap but the original does not", async () => {
+    const tiff = {
+      name: "scan.tiff",
+      blob: new Blob([u8(0x49, 0x49, 0x2a, 0x00, 8, 0, 0, 0)], { type: "image/tiff" }),
+    };
+    const encode = vi.fn(async () => new Blob([new Uint8Array((10 << 20) + 1)]));
+    const r = await addImages(0, [tiff], { decode, encode });
+    expect(r.error).toBeUndefined();
+    expect(r.added).toEqual([{ name: "scan.tiff", blob: tiff.blob, image: false }]);
+  });
+
   it("passes a non-image file through unchanged without decoding it", async () => {
     const pdfBlob = new Blob([new Uint8Array(ascii("%PDF-1.4"))], { type: "application/pdf" });
     const dec = vi.fn(async () => bmp);
