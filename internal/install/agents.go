@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -162,6 +163,13 @@ func (o AgentsOpts) syncPlugins(ctx context.Context, installed []Kind) error {
 			fmt.Fprintf(o.Out, "✓ %s: %s updated\n", r.Kind, r.Plugin)
 		case r.Plugin != "":
 			fmt.Fprintf(o.Out, "✓ %s: %s installed\n", r.Kind, r.Plugin)
+		}
+	}
+	// WriteGrok ran before the Claude plugins above existed on a first install,
+	// so refresh grok's disabled list now instead of waiting for the first launch.
+	if slices.Contains(installed, KindGrok) {
+		if _, err := RefreshGrokPlugins(o.Cfg); err != nil {
+			fmt.Fprintf(o.Out, "✗ grok: disabling the Claude plugins — %v\n", err)
 		}
 	}
 	// Graphify (§12.4 shares its rule): one line, and the uv output joins the
