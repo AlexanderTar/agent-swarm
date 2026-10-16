@@ -133,3 +133,22 @@ func claudeDisabledPlugins(userHome string) map[string]bool {
 	}
 	return out
 }
+
+// claudeEnabledPluginKeys returns every key of enabledPlugins in
+// ~/.claude/settings.json, enabled or not. Any failure yields an empty set.
+func claudeEnabledPluginKeys(userHome string) map[string]bool {
+	out := map[string]bool{}
+	body, err := os.ReadFile(filepath.Join(userHome, ".claude", "settings.json"))
+	if err != nil {
+		return out
+	}
+	var doc struct {
+		EnabledPlugins map[string]bool `json:"enabledPlugins"`
+	}
+	if json.Unmarshal(body, &doc) == nil {
+		for k := range doc.EnabledPlugins {
+			out[k] = true
+		}
+	}
+	return out
+}

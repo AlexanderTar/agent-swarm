@@ -138,6 +138,9 @@ func (p Plugins) Sync(ctx context.Context, installed []Kind) []PluginResult {
 	}
 	var out []PluginResult
 	for _, k := range installed {
+		if k == KindGrok {
+			continue // grok installs superpowers natively in WriteGrok; it has no marketplace
+		}
 		out = append(out, p.syncAgent(ctx, k, list)...)
 	}
 	return out
@@ -546,6 +549,17 @@ func SuperpowersOK(c Config, k Kind) (bool, string) {
 		for _, g := range []string{
 			c.Cursor("plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md"),
 			c.Cursor("plugins", "local", "superpowers", "skills", "brainstorming", "SKILL.md"),
+		} {
+			if hits, _ := filepath.Glob(g); len(hits) > 0 {
+				return true, g
+			}
+		}
+		return false, "Install the superpowers plugin for " + k.Display() + " to run orchestrators."
+	case KindGrok:
+		// Grok's own install, or the Claude copy WriteGrok falls back to.
+		for _, g := range []string{
+			c.Grok("installed-plugins", "superpowers-*", "skills", "brainstorming", "SKILL.md"),
+			c.Claude("plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md"),
 		} {
 			if hits, _ := filepath.Glob(g); len(hits) > 0 {
 				return true, g

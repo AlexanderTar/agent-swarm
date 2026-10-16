@@ -4,7 +4,10 @@
 // usage, advisor, install) builds its environment here.
 package grokhome
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"slices"
+)
 
 // Bin is the grok CLI.
 const Bin = "grok"
@@ -25,4 +28,15 @@ func Env(swarmHome string) map[string]string {
 		}
 	}
 	return env
+}
+
+// EnvArgs is Env as sorted KEY=VALUE words, for `env KEY=VALUE... grok ...` where
+// the caller has only a plain command runner.
+func EnvArgs(swarmHome string) []string {
+	var out []string
+	for k, v := range Env(swarmHome) {
+		out = append(out, k+"="+v)
+	}
+	slices.Sort(out)
+	return out
 }

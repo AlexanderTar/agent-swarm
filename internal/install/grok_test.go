@@ -5,10 +5,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -210,5 +213,185 @@ func TestWriteGrokLeavesARealAuthFileAloneAndReportsIt(t *testing.T) {
 	}
 	if _, err := os.Readlink(c.Grok("auth.json.lock")); err != nil {
 		t.Errorf("the lock link is independent and must still be made: %v", err)
+	}
+}
+
+func seedClaudePlugins(t *testing.T, c install.Config, installed []string, cached ...string) {
+	t.Helper()
+	plugins := map[string]string{}
+	for _, k := range installed {
+		plugins[`"`+k+`"`] = `[{"scope":"user","installPath":"/x"}]`
+	}
+	var entries []string
+	for k, v := range plugins {
+		entries = append(entries, k+":"+v)
+	}
+	dir := c.Claude("plugins")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"version":2,"plugins":{` + strings.Join(entries, ",") + `}}`
+	if err := os.WriteFile(filepath.Join(dir, "installed_plugins.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range cached {
+		if err := os.MkdirAll(filepath.Join(dir, "cache", "mkt", name, "1.0.0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func grokDisabled(t *testing.T, c install.Config) []string {
+	t.Helper()
+	pl, _ := readTOML(t, c.Grok("config.toml"))["plugins"].(map[string]any)
+	var out []string
+	for _, v := range pl["disabled"].([]any) {
+		out = append(out, v.(string))
+	}
+	return out
+}
+
+func TestGrokPluginsDisabledCoversClaudePlugins(t *testing.T) {
+	c := fakeHome(t)
+	seedClaudePlugins(t, c, []string{"alpha@mkt", "beta@other", "superpowers@mkt"}, "gamma")
+	seedGrokConfig(t, c, "[plugins]\ndisabled = [\"mine\", \"superpowers\"]\nenabled = [\"superpowers\"]\n")
+
+	changed, err := install.RefreshGrokPlugins(c)
+	if err != nil || !changed {
+		t.Fatalf("RefreshGrokPlugins = %v, %v; want changed", changed, err)
+	}
+	got := grokDisabled(t, c)
+	want := []string{"alpha", "beta", "gamma", "mine"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("disabled = %v, want %v (superpowers must never be disabled)", got, want)
+	}
+	pl := readTOML(t, c.Grok("config.toml"))["plugins"].(map[string]any)
+	if en, _ := pl["enabled"].([]any); len(en) != 1 || en[0] != "superpowers" {
+		t.Errorf("enabled = %v, want it untouched", pl["enabled"])
+	}
+
+	// A plugin installed in Claude later is disabled on the next refresh.
+	seedClaudePlugins(t, c, []string{"alpha@mkt", "beta@other", "delta@mkt", "superpowers@mkt"}, "gamma")
+	if changed, err := install.RefreshGrokPlugins(c); err != nil || !changed {
+		t.Fatalf("second refresh = %v, %v; want changed", changed, err)
+	}
+	if got := grokDisabled(t, c); strings.Join(got, ",") != "alpha,beta,delta,gamma,mine" {
+		t.Errorf("disabled after a new plugin = %v", got)
+	}
+	if changed, _ := install.RefreshGrokPlugins(c); changed {
+		t.Error("a refresh with nothing new must not rewrite config.toml")
+	}
+}
+
+func TestGrokPluginsRefreshWithoutClaudeStillNeverDisablesSuperpowers(t *testing.T) {
+	c := fakeHome(t)
+	if _, err := install.RefreshGrokPlugins(c); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range grokDisabled(t, c) {
+		if n == "superpowers" {
+			t.Fatal("superpowers disabled")
+		}
+	}
+}
+
+// grokInstallKey is the exact argv the fake runner sees: the native install,
+// run through env so GROK_HOME and the compat switches reach grok.
+func grokInstallKey(c install.Config) string {
+	return "env " + strings.Join(grokhome.EnvArgs(c.Home), " ") +
+		" grok plugin install https://github.com/obra/superpowers.git --trust"
+}
+
+func TestGrokSuperpowersInstall(t *testing.T) {
+	c := fakeHome(t)
+	key := grokInstallKey(c)
+	if !strings.Contains(key, "GROK_HOME="+c.Grok()+" ") && !strings.Contains(key, "GROK_HOME="+c.Grok()) {
+		t.Fatalf("install key lacks GROK_HOME: %s", key)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{key: {Out: "Installed 1 plugin(s)"}}}
+	// Real grok rewrites config.toml during the install; Swarm must merge after it.
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := f.Runner()(ctx, name, args...)
+		if err == nil {
+			seedGrokConfig(t, c, "[plugins]\nenabled = [\"superpowers\"]\n")
+			if err := os.MkdirAll(c.Grok("installed-plugins", "superpowers-21e2a56d", "skills", "brainstorming"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			os.WriteFile(c.Grok("installed-plugins", "superpowers-21e2a56d", "skills", "brainstorming", "SKILL.md"), []byte("x"), 0o644)
+		}
+		return out, err
+	}
+	if _, _, err := install.WriteGrok(context.Background(), c, run); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.Calls(); len(calls) != 1 || calls[0] != key {
+		t.Fatalf("calls = %v, want exactly %q", calls, key)
+	}
+	m := readTOML(t, c.Grok("config.toml"))
+	if en, _ := m["plugins"].(map[string]any)["enabled"].([]any); len(en) != 1 || en[0] != "superpowers" {
+		t.Errorf("grok's [plugins] enabled was lost: %v", m["plugins"])
+	}
+	if _, ok := m["mcp_servers"].(map[string]any)["swarm"]; !ok {
+		t.Error("swarm MCP not merged after the install rewrote config.toml")
+	}
+	if ok, detail := install.SuperpowersOK(c, install.KindGrok); !ok {
+		t.Errorf("SuperpowersOK(grok) = false: %s", detail)
+	}
+
+	// Installed already: a second write runs nothing.
+	f2 := &execx.Fake{Responses: map[string]execx.Result{}}
+	if _, _, err := install.WriteGrok(context.Background(), c, f2.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f2.Calls(); len(calls) != 0 {
+		t.Errorf("second write ran %v", calls)
+	}
+}
+
+func TestGrokSuperpowersFallsBackToTheNewestClaudeCopy(t *testing.T) {
+	c := fakeHome(t)
+	old := c.Claude("plugins", "cache", "m", "superpowers", "5.0.1", "skills")
+	newest := c.Claude("plugins", "cache", "m", "superpowers", "5.1.0", "skills")
+	for _, d := range []string{old, newest} {
+		if err := os.MkdirAll(filepath.Join(d, "brainstorming"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(d, "brainstorming", "SKILL.md"), []byte("x"), 0o644)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Dir(old), past, past); err != nil {
+		t.Fatal(err)
+	}
+	_, skipped, err := install.WriteGrok(context.Background(), c, grokFake().Runner()) // install fails
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, p := range readTOML(t, c.Grok("config.toml"))["skills"].(map[string]any)["paths"].([]any) {
+		paths = append(paths, p.(string))
+	}
+	if !slices.Contains(paths, newest) || slices.Contains(paths, old) {
+		t.Errorf("[skills] paths = %v, want the newest superpowers copy %s only", paths, newest)
+	}
+	if !strings.Contains(strings.Join(skipped, "\n"), "superpowers") {
+		t.Errorf("a failed native install must be reported: %v", skipped)
+	}
+	if ok, _ := install.SuperpowersOK(c, install.KindGrok); !ok {
+		t.Error("the Claude copy should satisfy SuperpowersOK")
+	}
+}
+
+// The marketplace sync has no grok step: WriteGrok owns grok's superpowers, so
+// Sync neither runs commands nor prints a skip line per plugin for it.
+func TestPluginsSyncLeavesGrokToWriteGrok(t *testing.T) {
+	c := fakeHome(t)
+	srv := marketplaceServer(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{}}
+	p := install.Plugins{Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL, Log: &bytes.Buffer{}}
+	if res := p.Sync(context.Background(), []install.Kind{install.KindGrok}); len(res) != 0 {
+		t.Errorf("Sync for grok = %+v, want nothing", res)
+	}
+	if calls := f.Calls(); len(calls) != 0 {
+		t.Errorf("Sync for grok ran %v", calls)
 	}
 }

@@ -2,6 +2,8 @@ package grokhome_test
 
 import (
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
@@ -48,5 +50,18 @@ func TestEnvReturnsAFreshMap(t *testing.T) {
 	a["GROK_HOME"] = "changed"
 	if grokhome.Env("/h")["GROK_HOME"] == "changed" {
 		t.Error("Env shares state between calls")
+	}
+}
+
+func TestEnvArgsAreSortedKeyValuePairs(t *testing.T) {
+	args := grokhome.EnvArgs("/h")
+	if len(args) != len(grokhome.Env("/h")) {
+		t.Fatalf("EnvArgs = %v", args)
+	}
+	if !sort.StringsAreSorted(args) {
+		t.Errorf("not sorted: %v", args)
+	}
+	if !slices.Contains(args, "GROK_HOME="+filepath.Join("/h", "grok")) || !slices.Contains(args, "GROK_CLAUDE_HOOKS_ENABLED=0") {
+		t.Errorf("missing pairs: %v", args)
 	}
 }
