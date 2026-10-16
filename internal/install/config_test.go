@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 // S-5: a zero UserHome must not fall back to the operator's real home. Every path
@@ -76,10 +77,10 @@ func TestKindDisplayMatchesTheCopyTable(t *testing.T) {
 	want := map[install.Kind]string{
 		install.KindClaude: "Claude", install.KindCodex: "Codex",
 		install.KindAgy: "Antigravity", install.KindCursor: "Cursor",
-		install.KindMuse: "Muse",
+		install.KindMuse: "Muse", install.KindGrok: "Grok",
 	}
-	if len(install.Kinds) != 5 {
-		t.Fatalf("Kinds = %v; L2 lists exactly five installable agents", install.Kinds)
+	if len(install.Kinds) != 6 {
+		t.Fatalf("Kinds = %v; L2 lists exactly six installable agents", install.Kinds)
 	}
 	for _, k := range install.Kinds {
 		if got := k.Display(); got != want[k] {
@@ -93,5 +94,36 @@ func TestPlistPathStillUsesLaunchAgentsDir(t *testing.T) {
 	c := install.Config{LaunchAgentsDir: "/fake/home/Library/LaunchAgents"}
 	if got, want := install.PlistPath(c), filepath.Join(c.LaunchAgentsDir, "dev.swarm.daemon.plist"); got != want {
 		t.Errorf("PlistPath = %q, want %q", got, want)
+	}
+}
+
+// install.Kinds is the installable half of kinds.AgentKinds: the same set, so a
+// new runtime kind cannot ship without an install writer.
+func TestInstallKindsMatchesKinds(t *testing.T) {
+	have := map[string]bool{}
+	for _, k := range install.Kinds {
+		have[string(k)] = true
+	}
+	for _, k := range kinds.AgentKinds {
+		if !have[string(k)] {
+			t.Errorf("install.Kinds is missing %q", k)
+		}
+		delete(have, string(k))
+	}
+	for k := range have {
+		t.Errorf("install.Kinds has %q, which kinds.AgentKinds does not", k)
+	}
+}
+
+func TestGrokDirsLiveUnderTheSwarmHome(t *testing.T) {
+	c := install.Config{Home: "/h/.swarm", UserHome: "/h"}
+	if got, want := c.Grok("config.toml"), "/h/.swarm/grok/config.toml"; got != want {
+		t.Errorf("Grok(config.toml) = %q, want %q", got, want)
+	}
+	if got, want := c.SkillsDir(install.KindGrok), "/h/.swarm/grok/skills"; got != want {
+		t.Errorf("SkillsDir(grok) = %q, want %q", got, want)
+	}
+	if install.SkillLinkMode(install.KindGrok) != install.Symlink {
+		t.Error("grok skills link by symlink (loaded through [skills] paths)")
 	}
 }

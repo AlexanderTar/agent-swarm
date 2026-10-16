@@ -3,6 +3,7 @@ package install
 import (
 	"path/filepath"
 
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -18,10 +19,11 @@ const (
 	KindAgy    Kind = "agy"
 	KindCursor Kind = "cursor"
 	KindMuse   Kind = "muse"
+	KindGrok   Kind = "grok"
 )
 
 // Kinds is in §11.1 column order.
-var Kinds = []Kind{KindClaude, KindCodex, KindAgy, KindCursor, KindMuse}
+var Kinds = []Kind{KindClaude, KindCodex, KindAgy, KindCursor, KindMuse, KindGrok}
 
 // Display is the name shown to the user (§17.3 "{Agent} isn't installed…").
 func (k Kind) Display() string { return kinds.AgentKind(k).Display() }
@@ -45,6 +47,12 @@ func (c Config) Muse(rest ...string) string {
 // MuseData is the muse data root (plugin cache, model catalog, session store).
 func (c Config) MuseData(rest ...string) string {
 	return filepath.Join(append([]string{c.UserHome, ".local", "share", "muse"}, rest...)...)
+}
+
+// Grok is the Swarm-owned grok home (<swarm home>/grok, GROK_HOME for every
+// Swarm grok process). The operator's own ~/.grok is UserGrok.
+func (c Config) Grok(rest ...string) string {
+	return filepath.Join(append([]string{grokhome.Dir(c.Home)}, rest...)...)
 }
 
 func (c Config) under(dir string, rest []string) string {
@@ -87,6 +95,10 @@ func (c Config) SkillsDir(k Kind) string {
 		return c.Cursor("skills")
 	case KindMuse:
 		return c.Muse("skills")
+	case KindGrok:
+		// Symlinked skill dirs load only from a [skills] paths entry, so
+		// WriteGrok lists this dir there; $GROK_HOME/skills itself ignores them.
+		return c.Grok("skills")
 	}
 	return ""
 }

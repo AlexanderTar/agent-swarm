@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 )
 
 // AgentsOpts is everything Agents needs. Nothing has a production default (S-5,
@@ -28,7 +29,7 @@ type AgentsOpts struct {
 
 // agentBinaries maps a kind to the CLI whose presence means "installed".
 var agentBinaries = map[Kind]string{
-	KindClaude: "claude", KindCodex: "codex", KindAgy: "agy", KindCursor: "cursor-agent", KindMuse: "muse",
+	KindClaude: "claude", KindCodex: "codex", KindAgy: "agy", KindCursor: "cursor-agent", KindMuse: "muse", KindGrok: grokhome.Bin,
 }
 
 // InstalledKinds reports which agents are on this Mac, in Kinds order.

@@ -81,6 +81,8 @@ func (d Doctor) Checks(ctx context.Context) []Check {
 			out = append(out, CheckAgy(ctx, d.Cfg, d.Run)...)
 		case KindMuse:
 			out = append(out, CheckMuse(ctx, d.Cfg, d.Run)...)
+		case KindGrok:
+			out = append(out, CheckGrok(ctx, d.Cfg, d.Run)...)
 		}
 	}
 	return append(out, d.superpowers(ctx)...)

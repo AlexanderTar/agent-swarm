@@ -90,6 +90,11 @@ func supportedByAllKinds(name string) bool {
 		have[k] = true
 	}
 	for _, k := range Kinds {
+		// Grok installs superpowers through its own native command, never from
+		// this matrix (see RefreshGrokPlugins), so it does not gate Claude's list.
+		if k == KindGrok {
+			continue
+		}
 		if !have[k] {
 			return false
 		}

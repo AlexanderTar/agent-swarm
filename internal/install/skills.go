@@ -177,6 +177,7 @@ var skillLinkMode = map[Kind]LinkMode{
 	KindAgy:    Symlink,
 	KindCursor: Symlink,
 	KindMuse:   Symlink,
+	KindGrok:   Symlink, // via [skills] paths, probed 2026-10-16 (SPIKE-52)
 }
 
 // SkillLinkMode reports how WriteSkills exposes skills for k. Exported so a
