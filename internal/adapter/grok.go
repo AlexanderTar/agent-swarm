@@ -185,6 +185,11 @@ var (
 	// grokCard is a modal card (an upgrade or usage-limit offer, or a question):
 	// it swallows typed text, and only a person (or Shift+x) clears it.
 	grokCard = regexp.MustCompile(`Tab:next answer\s+│\s+Esc:scrollback`)
+	// grokQuestionCard is the ask_user_question card. It shares grokCard's footer,
+	// so the paste guard (PasteReady) keeps matching it, but it is no stall: a
+	// bound approval leaves it on screen and the bound question row is its
+	// Needs-you entry, so the dialog matchers exclude it.
+	grokQuestionCard = regexp.MustCompile(`Type your answer here|Waiting on answers for`)
 	// grokUsageLimit is the card title when the plan's allowance is spent.
 	grokUsageLimit = regexp.MustCompile(`You hit your .*usage limit`)
 )
@@ -202,10 +207,10 @@ const grokCardTitle = "Grok is showing a card"
 // startup dialog, so the only thing that can stall the pane is a card, and that
 // needs a person.
 func (g *Grok) StartupDialogs() []Dialog {
-	return []Dialog{{Match: grokCard, Title: grokCardTitle}}
+	return []Dialog{{Match: grokCard, Exclude: grokQuestionCard, Title: grokCardTitle}}
 }
 func (g *Grok) PromptPatterns() []PromptMatcher {
-	return []PromptMatcher{{Match: grokCard, Title: grokCardTitle}}
+	return []PromptMatcher{{Match: grokCard, Exclude: grokQuestionCard, Title: grokCardTitle}}
 }
 
 // InterruptKeys is one C-c: mid-turn it cancels the turn, at idle it arms quit,

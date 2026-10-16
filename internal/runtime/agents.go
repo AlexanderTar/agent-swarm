@@ -1818,7 +1818,7 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		now := s.Now()
 		anyEscalated := false
 		for i, d := range ad.StartupDialogs() {
-			if !d.Match.MatchString(plain) {
+			if !d.Match.MatchString(plain) || (d.Exclude != nil && d.Exclude.MatchString(plain)) {
 				if dst := st[i]; dst != nil {
 					if dst.reqID != "" {
 						if err := s.ResolveDialogPrompt(ctx, ses.ID, d.Title); err != nil {
