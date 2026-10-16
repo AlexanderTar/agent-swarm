@@ -3960,3 +3960,41 @@ func TestReconcileForgetClaudeTrustMarksNothingDoneOnAParseError(t *testing.T) {
 		t.Fatalf("file rewritten: %s", b)
 	}
 }
+
+// sweepAdapter records what Reconcile hands to an adapter's leader sweep.
+type sweepAdapter struct {
+	adapter.Adapter
+	swept []map[string]bool
+}
+
+func (a *sweepAdapter) SweepLeaders(live map[string]bool) { a.swept = append(a.swept, live) }
+
+// Grok leaders outlive their TUI, so every reconcile tick tells the adapter
+// which sessions are still live and it stops the rest.
+func TestReconcileSweepsLeadersOfEndedSessions(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	sw := &sweepAdapter{Adapter: s.Adapters[Fake]}
+	s.Adapters[Fake] = sw
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Sweep", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "fake"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sw.swept) == 0 || !sw.swept[len(sw.swept)-1][ses.ID] {
+		t.Fatalf("a live session must be in the sweep's live set: %v", sw.swept)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = 1 WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sw.swept[len(sw.swept)-1][ses.ID] {
+		t.Errorf("an ended session must not be in the live set: %v", sw.swept[len(sw.swept)-1])
+	}
+}

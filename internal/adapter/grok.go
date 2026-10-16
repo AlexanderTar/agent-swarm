@@ -58,13 +58,15 @@ const grokContextWindow = 256000
 //
 // Never --disallowed-tools (it silently turns leader mode off), never --debug
 // or --debug-file (they write bearer tokens and the account email in plain
-// text), and no --leader yet: the wake package adds it once the leader runs.
+// text). --leader --leader-socket <per-session path> makes the TUI start its own
+// leader for wake (grokleader_life.go); it is left off when the path is too long.
 func (g *Grok) flags(s Spec, sessionFlag, sessionID string) []string {
 	a := []string{"grok", "--model", s.Model}
 	if s.Effort != "" {
 		a = append(a, "--reasoning-effort", s.Effort)
 	}
 	a = append(a, "--always-approve", "--trust", "--no-subagents", sessionFlag, sessionID)
+	a = append(a, g.leaderArgs(s.SessionID)...)
 	if s.Instructions != "" {
 		a = append(a, "--rules", s.Instructions)
 	}

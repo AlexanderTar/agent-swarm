@@ -37,15 +37,17 @@ func TestGrokLaunchArgv(t *testing.T) {
 	if a.Kind() != kinds.Grok {
 		t.Errorf("Kind() = %s", a.Kind())
 	}
-	if len(l.Argv) != 11 || !uuidV4.MatchString(l.Argv[9]) {
+	if len(l.Argv) != 14 || !uuidV4.MatchString(l.Argv[9]) {
 		t.Fatalf("argv = %q", l.Argv)
 	}
+	sock := filepath.Join(d.Home, "run", "grok-leader-ses_01.sock")
 	want := []string{"grok", "--model", "grok-4.7", "--reasoning-effort", "high",
-		"--always-approve", "--trust", "--no-subagents", "--session-id", l.Argv[9], s.Kickoff}
-	if got := append(slices.Clone(l.Argv[:10]), l.Argv[10]); !slices.Equal(got, want) {
+		"--always-approve", "--trust", "--no-subagents", "--session-id", l.Argv[9],
+		"--leader", "--leader-socket", sock, s.Kickoff}
+	if !slices.Equal(l.Argv, want) {
 		t.Fatalf("argv = %q, want %q", l.Argv, want)
 	}
-	for _, bad := range []string{"--disallowed-tools", "--debug", "--debug-file", "--fork-session", "--leader", "--rules"} {
+	for _, bad := range []string{"--disallowed-tools", "--debug", "--debug-file", "--fork-session", "--rules"} {
 		if slices.Contains(l.Argv, bad) {
 			t.Errorf("argv must not carry %s: %q", bad, l.Argv)
 		}
@@ -104,6 +106,7 @@ func TestGrokResumeKeepsKickoff(t *testing.T) {
 	}
 	want := []string{"grok", "--model", "grok-4.7", "--reasoning-effort", "high",
 		"--always-approve", "--trust", "--no-subagents", "--resume", s.ProviderSessionID,
+		"--leader", "--leader-socket", filepath.Join(a.d.Home, "run", "grok-leader-ses_01.sock"),
 		"--rules", "Be terse.", s.Kickoff}
 	if !slices.Equal(l.Argv, want) {
 		t.Fatalf("argv = %q, want %q", l.Argv, want)
