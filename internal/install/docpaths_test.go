@@ -98,7 +98,7 @@ func TestDocsCoverGrok(t *testing.T) {
 	}
 	for _, want := range []string{
 		"One leader per agent", "GROK_HOME", "grokhome.Env", "auth.json", "never disabled", "[skills] paths",
-		"_x.ai/billing", "additionalContext", "installed-plugins",
+		"cli-chat-proxy.grok.com/v1/billing", "inline auth flow", "additionalContext", "installed-plugins",
 	} {
 		if !strings.Contains(lessons, want) {
 			t.Errorf("runbook grok lessons lack %q", want)
