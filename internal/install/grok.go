@@ -606,6 +606,10 @@ func dropGrokConfig(c Config, m map[string]any, rec grokRecord) {
 		}
 	}
 	if plugins, ok := m["plugins"].(map[string]any); ok && len(rec.DisabledPlugins) > 0 {
+		// ponytail: "disabled" is a bare name list, so an entry the operator
+		// re-added under a recorded name after install is indistinguishable from
+		// ours and is removed too. Telling them apart needs a per-entry marker
+		// grok's config does not carry.
 		list, _ := plugins["disabled"].([]any)
 		list = slices.DeleteFunc(list, func(v any) bool { n, _ := v.(string); return slices.Contains(rec.DisabledPlugins, n) })
 		if len(list) > 0 {
