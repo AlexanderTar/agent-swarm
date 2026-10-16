@@ -181,8 +181,9 @@ func TestGrokLiveAskUserQuestionDeny(t *testing.T) {
 // TestGrokLeaderLive proves the whole leader path on the real CLI, in a private
 // tmux server (never the daemon's): the TUI starts its own leader from the
 // launch flags, Wake submits a prompt through the leader socket to the idle
-// session, a Wake mid-turn queues behind the running turn, and the sweep stops
-// the leader by pid afterwards. It spends three short turns:
+// session, the leader's pushes tell the watcher when a turn runs (so a Wake
+// mid-turn is held back and one after it delivers), and the sweep stops the
+// leader by pid afterwards. It spends three short turns:
 //
 //	GROK_LIVE_PROBE=1 go test ./internal/adapter/ -run TestGrokLeaderLive -v
 func TestGrokLeaderLive(t *testing.T) {
@@ -231,31 +232,60 @@ func TestGrokLeaderLive(t *testing.T) {
 	}
 	waitFor("an idle grok", 90*time.Second, func(p string) bool { return g.Idle(p) })
 	waitFor("the leader socket", 30*time.Second, func(string) bool { return listening(sock) })
+	g.SweepLeaders(map[string]bool{sessionID: true}) // starts the register-only watcher the busy gate reads
 
 	w := WakeTarget{SessionID: sessionID, ProviderSessionID: providerID, Notice: "Reply with the single word: IDLEWAKE"}
-	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
-		t.Fatalf("idle Wake = %v, %v", delivered, err)
+	// The TUI is idle a moment before the leader knows its session (-32602
+	// Invalid params, logged by the Wake goroutine), so the first wake may need
+	// a second try, as the runtime's next tick would give it.
+	answered := false
+	for try := 0; try < 4 && !answered; try++ {
+		if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
+			t.Fatalf("idle Wake = %v, %v", delivered, err)
+		}
+		for end := time.Now().Add(30 * time.Second); time.Now().Before(end) && !answered; time.Sleep(time.Second) {
+			b, _ := exec.Command("tmux", "-S", tmuxSock, "capture-pane", "-p", "-t", "w").Output()
+			// The prompt echo is one occurrence, the reply the second.
+			answered = strings.Count(StripANSI(string(b)), "IDLEWAKE") >= 2 && g.Idle(StripANSI(string(b)))
+		}
 	}
-	// The prompt echo is one occurrence, the reply the second.
-	waitFor("the idle wake to be answered", 2*time.Minute, func(p string) bool { return strings.Count(p, "IDLEWAKE") >= 2 && g.Idle(p) })
+	if !answered {
+		t.Fatalf("the idle wake was never answered; pane:\n%s", pane())
+	}
+	waitFor("the leader to report the idle wake's turn over", 30*time.Second, func(string) bool { return !g.LeaderBusy(sessionID) })
 
 	w.Notice = "Run the shell command `sleep 12`, then reply with the single word: FIRSTDONE"
 	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
 		t.Fatalf("Wake = %v, %v", delivered, err)
 	}
 	waitFor("the first turn to start", time.Minute, func(p string) bool { return g.Busy().MatchString(p) })
+	// The probe: _x.ai/sessions/changed must reach a register-only client, or
+	// LeaderBusy (and the busy gate in Wake) never sees a turn.
+	waitFor("the leader to push that a turn is running", 30*time.Second, func(string) bool { return g.LeaderBusy(sessionID) })
 	w.Notice = "Reply with the single word: QUEUEDWAKE"
-	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
-		t.Fatalf("mid-turn Wake = %v, %v", delivered, err)
+	if delivered, err := g.Wake(context.Background(), w); err != nil || delivered {
+		t.Fatalf("mid-turn Wake = %v, %v, want false: the hooks carry the mail to a working agent", delivered, err)
 	}
-	final := waitFor("both turns to finish", 3*time.Minute, func(p string) bool {
-		return strings.Count(p, "QUEUEDWAKE") >= 2 && strings.Count(p, "FIRSTDONE") >= 1 && g.Idle(p)
+	waitFor("the first turn to finish", 3*time.Minute, func(p string) bool {
+		return strings.Count(p, "FIRSTDONE") >= 1 && g.Idle(p)
 	})
-	if strings.Index(final, "FIRSTDONE") > strings.LastIndex(final, "QUEUEDWAKE") {
-		t.Errorf("the mid-turn prompt did not queue behind the running turn:\n%s", final)
+	waitFor("the leader to push that the turn is over", 30*time.Second, func(string) bool { return !g.LeaderBusy(sessionID) })
+	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
+		t.Fatalf("Wake after the turn = %v, %v", delivered, err)
 	}
+	final := waitFor("the queued wake to be answered", 2*time.Minute, func(p string) bool {
+		return strings.Count(p, "QUEUEDWAKE") >= 2 && g.Idle(p)
+	})
 	t.Logf("final pane:\n%s", final)
 
-	g.SweepLeaders(map[string]bool{})
-	waitFor("the leader to stop", 30*time.Second, func(string) bool { return !listening(sock) })
+	// The session ends first: the leader outlives its pane, and one whose TUI is
+	// still attached ignores the SIGTERM. The runtime sweeps every tick, so this
+	// does too.
+	tmux("kill-session", "-t", "w")
+	for end := time.Now().Add(30 * time.Second); listening(sock); time.Sleep(time.Second) {
+		if time.Now().After(end) {
+			t.Fatal("timed out waiting for the leader to stop")
+		}
+		g.SweepLeaders(map[string]bool{})
+	}
 }

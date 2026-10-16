@@ -42,11 +42,12 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 		}
 	}
 	// grok's config.toml and auth links, only Swarm's own parts.
-	grokRemoved, err := UninstallGrok(o.Cfg)
+	grokRemoved, grokSkipped, err := UninstallGrok(o.Cfg)
 	if err != nil {
 		return err
 	}
 	o.report("removed", grokRemoved)
+	o.report("skipped", grokSkipped)
 	// agy registered its MCP server through its own CLI, so remove it the same way.
 	// A failure is not fatal: the agent may be gone, and the entry is inert.
 	if _, err := os.Stat(o.Cfg.Gemini("antigravity", "mcp_config.json")); err == nil {

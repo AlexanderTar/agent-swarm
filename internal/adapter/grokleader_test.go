@@ -279,3 +279,26 @@ func mustJSON(v any) string {
 	b, _ := json.Marshal(v) // map keys marshal sorted, so equal documents compare equal
 	return string(b)
 }
+
+// A frame with a matching id is the answer only when it is a response: the
+// leader's own requests (permission asks, say) number from their own counter
+// and can collide with ours.
+func TestLeaderAwaitIgnoresARequestFrameWithAMatchingID(t *testing.T) {
+	path, done := fakeLeader(t, func(f *fakeLeaderConn) {
+		f.handshake()
+		p := f.acp()
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": p["id"], "method": "session/request_permission", "params": map[string]any{}})
+		f.write(map[string]any{"type": "acp", "payload": string(b)})
+		f.reply(p["id"], map[string]any{"ok": true})
+	})
+	c, err := dialLeader(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got, err := c.call("session/ping", map[string]any{})
+	if err != nil || string(got) != `{"ok":true}` {
+		t.Fatalf("call = %s, %v, want the response frame's result", got, err)
+	}
+	<-done
+}

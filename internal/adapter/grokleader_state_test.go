@@ -1,6 +1,10 @@
 package adapter
 
 import (
+	"bufio"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -96,5 +100,63 @@ func TestGrokLeaderRetryStateExhaustedFeedsTheUsageSink(t *testing.T) {
 	defer mu.Unlock()
 	if len(got) != 1 || !strings.Contains(got[0], "actual/limit") || !strings.Contains(got[0], "exhausted") {
 		t.Errorf("sink got %q, want exactly the exhausted update's text", got)
+	}
+}
+
+// A leader this client refuses (a grok update nobody probed) is dialled and
+// logged once, not on every reconcile tick.
+func TestRefusedLeaderIsNotRedialledEveryTick(t *testing.T) {
+	a := newGrok(testDeps(t))
+	const sid = "ses_01"
+	var logs struct {
+		sync.Mutex
+		n int
+	}
+	a.d.Log = func(string, ...any) { logs.Lock(); logs.n++; logs.Unlock() }
+	sock, ok := a.leaderSocket(sid)
+	if !ok {
+		t.Fatal("test home is too long for a leader socket")
+	}
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var dials int
+	var mu sync.Mutex
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				if _, err := br.Peek(1); err != nil {
+					return
+				}
+				f := &fakeLeaderConn{t: t, c: c, r: br}
+				f.read()
+				mu.Lock()
+				dials++ // a client that registered, not SweepLeaders' bare liveness probe
+				mu.Unlock()
+				f.registered(1, "9.9.9") // a version nobody probed
+			}()
+		}
+	}()
+	for i := 0; i < 5; i++ {
+		a.SweepLeaders(map[string]bool{sid: true})
+		time.Sleep(100 * time.Millisecond) // the refused watcher exits on its own
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	logs.Lock()
+	defer logs.Unlock()
+	if dials != 1 || logs.n != 1 {
+		t.Errorf("over 5 ticks the refused leader was dialled %d times and logged %d times, want once each", dials, logs.n)
 	}
 }

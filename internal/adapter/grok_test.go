@@ -519,3 +519,28 @@ func TestGrokObserveModel(t *testing.T) {
 		t.Error("a summary with no model observes nothing")
 	}
 }
+
+// The ask_user_question card is a card where a paste must never land (it would
+// type into the answer field), but it is not a stall: a bound approval keeps it
+// on screen and the bound question row is the Needs-you entry.
+func TestGrokQuestionCardBlocksPasteButIsNoDialog(t *testing.T) {
+	a := newGrok(Deps{})
+	raw := grokPane(t, "question-card")
+	plain := StripANSI(raw)
+	if a.PasteReady(raw) {
+		t.Error("PasteReady = true on the question card, want false")
+	}
+	if a.Idle(raw) {
+		t.Error("Idle = true on the question card, want false")
+	}
+	for _, m := range a.PromptPatterns() {
+		if m.Match.MatchString(plain) && (m.Exclude == nil || !m.Exclude.MatchString(plain)) {
+			t.Errorf("prompt pattern %q matches the question card", m.Title)
+		}
+	}
+	for _, d := range a.StartupDialogs() {
+		if d.Match.MatchString(plain) && (d.Exclude == nil || !d.Exclude.MatchString(plain)) {
+			t.Errorf("startup dialog %q matches the question card", d.Title)
+		}
+	}
+}

@@ -128,8 +128,9 @@ func (c *leaderClient) send(method string, params any) (int, error) {
 	return id, writeLeaderFrame(c.conn, map[string]any{"type": "acp", "payload": string(body)})
 }
 
-// await reads frames until the response to id, skipping every notification and
-// any response to another id.
+// await reads frames until the response to id, skipping every notification,
+// any response to another id and any request of the leader's own (its ids come
+// from its own counter and can equal ours).
 func (c *leaderClient) await(id int) (json.RawMessage, error) {
 	for {
 		raw, err := readLeaderFrame(c.conn)
@@ -145,13 +146,14 @@ func (c *leaderClient) await(id int) (json.RawMessage, error) {
 		}
 		var m struct {
 			ID     *int            `json:"id"`
+			Method string          `json:"method"`
 			Result json.RawMessage `json:"result"`
 			Error  *struct {
 				Code    int    `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		if json.Unmarshal([]byte(f.Payload), &m) != nil || m.ID == nil || *m.ID != id {
+		if json.Unmarshal([]byte(f.Payload), &m) != nil || m.Method != "" || m.ID == nil || *m.ID != id {
 			continue
 		}
 		if m.Error != nil {

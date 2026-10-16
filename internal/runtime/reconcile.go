@@ -1193,6 +1193,11 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 		idle = ad.Idle(capture)
+		if o, ok := ad.(interface {
+			ObserveCapture(sessionID, capture string)
+		}); ok {
+			o.ObserveCapture(r.SessionID, capture)
+		}
 		// A pane can read idle for a moment while a queued turn has already
 		// started: a leader that says a turn is running wins.
 		if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(r.SessionID) {
@@ -1202,7 +1207,7 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			plain := stripANSI(capture)
 			now := s.Now()
 			for _, m := range ad.PromptPatterns() {
-				if m.Match == nil || !m.Match.MatchString(plain) {
+				if m.Match == nil || !m.Match.MatchString(plain) || (m.Exclude != nil && m.Exclude.MatchString(plain)) {
 					continue
 				}
 				if m.Require != nil && !m.Require.MatchString(plain) {

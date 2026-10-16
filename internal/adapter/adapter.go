@@ -50,6 +50,8 @@ type Dialog struct {
 	Keys    []string
 	Fail    bool
 	Require *regexp.Regexp
+	// Exclude, if non-nil and matching the capture, makes Match not count.
+	Exclude *regexp.Regexp
 	Title   string
 }
 
@@ -60,6 +62,8 @@ type PromptMatcher struct {
 	Action string // e.g. "Enter", "Down+Enter", "y"
 	// Require, if non-nil, must also match the capture before the keys are pressed.
 	Require *regexp.Regexp
+	// Exclude, if non-nil and matching the capture, makes Match not count.
+	Exclude *regexp.Regexp
 }
 
 // HookDecision is what the daemon's hook handler decided; HookOutput renders it

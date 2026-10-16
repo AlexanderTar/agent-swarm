@@ -1,0 +1,50 @@
+
+  /p/t/c/-/c/s/work/B                                                                                                                 19K / 256K │ [Dashboard]
+
+
+     ❯ Use the ask_user_question tool again to ask me: "Tea or coffee?" with options Tea and Coffee. Then repeat my answer verbatim.                 3:44 PM
+
+
+     ◆ Ask Tea or coffee?
+
+
+
+
+
+
+
+
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+                                                                                                                                                               █
+
+   ◆ Waiting on answers for Tea or coffee?                                                                                                  1.9s ⇣19.8k [stop]
+
+  ┃
+  ┃  Tea or coffee?
+  ┃
+  ┃
+  ┃  1 (○) Tea     Tea                                                                                                                                       █
+  ┃  2 (○) Coffee  Coffee                                                                                                                                    █
+  ┃  z (○) Type your answer here
+  ┃
+  ┃  ↑/↓ navigate · y copy                                                                                                                    Enter:submit
+  ┃
+
+  Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss
+

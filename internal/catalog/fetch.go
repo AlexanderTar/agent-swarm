@@ -412,7 +412,13 @@ type GrokFetcher struct {
 	SwarmHome string
 	UserHome  string
 	Now       func() time.Time // nil means time.Now
+	// ModelsTimeout bounds `grok models`; zero means grokModelsTimeout.
+	ModelsTimeout time.Duration
 }
+
+// grokModelsTimeout bounds `grok models`, which makes a network call and could
+// otherwise stall the refresh on a login prompt or a dead connection.
+const grokModelsTimeout = 30 * time.Second
 
 func (f *GrokFetcher) Kind() kinds.AgentKind { return kinds.Grok }
 
@@ -433,7 +439,13 @@ func (f *GrokFetcher) Fetch(ctx context.Context) (Fetched, error) {
 			return fetchedGrok(ms, "grok models_cache"), nil
 		}
 	}
-	_, runErr := f.run(ctx, "models")
+	timeout := f.ModelsTimeout
+	if timeout == 0 {
+		timeout = grokModelsTimeout
+	}
+	mctx, cancel := context.WithTimeout(ctx, timeout)
+	_, runErr := f.run(mctx, "models")
+	cancel()
 	for _, c := range []struct{ path, source string }{
 		{own, "grok models_cache"},
 		{filepath.Join(f.UserHome, ".grok", "models_cache.json"), "~/.grok/models_cache.json"},
