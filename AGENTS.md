@@ -5,3 +5,5 @@
 The thresholds in `scripts/cover.sh` are 85% for `items`, `runtime`, `hook`, `mcpserver`, `worktree` and `migrate`, and 75% for every other `internal` package that has tests. Never lower, waive or bypass them: no editing the script, no excluding packages or files, no skipping the gate.
 
 When a package falls below its threshold, add real behaviour tests that assert outcomes and error paths until it is back above it. Tests that only execute code without checking results do not count.
+
+Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
