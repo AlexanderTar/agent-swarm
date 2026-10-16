@@ -24,7 +24,41 @@ type leaderState struct {
 	mu          sync.Mutex
 	busy        map[string]map[string]bool // swarm session -> provider session -> working
 	watchers    map[string]*leaderWatcher
+	refused     map[string]time.Time // swarm session -> when its leader was last refused
 	onExhausted func(text string)
+}
+
+// leaderRefusedBackoff is how long a refused leader is left alone before the
+// next dial: a refusal means an unprobed grok version, which a retry every
+// reconcile tick (5s) would only repeat.
+const leaderRefusedBackoff = 10 * time.Minute
+
+// refusedRecently reports whether the session's leader was refused and is still
+// being left alone.
+func (s *leaderState) refusedRecently(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.refused[sessionID]
+	return ok && time.Since(at) < leaderRefusedBackoff
+}
+
+// noteRefused starts (or extends) the backoff and reports whether this is the
+// first refusal, the only one worth a log line.
+func (s *leaderState) noteRefused(sessionID string) (first bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refused == nil {
+		s.refused = map[string]time.Time{}
+	}
+	_, seen := s.refused[sessionID]
+	s.refused[sessionID] = time.Now()
+	return !seen
+}
+
+func (s *leaderState) forgetRefused(sessionID string) {
+	s.mu.Lock()
+	delete(s.refused, sessionID)
+	s.mu.Unlock()
 }
 
 type leaderWatcher struct{ cancel context.CancelFunc }
@@ -63,6 +97,11 @@ func (s *leaderState) stopWatchersExcept(live map[string]bool) {
 			delete(s.busy, id)
 		}
 	}
+	for id := range s.refused {
+		if !live[id] {
+			delete(s.refused, id)
+		}
+	}
 }
 
 // watchLeader starts the session's watcher unless one runs. A watcher that
@@ -70,6 +109,9 @@ func (s *leaderState) stopWatchersExcept(live map[string]bool) {
 // one, so there is no retry loop of its own.
 func (g *Grok) watchLeader(sessionID, sock string) {
 	s := &g.leader
+	if s.refusedRecently(sessionID) {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.watchers[sessionID]; ok {
@@ -95,11 +137,10 @@ func (g *Grok) watchLeader(sessionID, sock string) {
 		c, err := dialLeader(dctx, sock)
 		dcancel()
 		if err != nil {
-			if errors.Is(err, ErrUnsupportedLeader) {
-				g.d.Log("grok: leader for %s refused, not watching it: %v", sessionID, err)
-			}
+			g.noteRefusal(sessionID, "not watching it", err)
 			return
 		}
+		s.forgetRefused(sessionID)
 		defer c.Close()
 		_ = c.Watch(ctx, func(method string, params json.RawMessage) { g.leaderNote(sessionID, w, method, params) })
 	}()
@@ -168,4 +209,12 @@ func parseLeaderNote(method string, params json.RawMessage) (activity map[string
 		return nil, string(p.Update)
 	}
 	return nil, ""
+}
+
+// noteRefusal starts the backoff for a leader this client refuses and logs the
+// first refusal only.
+func (g *Grok) noteRefusal(sessionID, doing string, err error) {
+	if errors.Is(err, ErrUnsupportedLeader) && g.leader.noteRefused(sessionID) {
+		g.d.Log("grok: leader for %s refused, %s: %v", sessionID, doing, err)
+	}
 }

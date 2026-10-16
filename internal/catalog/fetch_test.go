@@ -460,3 +460,35 @@ func TestGrokFetcherRefreshesStaleCache(t *testing.T) {
 		assertEnv(r)
 	})
 }
+
+// A wedged `grok models` (a network stall, a login prompt) must not hold the
+// catalog refresh forever: it is cut off and the operator's cache answers.
+func TestGrokFetcherBoundsGrokModels(t *testing.T) {
+	now := time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC)
+	swarm, user := t.TempDir(), t.TempDir()
+	userCache := filepath.Join(user, ".grok", "models_cache.json")
+	os.MkdirAll(filepath.Dir(userCache), 0o755)
+	os.WriteFile(userCache, []byte(grokCache(t, now)), 0o644)
+	var sawDeadline bool
+	hang := func(ctx context.Context, _ map[string]string, _ string, args ...string) ([]byte, error) {
+		if args[0] != "models" {
+			return nil, nil
+		}
+		_, sawDeadline = ctx.Deadline()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("grok models was never cut off")
+		}
+	}
+	f := &GrokFetcher{Run: hang, SwarmHome: swarm, UserHome: user, Now: func() time.Time { return now }, ModelsTimeout: 50 * time.Millisecond}
+	start := time.Now()
+	got, err := f.Fetch(bg)
+	if err != nil || got.Source != "~/.grok/models_cache.json" {
+		t.Fatalf("Fetch = %+v, %v, want the operator's cache after the cut-off", got, err)
+	}
+	if !sawDeadline || time.Since(start) > 2*time.Second {
+		t.Errorf("grok models ran without a deadline (deadline=%v, took %s)", sawDeadline, time.Since(start))
+	}
+}

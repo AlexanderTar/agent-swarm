@@ -129,16 +129,14 @@ func (g *Grok) dialSessionLeader(ctx context.Context, sessionID, providerID stri
 	if !ok {
 		return nil
 	}
-	if _, err := os.Stat(sock); err != nil {
+	if _, err := os.Stat(sock); err != nil || g.leader.refusedRecently(sessionID) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	c, err := dialLeader(ctx, sock)
 	if err != nil {
-		if errors.Is(err, ErrUnsupportedLeader) {
-			g.d.Log("grok: leader for %s refused, waking by paste: %v", sessionID, err)
-		}
+		g.noteRefusal(sessionID, "waking by paste", err)
 		return nil
 	}
 	return c
