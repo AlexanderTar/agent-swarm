@@ -4,7 +4,7 @@ import "testing"
 
 func TestAgentKindDisplay(t *testing.T) {
 	want := map[AgentKind]string{
-		Claude: "Claude", Codex: "Codex", Agy: "agy", Cursor: "Cursor", Muse: "Muse", Fake: "Fake",
+		Claude: "Claude", Codex: "Codex", Agy: "Antigravity", Cursor: "Cursor", Muse: "Muse", Grok: "Grok", Fake: "Fake",
 	}
 	for k, w := range want {
 		if got := k.Display(); got != w {
@@ -19,5 +19,11 @@ func TestAgentKindDisplay(t *testing.T) {
 func TestAgentKindDisplayOfEmptyKindIsNotFake(t *testing.T) {
 	if got := AgentKind("").Display(); got == "Fake" {
 		t.Errorf(`AgentKind("").Display() = %q, must not be "Fake"`, got)
+	}
+}
+
+func TestAgentKindsEndsWithGrok(t *testing.T) {
+	if got := AgentKinds[len(AgentKinds)-1]; got != Grok {
+		t.Errorf("last AgentKind = %q, want %q", got, Grok)
 	}
 }

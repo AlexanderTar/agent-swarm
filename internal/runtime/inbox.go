@@ -249,6 +249,7 @@ var todosNext = map[AgentKind]string{
 	Agy:    "Rewrite your task.md artifact now to match todos exactly: [x] completed, [/] in progress, [ ] pending. Labels verbatim, same order; don't add, rename or drop entries.",
 	Cursor: "Call TodoWrite now with merge: false and todos: labels verbatim, same order and statuses; don't add, rename or drop entries.",
 	Muse:   "Call write_todos now with todos: labels verbatim, same order and statuses; don't add, rename or drop entries.",
+	Grok:   "Call todo_write now with todos: labels verbatim, same order and statuses; don't add, rename or drop entries.",
 }
 
 const defaultSyncLimit = 20
