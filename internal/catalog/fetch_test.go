@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 )
 
 var bg = context.Background()
@@ -282,7 +284,7 @@ func TestAgyAndCursorFetchers(t *testing.T) {
 	if _, err := (&AgyFetcher{Run: odd}).Version(bg); err == nil {
 		t.Error("unparseable version must fail")
 	}
-	if fs := DefaultFetchers("/Users/x", "x"); len(fs) != 5 || fs[0].Kind() != "claude" || fs[4].Kind() != "muse" {
+	if fs := DefaultFetchers("/Users/x", "/Users/x/.swarm", "x"); len(fs) != 6 || fs[0].Kind() != "claude" || fs[4].Kind() != "muse" || fs[5].Kind() != "grok" {
 		t.Errorf("DefaultFetchers = %v", fs)
 	}
 }
@@ -352,4 +354,109 @@ func TestMuseFetcherDefaultAcrossMultipleFiles(t *testing.T) {
 			t.Errorf("model %q IsDefault = %v, want %v", m.ID, m.IsDefault, want)
 		}
 	}
+}
+
+// envRun records every grok exec with the env it got, and on "models"
+// writes the cache grok would (when cache is not empty).
+type envRun struct {
+	calls []string
+	envs  []map[string]string
+	cache string // written to cachePath on "grok models"
+	path  string
+	err   error
+}
+
+func (r *envRun) run(_ context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, strings.TrimSpace(name+" "+strings.Join(args, " ")))
+	r.envs = append(r.envs, env)
+	if len(args) > 0 && args[0] == "--version" {
+		return []byte("grok 1.0.60 (01a8e1c591c0) [stable]\n"), nil
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.cache != "" {
+		os.MkdirAll(filepath.Dir(r.path), 0o755)
+		os.WriteFile(r.path, []byte(r.cache), 0o644)
+	}
+	return []byte("You are logged in with grok.com.\n"), nil
+}
+
+func grokCache(t *testing.T, fetchedAt time.Time) string {
+	t.Helper()
+	return strings.Replace(string(fixture(t, "grok-models-cache.json")),
+		"2026-10-16T14:51:27.876659Z", fetchedAt.UTC().Format(time.RFC3339), 1)
+}
+
+func TestGrokFetcherRefreshesStaleCache(t *testing.T) {
+	now := time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC)
+	swarm, user := t.TempDir(), t.TempDir()
+	swarmCache := filepath.Join(grokhome.Dir(swarm), "models_cache.json")
+	userCache := filepath.Join(user, ".grok", "models_cache.json")
+	wantEnv := grokhome.Env(swarm)
+	newF := func(r *envRun) *GrokFetcher {
+		return &GrokFetcher{Run: r.run, SwarmHome: swarm, UserHome: user, Now: func() time.Time { return now }}
+	}
+	assertEnv := func(r *envRun) {
+		t.Helper()
+		for i, env := range r.envs {
+			if !maps.Equal(env, wantEnv) {
+				t.Errorf("call %q ran with env %v, want grokhome.Env", r.calls[i], env)
+			}
+		}
+	}
+
+	t.Run("missing cache runs grok models with the grok home env", func(t *testing.T) {
+		r := &envRun{cache: grokCache(t, now), path: swarmCache}
+		got, err := newF(r).Fetch(bg)
+		if err != nil || got.DefaultModel != "grok-4.7" || got.Source != "grok models_cache" || len(got.Models) != 4 {
+			t.Fatalf("got %+v, %v", got, err)
+		}
+		if !slices.Equal(r.calls, []string{"grok models"}) {
+			t.Errorf("calls = %v", r.calls)
+		}
+		assertEnv(r)
+	})
+	t.Run("stale cache is refreshed", func(t *testing.T) {
+		os.MkdirAll(filepath.Dir(swarmCache), 0o755)
+		os.WriteFile(swarmCache, []byte(grokCache(t, now.Add(-25*time.Hour))), 0o644)
+		r := &envRun{cache: grokCache(t, now), path: swarmCache}
+		if _, err := newF(r).Fetch(bg); err != nil || !slices.Equal(r.calls, []string{"grok models"}) {
+			t.Fatalf("calls = %v, err %v", r.calls, err)
+		}
+		assertEnv(r)
+	})
+	t.Run("fresh cache is read without running grok", func(t *testing.T) {
+		os.WriteFile(swarmCache, []byte(grokCache(t, now.Add(-time.Hour))), 0o644)
+		r := &envRun{}
+		got, err := newF(r).Fetch(bg)
+		if err != nil || len(got.Models) != 4 || len(r.calls) != 0 {
+			t.Fatalf("got %+v, calls %v, err %v", got, r.calls, err)
+		}
+	})
+	t.Run("failed refresh falls back to the user's own cache", func(t *testing.T) {
+		os.Remove(swarmCache)
+		os.MkdirAll(filepath.Dir(userCache), 0o755)
+		os.WriteFile(userCache, []byte(grokCache(t, now.Add(-48*time.Hour))), 0o644)
+		r := &envRun{err: errors.New("not authenticated")}
+		got, err := newF(r).Fetch(bg)
+		if err != nil || got.Source != "~/.grok/models_cache.json" || len(got.Models) != 4 {
+			t.Fatalf("got %+v, %v", got, err)
+		}
+		assertEnv(r)
+	})
+	t.Run("nothing anywhere is the run error", func(t *testing.T) {
+		os.Remove(userCache)
+		r := &envRun{err: errors.New("not authenticated")}
+		if _, err := newF(r).Fetch(bg); err == nil || !strings.Contains(err.Error(), "not authenticated") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("version runs with the grok home env too", func(t *testing.T) {
+		r := &envRun{}
+		if v, err := newF(r).Version(bg); err != nil || v != "1.0.60" {
+			t.Fatalf("version %q, %v", v, err)
+		}
+		assertEnv(r)
+	})
 }

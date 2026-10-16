@@ -12,6 +12,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -58,7 +59,9 @@ type Service struct {
 	// Home is $HOME, for the superpowers-installed glob check. Empty in tests
 	// that don't care about Superpowers (it just reports false everywhere).
 	Home string
-	mu   sync.Mutex
+	// SwarmHome is the Swarm home: grok's own plugin installs live under its grok/ dir.
+	SwarmHome string
+	mu        sync.Mutex
 }
 
 type row struct {
@@ -95,12 +98,12 @@ func modelsJSON(ms []CatalogModel) string {
 	return string(b)
 }
 
-// superpowersInstalled is the same §12.4 usability check as
+// SuperpowersInstalled is the same §12.4 usability check as
 // internal/install.SuperpowersOK (kept as a small glob-only duplicate here to
 // avoid a new install<->catalog package dependency for one boolean check; keep
 // the two glob sets in sync if either changes). An empty home (tests that don't
 // care) always reports false.
-func superpowersInstalled(home string, kind kinds.AgentKind) bool {
+func SuperpowersInstalled(home, swarmHome string, kind kinds.AgentKind) bool {
 	if home == "" {
 		return false
 	}
@@ -123,6 +126,13 @@ func superpowersInstalled(home string, kind kinds.AgentKind) bool {
 			filepath.Join(museBase, "skills", "brainstorming", "SKILL.md"),
 			filepath.Join(museBase, "package", "skills", "brainstorming", "SKILL.md"),
 		}
+	case kinds.Grok:
+		// Grok's own install under the Swarm grok home, or the Claude copy
+		// WriteGrok falls back to. Not ~/.grok: Swarm sessions never load it.
+		globs = []string{filepath.Join(home, ".claude", "plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md")}
+		if swarmHome != "" {
+			globs = append(globs, filepath.Join(grokhome.Dir(swarmHome), "installed-plugins", "superpowers-*", "skills", "brainstorming", "SKILL.md"))
+		}
 	default:
 		return false
 	}
@@ -142,7 +152,7 @@ func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 			return nil, err
 		}
 		e := AgentCatalogEntry{Kind: f.Kind(), Models: []CatalogModel{}}
-		e.Superpowers = superpowersInstalled(s.Home, f.Kind())
+		e.Superpowers = SuperpowersInstalled(s.Home, s.SwarmHome, f.Kind())
 		if found {
 			e.Installed, e.Version = r.err != notInstalled, r.version
 			e.DefaultModel, e.CatalogSource, e.CatalogError = r.def, r.source, r.err

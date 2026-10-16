@@ -52,7 +52,7 @@ func TestNewRejectsUnknownKinds(t *testing.T) {
 // is complete. This replaces the partial check Task 3 shipped.
 func TestAllReturnsEveryRealKindPlusFake(t *testing.T) {
 	got := All(testDeps(t))
-	for _, k := range []kinds.AgentKind{kinds.Claude, kinds.Codex, kinds.Agy, kinds.Cursor, kinds.Muse, kinds.Fake} {
+	for _, k := range []kinds.AgentKind{kinds.Claude, kinds.Codex, kinds.Agy, kinds.Cursor, kinds.Muse, kinds.Grok, kinds.Fake} {
 		a, ok := got[k]
 		if !ok {
 			t.Fatalf("All() is missing %s", k)
@@ -61,7 +61,7 @@ func TestAllReturnsEveryRealKindPlusFake(t *testing.T) {
 			t.Errorf("%s adapter reports Kind() = %s", k, a.Kind())
 		}
 	}
-	if len(got) != 6 {
+	if len(got) != 7 {
 		t.Fatalf("All() returned %d adapters", len(got))
 	}
 }

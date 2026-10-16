@@ -95,18 +95,21 @@ func (s *Store) observedPair(ctx context.Context, a Agent, model, effort string)
 	return newModel, newEffort, true
 }
 
-// observeMuseModels records a model/effort change a human made inside a live
-// Muse session. Muse hooks never reach Swarm, so the change is read from its
-// own session.jsonl each reconcile tick (the adapter caches by file size and
-// mtime, and RecordObservedModel is idempotent). Failures are logged, never
-// returned: a bad Muse log must not stall reconcile.
-func (s *Store) observeMuseModels(ctx context.Context, live []liveRow) {
-	mo, ok := s.Adapters[Muse].(adapter.ModelObserver)
-	if !ok {
-		return
+// observeFileModels records a model/effort change a human made inside a live
+// Muse or Grok session. Neither sends the model in a hook, so the change is
+// read from the CLI's own session files each reconcile tick (the adapter caches
+// where it can, and RecordObservedModel is idempotent). Failures are logged,
+// never returned: a bad session file must not stall reconcile.
+func (s *Store) observeFileModels(ctx context.Context, live []liveRow) {
+	observers := map[AgentKind]adapter.ModelObserver{}
+	for _, k := range []AgentKind{Muse, Grok} {
+		if mo, ok := s.Adapters[k].(adapter.ModelObserver); ok {
+			observers[k] = mo
+		}
 	}
 	for _, r := range live {
-		if r.Kind != Muse || r.State != Running {
+		mo, ok := observers[r.Kind]
+		if !ok || r.State != Running {
 			continue
 		}
 		var provider string

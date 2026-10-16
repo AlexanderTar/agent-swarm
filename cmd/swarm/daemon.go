@@ -200,7 +200,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 
 	now := time.Now
 	ev := events.New(d, now)
-	cat := &catalog.Service{DB: d, Events: ev, Fetchers: catalog.DefaultFetchers(userHome, os.Getenv("USER")), Now: now, Log: cfg.Log, Home: userHome}
+	cat := &catalog.Service{DB: d, Events: ev, Fetchers: catalog.DefaultFetchers(userHome, cfg.Home, os.Getenv("USER")), Now: now, Log: cfg.Log, Home: userHome, SwarmHome: cfg.Home}
 	st := &settings.Store{DB: d, Events: ev, Now: now, ModelsFor: cat.ModelsFor, Installed: cat.Installed}
 	rp := &repos.Service{DB: d, Events: ev, Run: execx.Run, Home: cfg.ScanRoot, Now: now, Log: cfg.Log,
 		Excludes: func(ctx context.Context) []string {

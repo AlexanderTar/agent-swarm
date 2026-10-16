@@ -25,6 +25,17 @@ func (m *museObserverFake) ObserveModel(_, providerSessionID string) (string, st
 }
 
 func TestReconcileRecordsMuseObservedModel(t *testing.T) {
+	reconcileRecordsObservedModel(t, kinds.Muse, "muse-old", "muse-new")
+}
+
+// Grok sessions write their model to the grok home's summary.json and send no
+// model in any hook, so the reconcile tick observes them like Muse's.
+func TestReconcileRecordsGrokObservedModel(t *testing.T) {
+	reconcileRecordsObservedModel(t, kinds.Grok, "grok-4.6", "grok-4.7")
+}
+
+func reconcileRecordsObservedModel(t *testing.T, kind kinds.AgentKind, oldModel, newModel string) {
+	t.Helper()
 	s, tm, fa := newStore(t)
 	ctx := context.Background()
 	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "MuseObs", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -35,14 +46,14 @@ func TestReconcileRecordsMuseObservedModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'muse', model = 'muse-old' WHERE id = ?`, a.ID); err != nil {
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ? WHERE id = ?`, kind, oldModel, a.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET provider_session_id = 'prov-1', state = 'running' WHERE id = ?`, ses.ID); err != nil {
 		t.Fatal(err)
 	}
-	obs := &museObserverFake{Fake: fa, model: "muse-new", effort: "low", ok: true}
-	s.Adapters[kinds.Muse] = obs
+	obs := &museObserverFake{Fake: fa, model: newModel, effort: "low", ok: true}
+	s.Adapters[kind] = obs
 	panes(tm, Pane{Session: ses.TmuxName})
 	row := func() (string, string) {
 		var m, e string
@@ -64,8 +75,8 @@ func TestReconcileRecordsMuseObservedModel(t *testing.T) {
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if m, e := row(); m != "muse-new" || e != "low" {
-		t.Fatalf("row = %q/%q, want muse-new/low", m, e)
+	if m, e := row(); m != newModel || e != "low" {
+		t.Fatalf("row = %q/%q, want %s/low", m, e, newModel)
 	}
 	if obs.gotID != "prov-1" {
 		t.Fatalf("observer got provider session %q, want prov-1", obs.gotID)
@@ -83,7 +94,7 @@ func TestReconcileRecordsMuseObservedModel(t *testing.T) {
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if m, e := row(); m != "muse-new" || e != "low" {
+	if m, e := row(); m != newModel || e != "low" {
 		t.Fatalf("row after miss = %q/%q", m, e)
 	}
 }

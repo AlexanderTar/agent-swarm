@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -51,8 +52,10 @@ func versionOf(ctx context.Context, run execx.Runner, bin string) (string, error
 	return v, nil
 }
 
-// DefaultFetchers wires the real commands and files for home (the user's $HOME).
-func DefaultFetchers(home, user string) []Fetcher {
+// DefaultFetchers wires the real commands and files for home (the user's $HOME)
+// and swarmHome (the Swarm home, whose grok/ subdirectory is every Swarm grok
+// process's GROK_HOME).
+func DefaultFetchers(home, swarmHome, user string) []Fetcher {
 	return []Fetcher{
 		&ClaudeFetcher{Run: execx.Run, HTTP: &http.Client{Timeout: 15 * time.Second}, BaseURL: "https://api.anthropic.com", User: user},
 		&CodexFetcher{Run: execx.Run, Start: execx.Start, CacheFile: filepath.Join(home, ".codex", "models_cache.json"), Timeout: 10 * time.Second},
@@ -61,6 +64,7 @@ func DefaultFetchers(home, user string) []Fetcher {
 		&MuseFetcher{Run: execx.Run,
 			DataDir:      filepath.Join(home, ".local", "share", "muse", "model-catalog"),
 			SettingsFile: filepath.Join(home, ".config", "muse", "settings.json")},
+		&GrokFetcher{Run: execx.RunEnv, SwarmHome: swarmHome, UserHome: home},
 	}
 }
 
@@ -395,4 +399,72 @@ func museSettingsBackstop(settings []byte) (*CatalogModel, string) {
 		Efforts: []string{effort}, DefaultEffort: effort,
 		EffortEncoding: "flag", IsDefault: true}
 	return &m, model
+}
+
+// ---- grok ----
+
+// GrokFetcher reads models_cache.json from the Swarm grok home, which grok
+// itself refreshes: `grok models` rewrites it, so a missing or day-old cache is
+// refreshed by running that command with the same env every Swarm grok process
+// gets. The operator's own ~/.grok cache is the fallback when the refresh fails.
+type GrokFetcher struct {
+	Run       execx.RunnerEnv
+	SwarmHome string
+	UserHome  string
+	Now       func() time.Time // nil means time.Now
+}
+
+func (f *GrokFetcher) Kind() kinds.AgentKind { return kinds.Grok }
+
+func (f *GrokFetcher) run(ctx context.Context, args ...string) ([]byte, error) {
+	return f.Run(ctx, grokhome.Env(f.SwarmHome), grokhome.Bin, args...)
+}
+
+func (f *GrokFetcher) Version(ctx context.Context) (string, error) {
+	return versionOf(ctx, func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+		return f.run(ctx, args...)
+	}, grokhome.Bin)
+}
+
+func (f *GrokFetcher) Fetch(ctx context.Context) (Fetched, error) {
+	own := filepath.Join(grokhome.Dir(f.SwarmHome), "models_cache.json")
+	if raw, err := os.ReadFile(own); err == nil && f.fresh(raw) {
+		if ms, err := ParseGrokModels(raw); err == nil {
+			return fetchedGrok(ms, "grok models_cache"), nil
+		}
+	}
+	_, runErr := f.run(ctx, "models")
+	for _, c := range []struct{ path, source string }{
+		{own, "grok models_cache"},
+		{filepath.Join(f.UserHome, ".grok", "models_cache.json"), "~/.grok/models_cache.json"},
+	} {
+		raw, err := os.ReadFile(c.path)
+		if err != nil {
+			continue
+		}
+		if ms, err := ParseGrokModels(raw); err == nil {
+			return fetchedGrok(ms, c.source), nil
+		}
+	}
+	if runErr != nil {
+		return Fetched{}, runErr
+	}
+	return Fetched{}, errNoModels
+}
+
+func (f *GrokFetcher) fresh(raw []byte) bool {
+	now := time.Now
+	if f.Now != nil {
+		now = f.Now
+	}
+	at := grokCacheFetchedAt(raw)
+	return !at.IsZero() && now().Sub(at) < MaxAge
+}
+
+// fetchedGrok defaults to the first model the server lists, which is what
+// `grok models` marks "(default)" on a home with no [models] default set.
+func fetchedGrok(ms []CatalogModel, source string) Fetched {
+	def := ms[0].ID
+	ms[0].IsDefault = true
+	return fetched(ms, def, source)
 }

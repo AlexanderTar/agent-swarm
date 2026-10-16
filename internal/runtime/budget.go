@@ -15,6 +15,8 @@ func NativeCapTokens(kind string) int {
 		return 200000
 	case Codex:
 		return 150000
+	case Grok:
+		return 153600 // 60% of grok's 256k window, set per launch as GROK_AUTO_COMPACT_THRESHOLD_PERCENT
 	}
 	return 0
 }
