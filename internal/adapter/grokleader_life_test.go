@@ -100,8 +100,10 @@ func TestLeaderStartStop(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if slices.Contains(l.Argv, "--leader") || slices.Contains(l.Argv, "--leader-socket") {
-			t.Errorf("argv = %q, must run without a leader (wake falls back to paste)", l.Argv)
+		for _, f := range []string{"--leader", "--leader-socket", "--no-leader"} {
+			if slices.Contains(l.Argv, f) {
+				t.Errorf("argv = %q, must run without a leader and without the unproven %s (wake falls back to paste)", l.Argv, f)
+			}
 		}
 		if !strings.Contains(logged, "leader") {
 			t.Errorf("the skipped leader must be logged, got %q", logged)

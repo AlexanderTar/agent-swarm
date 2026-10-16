@@ -37,10 +37,17 @@ func (g *Grok) leaderSocket(sessionID string) (string, bool) {
 // left by a crashed leader (the TUI would find the file and fail to connect). A
 // path too long for sun_path leaves the flags off, so the agent runs without a
 // leader and wake falls back to the paste.
+//
+// Leaving the flags off relies on grok starting a leader only when --leader is
+// passed (grok --help shows just --leader-socket; --leader and --no-leader parse
+// but are hidden). Swarm passes no --no-leader: that its effect is "never join
+// a leader" was not proven (no logged-in run could be spared), and a leader would
+// be the Swarm grok home's default one, shared by every agent. If a grok update
+// starts leaders by default, this path needs a probed leader-off flag.
 func (g *Grok) leaderArgs(sessionID string) []string {
 	sock, ok := g.leaderSocket(sessionID)
 	if !ok {
-		g.d.Log("grok: leader socket path %q is over %d bytes, launching without a leader (wake will paste)", sock, codexSocketPathMax)
+		g.d.Log("grok: leader socket path %q is over %d bytes, launching without a leader, none is joined (wake will paste)", sock, codexSocketPathMax)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {

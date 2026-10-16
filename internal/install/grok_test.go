@@ -766,3 +766,47 @@ func TestGrokHomeIsPrivate(t *testing.T) {
 		})
 	}
 }
+
+// Install records the Claude superpowers copy it put in [skills] paths; uninstall
+// takes that one back and leaves a superpowers path the operator added.
+func TestUninstallGrokRemovesOnlyTheRecordedSuperpowersPath(t *testing.T) {
+	c := fakeHome(t)
+	ours := c.Claude("plugins", "cache", "m", "superpowers", "5.1.0", "skills")
+	theirs := c.Claude("plugins", "cache", "m", "superpowers", "5.0.1", "skills")
+	for _, d := range []string{ours, theirs} {
+		if err := os.MkdirAll(filepath.Join(d, "brainstorming"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(d, "brainstorming", "SKILL.md"), []byte("x"), 0o644)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Dir(theirs), past, past); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+		t.Fatal(err)
+	}
+	// The operator adds an older copy by hand after install.
+	m := readTOML(t, c.Grok("config.toml"))
+	skills := m["skills"].(map[string]any)
+	skills["paths"] = append(skills["paths"].([]any), theirs)
+	body, err := toml.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.Grok("config.toml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := install.UninstallGrok(c); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	if sk, ok := readTOML(t, c.Grok("config.toml"))["skills"].(map[string]any); ok {
+		for _, p := range sk["paths"].([]any) {
+			paths = append(paths, p.(string))
+		}
+	}
+	if slices.Contains(paths, ours) || !slices.Contains(paths, theirs) {
+		t.Errorf("[skills] paths = %v, want only the operator's %s left", paths, theirs)
+	}
+}
