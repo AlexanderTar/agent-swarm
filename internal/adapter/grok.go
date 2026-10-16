@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"sync"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
@@ -20,9 +23,15 @@ import (
 // own GROK_HOME under the Swarm home and every foreign-agent compat surface off
 // (internal/grokhome), so launch, catalog and install all build that env in one
 // place.
-type Grok struct{ base }
+type Grok struct {
+	base
+	mu     sync.Mutex
+	minted map[string]string // workspace root -> the --session-id Launch minted
+}
 
-func newGrok(d Deps) *Grok { return &Grok{base{d: d, kind: kinds.Grok}} }
+func newGrok(d Deps) *Grok {
+	return &Grok{base: base{d: d, kind: kinds.Grok}, minted: map[string]string{}}
+}
 
 func init() { register(kinds.Grok, func(d Deps) Adapter { return newGrok(d) }) }
 
@@ -87,7 +96,11 @@ func (g *Grok) Launch(s Spec) (Launch, error) {
 	if err := g.refreshPlugins(); err != nil {
 		return Launch{}, err
 	}
-	return Launch{Argv: g.flags(s, "--session-id", newUUIDv4()), Env: g.launchEnv(s)}, nil
+	id := newUUIDv4()
+	g.mu.Lock()
+	g.minted[s.Cwd] = id
+	g.mu.Unlock()
+	return Launch{Argv: g.flags(s, "--session-id", id), Env: g.launchEnv(s)}, nil
 }
 
 // Resume keeps the kickoff: grok accepts a positional prompt with --resume and
@@ -153,20 +166,96 @@ func (g *Grok) SuperpowersInstalled() bool {
 	return catalog.SuperpowersInstalled(g.d.UserHome, g.d.Home, kinds.Grok)
 }
 
-// ---- filled in by the pane-rules unit and the hook, wake packages ----
+var (
+	// Pinned against 14 live tmux captures (grok 1.0.60, fixtures in
+	// testdata/grok/). The input box is drawn in every state, so a muse-style
+	// bare-prompt rule would be wrong: idleness is the footer at rest, and a
+	// draft or queued message changes the footer. Each footer segment is wrapped
+	// in its own SGR codes, so the rules run on stripped text (Idle strips first).
+	//
+	// pane_current_command is the binary name cut to MAXCOMLEN: "grok-1.0.60-mac".
+	grokProcess = []*regexp.Regexp{regexp.MustCompile(`^grok(-\d.*)?$`)}
+	grokIdle    = regexp.MustCompile(`(?m)^\s*Shift\+Tab:mode\s+│\s+Ctrl\+x:shortcuts\s*$`)
+	grokBusy    = regexp.MustCompile(`(?m)(\[stop\]\s*$|│\s+Ctrl\+c:cancel\s+│)`)
+	// grokCard is a modal card (an upgrade or usage-limit offer, or a question):
+	// it swallows typed text, and only a person (or Shift+x) clears it.
+	grokCard = regexp.MustCompile(`Tab:next answer\s+│\s+Esc:scrollback`)
+	// grokUsageLimit is the card title when the plan's allowance is spent.
+	grokUsageLimit = regexp.MustCompile(`You hit your .*usage limit`)
+)
 
-var grokNever = regexp.MustCompile(`\A\z.\A`)
+func (g *Grok) ProcessNames() []*regexp.Regexp { return grokProcess }
+func (g *Grok) IdlePrompt() *regexp.Regexp     { return grokIdle }
+func (g *Grok) Busy() *regexp.Regexp           { return grokBusy }
 
-func (g *Grok) ProcessNames() []*regexp.Regexp                  { return nil }
-func (g *Grok) IdlePrompt() *regexp.Regexp                      { return grokNever }
-func (g *Grok) Busy() *regexp.Regexp                            { return nil }
-func (g *Grok) Idle(capture string) bool                        { return idle(g, capture) }
-func (g *Grok) StartupDialogs() []Dialog                        { return nil }
-func (g *Grok) PromptPatterns() []PromptMatcher                 { return nil }
-func (g *Grok) InterruptKeys() []string                         { return []string{"C-c"} }
+// Idle reads the stripped pane: IdlePrompt spans several colour-coded segments.
+func (g *Grok) Idle(capture string) bool { return idle(g, StripANSI(capture)) }
+
+const grokCardTitle = "Grok is showing a card"
+
+// StartupDialogs and PromptPatterns are detect-only (no keys): --trust leaves no
+// startup dialog, so the only thing that can stall the pane is a card, and that
+// needs a person.
+func (g *Grok) StartupDialogs() []Dialog {
+	return []Dialog{{Match: grokCard, Title: grokCardTitle}}
+}
+func (g *Grok) PromptPatterns() []PromptMatcher {
+	return []PromptMatcher{{Match: grokCard, Title: grokCardTitle}}
+}
+
+// InterruptKeys is one C-c: mid-turn it cancels the turn, at idle it arms quit,
+// so the runtime must never send it twice.
+func (g *Grok) InterruptKeys() []string { return []string{"C-c"} }
+
+func (g *Grok) RenameCommand(name string) (string, bool) { return "/rename " + name, true }
+
+// DiscoverSession returns the id Launch minted for this workspace: grok takes
+// Swarm's own --session-id, so there is nothing to scan for. Discovery runs in
+// the daemon that launched the session; a workspace this adapter never
+// launched (a resumed one already has its id) reports false.
+func (g *Grok) DiscoverSession(_ context.Context, _ int, workspaceRoot string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	id, ok := g.minted[workspaceRoot]
+	return id, ok
+}
+
+// ForgetFolder drops one folder's trust from the Swarm grok home's
+// trusted_folders.toml (written by --trust) and keeps every other entry. The
+// edit is skipped when the file changed since it was read, and an unparseable
+// file is left alone.
+func (g *Grok) ForgetFolder(_ context.Context, path string) error {
+	p := filepath.Join(grokhome.Dir(g.d.Home), "trusted_folders.toml")
+	raw, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if err := toml.Unmarshal(raw, &doc); err != nil {
+		g.d.Log("grok: trusted_folders.toml does not parse, leaving it alone: %v", err)
+		return nil
+	}
+	folders, _ := doc["folders"].(map[string]any)
+	if _, ok := folders[path]; !ok {
+		return nil
+	}
+	delete(folders, path)
+	out, err := toml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	if now, err := os.ReadFile(p); err != nil || string(now) != string(raw) {
+		g.d.Log("grok: trusted_folders.toml changed while editing, skipping the trust cleanup for %s", path)
+		return nil
+	}
+	return writeFileAtomic(p, out, 0o600)
+}
+
+// ---- filled in by the hook and wake packages ----
+
 func (g *Grok) Wake(context.Context, WakeTarget) (bool, error)  { return false, nil }
 func (g *Grok) HookOutput(string, HookDecision) ([]byte, error) { return nil, nil }
 func (g *Grok) ParseHook(string, []byte) (HookInput, error)     { return HookInput{}, nil }
-func (g *Grok) DiscoverSession(context.Context, int, string) (string, bool) {
-	return "", false
-}

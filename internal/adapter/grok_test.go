@@ -264,3 +264,172 @@ func TestGrokSuperpowersInstalledDelegates(t *testing.T) {
 		t.Fatal("false with the native install present")
 	}
 }
+
+func grokPane(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "grok", "grok-tui-"+name+".txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The expected matrix is TASK-1126 §1: grok draws its input box in every state,
+// so idleness is read from the footer, not from the prompt glyph.
+func TestGrokPaneRules(t *testing.T) {
+	a := newGrok(testDeps(t))
+	for _, tc := range []struct {
+		fixture                string
+		idle, busy, card, limit bool
+	}{
+		{"idle", true, false, false, false},
+		{"after-ctrlc", true, false, false, false},
+		{"after-queue", true, false, false, false},
+		{"after-rename", true, false, false, false},
+		{"multiline-pasted", false, false, false, false}, // a draft in the box
+		{"startup-0.5", false, false, false, false},
+		{"startup-1.5", false, true, false, false},
+		{"startup-3", false, true, false, false},
+		{"busy-tool", false, true, false, false},
+		{"busy-sendnow", false, true, false, false},
+		{"busy-paste-queued", false, true, false, false},
+		{"usage-modal", false, false, true, false},
+		{"free-usage-limit-card", false, false, true, true},
+		{"resume-with-prompt", false, false, true, true},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			raw := grokPane(t, tc.fixture)
+			plain := StripANSI(raw)
+			if got := a.Idle(raw); got != tc.idle {
+				t.Errorf("Idle(raw) = %v, want %v", got, tc.idle)
+			}
+			if got := a.Idle(plain); got != tc.idle {
+				t.Errorf("Idle(plain) = %v, want %v", got, tc.idle)
+			}
+			if got := a.Busy().MatchString(plain); got != tc.busy {
+				t.Errorf("Busy = %v, want %v", got, tc.busy)
+			}
+			if got := grokCard.MatchString(plain); got != tc.card {
+				t.Errorf("card = %v, want %v", got, tc.card)
+			}
+			if got := grokUsageLimit.MatchString(plain); got != tc.limit {
+				t.Errorf("usage limit = %v, want %v", got, tc.limit)
+			}
+			// A card needs a person: it shows as a Needs-you row and as a startup stall.
+			var prompt, startup bool
+			for _, m := range a.PromptPatterns() {
+				prompt = prompt || m.Match.MatchString(plain)
+			}
+			for _, d := range a.StartupDialogs() {
+				startup = startup || d.Match.MatchString(plain)
+			}
+			if prompt != tc.card || startup != tc.card {
+				t.Errorf("card dialogs: prompt=%v startup=%v, want %v", prompt, startup, tc.card)
+			}
+		})
+	}
+}
+
+func TestGrokProcessNamesAndInterrupt(t *testing.T) {
+	a := newGrok(testDeps(t))
+	match := func(cmd string) bool {
+		for _, re := range a.ProcessNames() {
+			if re.MatchString(cmd) {
+				return true
+			}
+		}
+		return false
+	}
+	for cmd, want := range map[string]bool{"grok-1.0.60-mac": true, "grok": true, "grok-1.0.60-macos-aarch64": true,
+		"zsh": false, "groker": false, "grok-leader": false} {
+		if match(cmd) != want {
+			t.Errorf("ProcessNames(%q) = %v, want %v", cmd, !want, want)
+		}
+	}
+	if got := a.InterruptKeys(); !slices.Equal(got, []string{"C-c"}) {
+		t.Errorf("InterruptKeys = %v", got)
+	}
+}
+
+func TestGrokRenameCommand(t *testing.T) {
+	var r SessionRenamer = newGrok(testDeps(t))
+	if line, ok := r.RenameCommand("login-form-coder"); !ok || line != "/rename login-form-coder" {
+		t.Errorf("RenameCommand = %q, %v", line, ok)
+	}
+}
+
+// Swarm mints grok's session id at launch, so discovery just hands it back.
+func TestGrokDiscoverSession(t *testing.T) {
+	a := newGrok(testDeps(t))
+	s := grokSpec(t)
+	l, err := a.Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minted := l.Argv[slices.Index(l.Argv, "--session-id")+1]
+	if id, ok := a.DiscoverSession(context.Background(), 4242, s.Cwd); !ok || id != minted {
+		t.Fatalf("DiscoverSession = %q, %v; want %q", id, ok, minted)
+	}
+	if id, ok := a.DiscoverSession(context.Background(), 4242, "/some/other/cwd"); ok || id != "" {
+		t.Errorf("an unlaunched workspace discovered %q", id)
+	}
+	other := grokSpec(t)
+	l2, _ := a.Launch(other)
+	if id, _ := a.DiscoverSession(context.Background(), 1, other.Cwd); id != l2.Argv[slices.Index(l2.Argv, "--session-id")+1] || id == minted {
+		t.Errorf("two workspaces must keep their own ids, got %q", id)
+	}
+}
+
+func TestGrokForgetFolder(t *testing.T) {
+	d := testDeps(t)
+	a := newGrok(d)
+	path := filepath.Join(grokhome.Dir(d.Home), "trusted_folders.toml")
+	ctx := context.Background()
+	if err := a.ForgetFolder(ctx, "/work/a"); err != nil {
+		t.Fatalf("missing file: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("ForgetFolder created %s", path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "[folders.\"/work/a\"]\ntrusted = true\ndecided_at = 1792156471\n\n[folders.\"/work/b\"]\ntrusted = true\ndecided_at = 1792156472\n"
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ForgetFolder(ctx, "/work/a"); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Folders map[string]struct {
+			Trusted   bool  `toml:"trusted"`
+			DecidedAt int64 `toml:"decided_at"`
+		} `toml:"folders"`
+	}
+	raw, _ := os.ReadFile(path)
+	if err := toml.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, gone := got.Folders["/work/a"]; gone || len(got.Folders) != 1 || got.Folders["/work/b"].DecidedAt != 1792156472 {
+		t.Fatalf("folders after forget = %+v", got.Folders)
+	}
+	// An unknown path leaves the file byte-identical (no rewrite).
+	before, _ := os.ReadFile(path)
+	if err := a.ForgetFolder(ctx, "/work/unknown"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Errorf("file rewritten for an unknown path:\n%s", after)
+	}
+	// A file that does not parse is left alone.
+	if err := os.WriteFile(path, []byte("[folders\nbroken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ForgetFolder(ctx, "/work/b"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != "[folders\nbroken" {
+		t.Errorf("unparseable file was modified: %q", after)
+	}
+}
