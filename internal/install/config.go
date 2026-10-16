@@ -55,6 +55,10 @@ func (c Config) Grok(rest ...string) string {
 	return filepath.Join(append([]string{grokhome.Dir(c.Home)}, rest...)...)
 }
 
+// UserGrok is the operator's own ~/.grok, the home of the shared login that the
+// Swarm grok home links to.
+func (c Config) UserGrok(rest ...string) string { return c.under(".grok", rest) }
+
 func (c Config) under(dir string, rest []string) string {
 	return filepath.Join(append([]string{c.UserHome, dir}, rest...)...)
 }
