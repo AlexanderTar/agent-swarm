@@ -3,12 +3,15 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/agent-swarm/internal/usagegate"
 )
 
 // seedGrok is seed with the agent's kind switched to grok.
@@ -415,5 +418,58 @@ func TestGrokStopRecordsTheContextSample(t *testing.T) {
 	}
 	if got := sessionFlag(t, h, "context_window", ses); got != 256000 {
 		t.Fatalf("context_window = %d", got)
+	}
+}
+
+// exhaustedByHook runs the usage source the way the daemon does, with only the
+// hook's exhaustion record behind it, and asks the usage gate's own predicate.
+func exhaustedByHook(t *testing.T, ex *usagesvc.GrokExhaustion, now time.Time) bool {
+	t.Helper()
+	g := &usagesvc.Grok{Exhaustion: ex, Now: func() time.Time { return now }}
+	meters, headline, err := g.Fetch(context.Background())
+	if errors.Is(err, usagesvc.ErrNoData) {
+		return false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return usagegate.Exhausted(usagesvc.Snapshot{Agent: runtime.Grok, Meters: meters, HeadlineID: headline}, now)
+}
+
+func TestGrokExhaustionFromStopFailure(t *testing.T) {
+	now := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ event, fixture string }{
+		{"StopFailure", "stop-failure"},
+		{"Notification", "notification-agent-error"},
+	} {
+		t.Run(c.event, func(t *testing.T) {
+			h, ses := seedGrok(t, 0, runtime.Running)
+			ex := &usagesvc.GrokExhaustion{}
+			h.GrokExhaustion = ex
+			h.Now = func() time.Time { return now }
+			if exhaustedByHook(t, ex, now) {
+				t.Fatal("grok must not read exhausted before any failure")
+			}
+			grokHandle(t, h, c.event, ses, c.fixture)
+			if !exhaustedByHook(t, ex, now) {
+				t.Fatalf("a %s carrying the 429 quota error must mark grok exhausted", c.event)
+			}
+			if exhaustedByHook(t, ex, now.Add(24*time.Hour+time.Minute)) {
+				t.Fatal("grok must read available again after the reset")
+			}
+		})
+	}
+}
+
+func TestGrokOtherKindsAndPlainStopFailuresDoNotMarkExhausted(t *testing.T) {
+	now := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
+	h, ses := seedGrok(t, 0, runtime.Running)
+	ex := &usagesvc.GrokExhaustion{}
+	h.GrokExhaustion = ex
+	h.Now = func() time.Time { return now }
+	grokHandle(t, h, "StopCancelled", ses, "stop-cancelled")
+	grokHandle(t, h, "Notification", ses, "notification-idle")
+	if exhaustedByHook(t, ex, now) {
+		t.Fatal("a cancelled turn and an idle notification are not exhaustion")
 	}
 }

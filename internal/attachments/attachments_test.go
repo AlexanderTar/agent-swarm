@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 func png(t *testing.T) []byte {
@@ -154,5 +156,19 @@ func TestBriefSections(t *testing.T) {
 	want = "## Attachments\n\nThe user attached 3 files, but Swarm could not save them (disk full). Ask the user to share them another way."
 	if got != want {
 		t.Errorf("FailureSection = %q", got)
+	}
+}
+
+// The package doc's probe table must list every agent kind, so adding a kind
+// without probing whether it can open an attached image fails here.
+func TestImageProbeTableCoversEveryAgentKind(t *testing.T) {
+	src, err := os.ReadFile("attachments.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range kinds.AgentKinds {
+		if !regexp.MustCompile(`(?m)^//\s+` + regexp.QuoteMeta(string(k)) + `\s+\S`).Match(src) {
+			t.Errorf("attachments.go's image probe table has no row for %s", k)
+		}
 	}
 }

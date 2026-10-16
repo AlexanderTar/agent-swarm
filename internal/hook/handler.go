@@ -507,8 +507,14 @@ type Handler struct {
 	RT       *runtime.Store
 	Adapters map[runtime.AgentKind]adapter.Adapter
 	Advisor  AdvisorScanner
-	Now      func() time.Time
-	Log      func(string, ...any)
+	// GrokExhaustion, when set, is told of every grok quota failure (a
+	// rate_limit StopFailure or an agent_error Notification) so the usage gate
+	// can mark grok exhausted; *usage.GrokExhaustion in the daemon.
+	GrokExhaustion interface {
+		Note(text string, at time.Time) bool
+	}
+	Now func() time.Time
+	Log func(string, ...any)
 	// WorktreesDir is ~/.swarm/worktrees (install.Config.Worktrees()); empty
 	// disables the worktree-mutation guard below, so every existing Handler
 	// literal in tests keeps compiling and keeps its current behaviour.
@@ -685,6 +691,14 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	}
 	if err != nil {
 		return nil, err
+	}
+	if s.Kind == runtime.Grok && h.GrokExhaustion != nil {
+		switch {
+		case ev == "StopFailure" && in.Error == "rate_limit":
+			h.GrokExhaustion.Note(in.ErrorDetails, h.now())
+		case ev == "Notification" && in.NotificationType == "agent_error":
+			h.GrokExhaustion.Note(in.Message, h.now())
+		}
 	}
 	// a human's in-session /model or /effort shows up in the hook's model field
 	if in.Model != "" && h.RT != nil {

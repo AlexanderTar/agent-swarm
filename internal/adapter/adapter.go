@@ -104,6 +104,9 @@ type HookInput struct {
 	Reason           string
 	StopHookActive   bool
 	NotificationType string
+	// Error, ErrorDetails and Message are grok's failure text: a StopFailure's
+	// error class ("rate_limit") with its details, and a Notification's message.
+	Error, ErrorDetails, Message string
 	// ContextTokens/ContextWindow are an exact context reading a hook carried
 	// (cursor preCompact only); zero when absent.
 	ContextTokens, ContextWindow int

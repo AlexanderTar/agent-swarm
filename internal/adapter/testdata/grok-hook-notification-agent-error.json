@@ -1,0 +1,17 @@
+{
+ "hookEventName": "notification",
+ "sessionId": "01a144ec-43c3-7af2-9998-e4ea7728067b",
+ "cwd": "<probe>",
+ "workspaceRoot": "<probe>",
+ "timestamp": "2026-10-16T13:34:59.985785+00:00",
+ "transcriptPath": "/grok/sessions/w/01a144ec-43c3-7af2-9998-e4ea7728067b/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "notificationType": "agent_error",
+ "message": "API error (status 429 Too Many Requests): subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 619434/600000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok",
+ "level": "error",
+ "hook_event_name": "Notification",
+ "session_id": "01a144ec-43c3-7af2-9998-e4ea7728067b",
+ "transcript_path": "/grok/sessions/w/01a144ec-43c3-7af2-9998-e4ea7728067b/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "notification_type": "agent_error"
+}

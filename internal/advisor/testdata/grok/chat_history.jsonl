@@ -1,0 +1,12 @@
+{"type":"system","content":"You are Grok 4.7 released by xAI."}
+{"type":"user","content":[{"type":"text","text":"<user_info>\nOS Version: macos\n</user_info>"}]}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\nThe following skills are available for use:\n</system-reminder>"}],"synthetic_reason":"system_reminder"}
+{"type":"user","content":[{"type":"text","text":"<user_query>\nUse list_dir once, then summarise.\n</user_query>"}],"prompt_index":0}
+{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"The user wants list_dir."}],"encrypted_content":"x","status":"completed"}
+{"type":"assistant","content":"","tool_calls":[{"id":"call-1","name":"list_dir","arguments":"{\"target_directory\":\"/w\"}"}],"model_id":"grok-4.7","reasoning_effort":"low"}
+{"type":"tool_result","tool_call_id":"call-1","content":"- /w/file.txt"}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\nContext from PostToolUse hook\n</system-reminder>"}],"synthetic_reason":"system_reminder"}
+{"type":"assistant","content":"The directory contains file.txt.","model_id":"grok-4.7","reasoning_effort":"low"}
+{"type":"user","content":[{"type":"text","text":"Stop hook feedback:\n- Before stopping, reply GOLF-STOP.\n"}],"synthetic_reason":"stop_hook_feedback"}
+{"not json
+{"type":"assistant","content":"GOLF-STOP","model_id":"grok-4.7"}

@@ -177,7 +177,7 @@ func (s *Server) copyTranscript(ctx context.Context, c Caller, a runtime.Agent, 
 		userHome = s.Advisor.UserHome
 	}
 	// ponytail: derived path only; runtime doesn't persist a hook-reported transcript_path (codex has none derivable), upgrade by storing it on the session.
-	src, err := advisor.TranscriptPath(a.Kind, userHome, cwd, providerID)
+	src, err := advisor.TranscriptPath(a.Kind, userHome, s.RT.Home, cwd, providerID)
 	if err != nil {
 		return "unavailable (" + err.Error() + ")"
 	}

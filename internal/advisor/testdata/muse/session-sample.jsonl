@@ -1,0 +1,8 @@
+{"retained_frame":"session_permission_transaction","frame_schema_version":1,"outer_log_ordinal":1,"children":[]}
+{"schema_version":1,"sequence":24,"payload_type":"runtime.user_intent.accepted","payload":{"intent_id":"i1","surface":"main","semantic_kind":{"kind":"chat"},"model_messages":[{"content":[{"kind":"text","text":"Review STORY-88."}]}]}}
+{"schema_version":1,"sequence":26,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"r1","event":{"kind":"assistant_message_committed","message_id":"m1","text":"Using the swarm skill.","phase":"commentary"}}}
+{"schema_version":1,"sequence":27,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"r1","event":{"kind":"assistant_tool_calls_committed","message_id":"m2","tool_calls":[{"id":"fc_1","call_id":"call_1","name":"read_skill","args":"{\"name\":\"swarm\"}"}]}}}
+{"schema_version":1,"sequence":28,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"r1","event":{"kind":"model_completed","usage":{"input_tokens":10,"output_tokens":2}}}}
+{"schema_version":1,"sequence":29,"payload_type":"runtime.user_intent.accepted","payload":{"intent_id":"i2","semantic_kind":{"kind":"slash_command"},"model_messages":[{"content":[{"kind":"text","text":"/compact"}]}]}}
+not json at all
+{"schema_version":1,"sequence":30,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"r1","event":{"kind":"assistant_message_committed","message_id":"m3","text":"Verdict: approve.","phase":"final_answer"}}}
