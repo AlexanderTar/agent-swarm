@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -482,6 +483,122 @@ func TestAdvisorGrokEnvReachesRunner(t *testing.T) {
 func TestAdvisorGrokWithoutEnvRunnerFailsRatherThanRunningWithoutGrokHome(t *testing.T) {
 	s, seed, _ := grokAdvisorService(t)
 	s.RunEnv = nil
+	adv, err := s.Ask(context.Background(), seed.SessionID, "q", nil, 45*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adv.State != "failed" {
+		t.Fatalf("advice = %+v, want failed", adv)
+	}
+}
+
+// museArgv is the read-only form from SPIKE-52 probe 10 / decision 7.
+func museArgv(dir string) []string {
+	return []string{"muse", "exec", "--json", "--disable-write", "--disable-shell", "--disable-request-user-input",
+		"--disable-web-tools", "--no-session-log", "--workspace", dir, "--model", "muse-wonder-1.0",
+		"--reasoning-effort", "high", Prompt}
+}
+
+func TestAdvisorCommandMuse(t *testing.T) {
+	dir := "/Users/u/.swarm/run/advice/adv_1"
+	got, err := museAdvisorCommand("muse-wonder-1.0", "high", dir, Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := museArgv(dir); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+	noEffort, _ := museAdvisorCommand("muse-wonder-1.0", "", dir, Prompt)
+	if strings.Contains(strings.Join(noEffort, " "), "--reasoning-effort") {
+		t.Fatalf("no effort, no flag: %v", noEffort)
+	}
+}
+
+// The write-attempt check for muse: the argv switches off every tool that
+// writes, runs a command, asks the user or reaches the web, keeps no session
+// log, and carries no flag that approves, trusts or widens permissions.
+func TestAdvisorMuseReadOnly(t *testing.T) {
+	argv, err := museAdvisorCommand("muse-wonder-1.0", "low", t.TempDir(), Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, need := range []string{"--disable-write", "--disable-shell", "--disable-request-user-input",
+		"--disable-web-tools", "--no-session-log"} {
+		if !slices.Contains(argv, need) {
+			t.Errorf("argv lacks %s: %v", need, argv)
+		}
+	}
+	for _, bad := range []string{"--yolo", "--trust-workspace", "--approval-mode", "--permission-profile",
+		"--preset", "--worktree", "-w", "--provider"} {
+		if slices.Contains(argv, bad) {
+			t.Errorf("argv carries %s: %v", bad, argv)
+		}
+	}
+}
+
+// Live proof that the installed muse still accepts every flag in the argv
+// (the echo provider spends nothing and makes no tool call, so this does not
+// prove the write block; CHORE-102's live write test does).
+//
+//	MUSE_LIVE_PROBE=1 go test ./internal/advisor/ -run TestMuseAdvisorArgvIsAcceptedByTheCLI -v
+func TestMuseAdvisorArgvIsAcceptedByTheCLI(t *testing.T) {
+	if os.Getenv("MUSE_LIVE_PROBE") != "1" {
+		t.Skip("live probe against the real muse CLI; set MUSE_LIVE_PROBE=1 to run")
+	}
+	ws := t.TempDir()
+	argv, _ := museAdvisorCommand("", "", ws, "hello")
+	argv = append(argv[:2:2], append([]string{"--provider", "echo"}, argv[2:]...)...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = ws
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+func TestParseAnswerMuse(t *testing.T) {
+	ok, err := os.ReadFile("testdata/muse/exec-completed.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ans, u, err := ParseAnswer(runtime.Muse, ok, nil, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ans != "Use the server path." {
+		t.Fatalf("answer = %q", ans)
+	}
+	if u != (Usage{}) {
+		t.Fatalf("exec --json carries no usage; got %+v", u)
+	}
+	failed, err := os.ReadFile("testdata/muse/exec-failed.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ParseAnswer(runtime.Muse, failed, nil, "", ""); err == nil || !strings.Contains(err.Error(), "Subscription quota exhausted") {
+		t.Fatalf("a failed run must surface its reason, got %v", err)
+	}
+	if _, _, err := ParseAnswer(runtime.Muse, []byte(`{"payload_type":"run.output.delta"}`+"\n"), nil, "", ""); err == nil {
+		t.Fatal("a run that never reached a terminal record is an error, not an empty answer")
+	}
+}
+
+// Muse stays without an advisor until CHORE-102's live write test passes (after
+// 2026-10-19): the argv and parser above are built and tested, but nothing may
+// run them.
+func TestMuseAdvisorIsOff(t *testing.T) {
+	if _, err := AdvisorCommand(runtime.Muse, "muse-wonder-1.0", "low", t.TempDir(), Prompt); err == nil {
+		t.Fatal("AdvisorCommand must refuse muse while its advisor is switched off")
+	}
+	s, seed := newAdvisorService(t)
+	if _, err := s.DB.ExecContext(context.Background(),
+		`UPDATE agents SET advisor_kind = 'muse', advisor_model = 'muse-wonder-1.0' WHERE id = ?`, seed.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	s.Run = func(context.Context, string, ...string) ([]byte, error) {
+		t.Error("a muse advisor must never be executed")
+		return nil, errors.New("ran")
+	}
 	adv, err := s.Ask(context.Background(), seed.SessionID, "q", nil, 45*time.Second)
 	if err != nil {
 		t.Fatal(err)

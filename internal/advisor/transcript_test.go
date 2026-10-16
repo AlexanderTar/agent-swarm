@@ -161,3 +161,44 @@ func TestGrokTranscriptPathIsUnderTheGrokHome(t *testing.T) {
 		t.Fatal("an empty provider session id must not glob every session")
 	}
 }
+
+func TestMuseAdvisorTranscript(t *testing.T) {
+	turns, err := ReadTranscript(runtime.Muse, "testdata/muse/session-sample.jsonl", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Turn{
+		{Role: "user", Text: "Review STORY-88."},
+		{Role: "assistant", Text: "Using the swarm skill."},
+		{Role: "assistant", Tool: "read_skill"},
+		{Role: "assistant", Text: "Verdict: approve."},
+	}
+	if !reflect.DeepEqual(turns, want) {
+		t.Fatalf("turns = %+v\nwant    %+v", turns, want)
+	}
+}
+
+// muse keeps one dated folder per session: sessions/YYYY/MM/DD/<id>/session.jsonl.
+func TestMuseTranscriptPath(t *testing.T) {
+	userHome := t.TempDir()
+	dir := filepath.Join(userHome, ".local", "share", "muse", "sessions", "2026", "10", "16", "sess-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := TranscriptPath(runtime.Muse, userHome, "", "/w", "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "session.jsonl"); got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	if _, err := TranscriptPath(runtime.Muse, userHome, "", "/w", "no-such"); err == nil {
+		t.Fatal("an unknown session has no transcript path")
+	}
+	if _, err := TranscriptPath(runtime.Muse, userHome, "", "/w", ""); err == nil {
+		t.Fatal("an empty provider session id must not glob every session")
+	}
+}

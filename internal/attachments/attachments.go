@@ -30,6 +30,10 @@
 //	                                 on the account's Auto model -- named
 //	                                 models were unavailable on this plan)
 //	muse    1.4.0 (1.4.0-R4302.1)    sees image (Read tool; answered SWARM)
+//	grok    1.0.60 (01a8e1c591c0)    sees image (read_file tool; described a
+//	                                 96x96 PNG, magenta left half and green
+//	                                 right half; probed 2026-10-16 in a TUI
+//	                                 session, tool label "Read ... (image)")
 //
 // A kind that can't view images (none observed here) still gets every
 // attachment's absolute path, so it can still act on them (e.g. shell out

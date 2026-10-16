@@ -1,6 +1,7 @@
 package advisor
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +33,12 @@ func fillPrompt(name, role, key, contextPath string) string {
 	return r.Replace(Prompt)
 }
 
+// museAdvisorEnabled keeps muse without an advisor. Its read-only argv
+// (museAdvisorCommand) and parser are built and unit-tested, but the write block
+// was never proved live: muse answered 429 (quota exhausted until 2026-10-19)
+// before any tool ran. Enabling it is CHORE-102, once a live write test passes.
+const museAdvisorEnabled = false
+
 // grokAdvisorMaxTurns bounds the advisor's read-and-answer loop.
 const grokAdvisorMaxTurns = "8"
 
@@ -62,6 +69,11 @@ func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) (
 	case runtime.Cursor:
 		return []string{"cursor-agent", "-p", "--trust", "--mode", "ask", "--model", model,
 			"--output-format", "json", prompt}, nil
+	case runtime.Muse:
+		if !museAdvisorEnabled {
+			return nil, fmt.Errorf("%s can't run as a read-only advisor yet: its write block is unproven", kind.Display())
+		}
+		return museAdvisorCommand(model, effort, dir, prompt)
 	case runtime.Grok:
 		// runs with grokhome.Env (see Service.envFor): GROK_HOME and the compat switches
 		a := []string{"grok", "-p", prompt, "-m", model}
@@ -73,6 +85,21 @@ func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) (
 			"--output-format", "json", "--max-turns", grokAdvisorMaxTurns, "--cwd", dir), nil
 	}
 	return nil, fmt.Errorf("%s can't run as a read-only advisor", kind.Display())
+}
+
+// museAdvisorCommand is the read-only `muse exec` form from SPIKE-52 probe 10:
+// every tool that writes, runs a command, asks the user or reaches the web is
+// switched off, no session log is kept, and the workspace is the advice dir.
+func museAdvisorCommand(model, effort, dir, prompt string) ([]string, error) {
+	a := []string{"muse", "exec", "--json", "--disable-write", "--disable-shell", "--disable-request-user-input",
+		"--disable-web-tools", "--no-session-log", "--workspace", dir}
+	if model != "" {
+		a = append(a, "--model", model)
+	}
+	if effort != "" {
+		a = append(a, "--reasoning-effort", effort)
+	}
+	return append(a, prompt), nil
 }
 
 // Usage is §11.6's cost tracking (D1): tokens and cost from each agent's own
@@ -106,6 +133,8 @@ func ParseAnswer(kind runtime.AgentKind, stdout, stderr []byte, dir, userHome st
 		return parseCursorAnswer(stdout)
 	case runtime.Grok:
 		return parseGrokAnswer(stdout)
+	case runtime.Muse:
+		return parseMuseAnswer(stdout)
 	}
 	return "", Usage{}, fmt.Errorf("%s has no advisor output parser", kind.Display())
 }
@@ -227,4 +256,45 @@ func parseGrokAnswer(stdout []byte) (string, Usage, error) {
 		answer = r.Result
 	}
 	return answer, u, nil
+}
+
+// parseMuseAnswer reads `muse exec --json` JSONL: the last run.terminal.* record
+// ends the run. "completed" carries the answer in payload.text; "failed" carries
+// its reason. exec reports no token counts on stdout, so Usage is empty.
+func parseMuseAnswer(stdout []byte) (string, Usage, error) {
+	var last struct{ Terminal, Text, Reason string }
+	found := false
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		var r struct {
+			PayloadType string `json:"payload_type"`
+			Payload     struct {
+				Terminal string  `json:"terminal"`
+				Text     *string `json:"text"`
+				Reason   *string `json:"reason"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &r) != nil || !strings.HasPrefix(r.PayloadType, "run.terminal.") {
+			continue
+		}
+		found = true
+		last.Terminal = r.Payload.Terminal
+		last.Text, last.Reason = "", ""
+		if r.Payload.Text != nil {
+			last.Text = *r.Payload.Text
+		}
+		if r.Payload.Reason != nil {
+			last.Reason = *r.Payload.Reason
+		}
+	}
+	switch {
+	case !found:
+		return "", Usage{}, fmt.Errorf("muse exec ended without a terminal record")
+	case last.Terminal != "completed":
+		reason := last.Reason
+		if reason == "" {
+			reason = last.Text
+		}
+		return "", Usage{}, fmt.Errorf("muse run %s: %s", last.Terminal, reason)
+	}
+	return last.Text, Usage{}, nil
 }

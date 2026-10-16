@@ -62,6 +62,8 @@ func ReadTranscript(kind runtime.AgentKind, path string, maxTurns int) ([]Turn, 
 		turns = readCursorLines(lines)
 	case runtime.Grok:
 		turns = readGrokLines(lines)
+	case runtime.Muse:
+		turns = readMuseLines(lines)
 	default:
 		return nil, fmt.Errorf("%s has no transcript reader", kind.Display())
 	}
@@ -363,6 +365,64 @@ func readGrokLines(lines [][]byte) []Turn {
 	return out
 }
 
+// ---------- muse ----------
+
+// muse's session.jsonl is an event log. A chat prompt is a
+// runtime.user_intent.accepted record; the assistant's text and tool calls are
+// payload.event records of kind assistant_message_committed and
+// assistant_tool_calls_committed. Everything else (reasoning, tool results,
+// status) is skipped.
+type museRecord struct {
+	PayloadType string `json:"payload_type"`
+	Payload     struct {
+		SemanticKind struct {
+			Kind string `json:"kind"`
+		} `json:"semantic_kind"`
+		ModelMessages []struct {
+			Content []struct {
+				Kind string `json:"kind"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"model_messages"`
+		Event struct {
+			Kind      string `json:"kind"`
+			Text      string `json:"text"`
+			ToolCalls []struct {
+				Name string `json:"name"`
+			} `json:"tool_calls"`
+		} `json:"event"`
+	} `json:"payload"`
+}
+
+func readMuseLines(lines [][]byte) []Turn {
+	var out []Turn
+	for _, line := range lines {
+		var r museRecord
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+		switch {
+		case r.PayloadType == "runtime.user_intent.accepted" && r.Payload.SemanticKind.Kind == "chat":
+			var texts []string
+			for _, m := range r.Payload.ModelMessages {
+				for _, c := range m.Content {
+					if c.Kind == "text" && c.Text != "" {
+						texts = append(texts, c.Text)
+					}
+				}
+			}
+			out = append(out, Turn{Role: "user", Text: strings.Join(texts, "\n")})
+		case r.Payload.Event.Kind == "assistant_message_committed" && r.Payload.Event.Text != "":
+			out = append(out, Turn{Role: "assistant", Text: r.Payload.Event.Text})
+		case r.Payload.Event.Kind == "assistant_tool_calls_committed":
+			for _, c := range r.Payload.Event.ToolCalls {
+				out = append(out, Turn{Role: "assistant", Tool: c.Name})
+			}
+		}
+	}
+	return out
+}
+
 // ---------- transcript path derivation ----------
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -392,6 +452,18 @@ func encodeCwd(cwd string, trimLeading bool) string {
 // report transcript_path, so callers do not usually need this for them.
 func TranscriptPath(kind runtime.AgentKind, userHome, swarmHome, cwd, providerSessionID string) (string, error) {
 	switch kind {
+	case runtime.Muse:
+		// sessions/YYYY/MM/DD/<id>/session.jsonl under muse's data dir; the digit-only
+		// globs keep a sibling folder with another name out (as adapter.Muse does).
+		if providerSessionID == "" {
+			return "", fmt.Errorf("muse has no transcript without a session id")
+		}
+		hits, _ := filepath.Glob(filepath.Join(userHome, ".local", "share", "muse", "sessions",
+			"[0-9][0-9][0-9][0-9]", "[0-9][0-9]", "[0-9][0-9]", providerSessionID, "session.jsonl"))
+		if len(hits) != 1 {
+			return "", fmt.Errorf("muse session %s has no unique session.jsonl", providerSessionID)
+		}
+		return hits[0], nil
 	case runtime.Grok:
 		// <swarm home>/grok/sessions/<url-encoded cwd>/<id>/chat_history.jsonl; the
 		// id is unique across cwd folders, so find the folder instead of re-encoding.
