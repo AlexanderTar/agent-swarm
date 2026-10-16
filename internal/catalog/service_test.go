@@ -421,3 +421,50 @@ func TestEntriesReportsSuperpowersForMuse(t *testing.T) {
 		t.Fatalf("Superpowers = false with the skill file present at %s", skill)
 	}
 }
+
+// Grok's superpowers is its own native install under the Swarm grok home; the
+// newest ~/.claude copy is the fallback WriteGrok points [skills] paths at.
+func TestSuperpowersInstalledGrok(t *testing.T) {
+	home, swarm := t.TempDir(), t.TempDir()
+	plant := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# b"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := newCatalog(t, &fakeFetcher{kind: kinds.Grok, version: "1.0.60", models: m1})
+	s.Home, s.SwarmHome = home, swarm
+	if _, err := s.Refresh(bg, false); err != nil {
+		t.Fatal(err)
+	}
+	has := func() bool {
+		t.Helper()
+		entries, err := s.Entries(bg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries[0].Superpowers
+	}
+	if has() || SuperpowersInstalled(home, swarm, kinds.Grok) {
+		t.Fatal("Superpowers = true before any skill file exists")
+	}
+	native := filepath.Join(swarm, "grok", "installed-plugins", "superpowers-21e2a56d", "skills", "brainstorming", "SKILL.md")
+	plant(native)
+	if !has() || !SuperpowersInstalled(home, swarm, kinds.Grok) {
+		t.Fatalf("Superpowers = false with the native install at %s", native)
+	}
+	os.Remove(native)
+	plant(filepath.Join(home, ".claude", "plugins", "cache", "obra", "superpowers", "7.0.0", "skills", "brainstorming", "SKILL.md"))
+	if !has() {
+		t.Fatal("Superpowers = false with only the Claude copy")
+	}
+	// The user's own ~/.grok install is not the Swarm grok home's.
+	os.RemoveAll(filepath.Join(home, ".claude"))
+	plant(filepath.Join(home, ".grok", "installed-plugins", "superpowers-x", "skills", "brainstorming", "SKILL.md"))
+	if has() {
+		t.Fatal("a ~/.grok install must not count: Swarm sessions run with their own GROK_HOME")
+	}
+}
