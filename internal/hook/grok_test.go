@@ -212,3 +212,151 @@ func TestGrokUserPromptSubmitKeepsSideEffectsAndSpendsNoNotice(t *testing.T) {
 		t.Fatal("UserPromptSubmit must not consume the compaction notice")
 	}
 }
+
+func TestIsQuestionToolCoversGroksAskUserQuestion(t *testing.T) {
+	for name, want := range map[string]bool{
+		"ask_user_question": true, "AskUserQuestion": true, "ask_question": true,
+		"request_user_input": true, "search_tool": false, "run_terminal_command": false, "swarm__swarm_ask": false,
+	} {
+		if isQuestionTool(name) != want {
+			t.Errorf("isQuestionTool(%q) = %v, want %v", name, !want, want)
+		}
+	}
+}
+
+func openQuestion(t *testing.T, h *Handler, ses string) (id, prompt, options, state string) {
+	t.Helper()
+	if err := h.DB.QueryRowContext(context.Background(),
+		`SELECT id, prompt, COALESCE(options_json,''), state FROM requests WHERE session_id = ? AND kind = 'question'`, ses).
+		Scan(&id, &prompt, &options, &state); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// A top-level grok agent's ask_user_question opens a Needs-you row and is
+// denied before its card renders (a card swallows the wake paste), with the
+// end-your-turn reason; the answer comes back as a Swarm message.
+func TestGrokAskUserQuestionOpensARowAndIsDenied(t *testing.T) {
+	h, ses := seedGrok(t, 0, runtime.Running)
+	out := grokHandle(t, h, "PreToolUse", ses, "pre-tool-use-ask-user-question")
+	var deny struct {
+		H map[string]string `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &deny); err != nil {
+		t.Fatalf("out = %s: %v", out, err)
+	}
+	id, prompt, options, state := openQuestion(t, h, ses)
+	reason := deny.H["permissionDecisionReason"]
+	if deny.H["permissionDecision"] != "deny" || !strings.Contains(reason, id) ||
+		!strings.Contains(strings.ToLower(reason), "end your turn") || !strings.Contains(reason, "swarm_sync") {
+		t.Fatalf("deny = %s", out)
+	}
+	if prompt != "Tea or coffee?" || state != "open" || options != `["Tea","Coffee"]` {
+		t.Fatalf("row = %q %q %q", prompt, options, state)
+	}
+}
+
+func TestGrokParentedAskUserQuestionIsRelayedNotAsked(t *testing.T) {
+	h, ses := seedGrok(t, 0, runtime.Running)
+	mustExec(t, h.DB, `UPDATE agents SET parent_agent_id = 'agt_1' WHERE id = 'agt_1'`)
+	out := grokHandle(t, h, "PreToolUse", ses, "pre-tool-use-ask-user-question")
+	if !strings.Contains(string(out), "swarm_send") {
+		t.Fatalf("out = %s", out)
+	}
+	var n int
+	h.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM requests`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("requests = %d", n)
+	}
+}
+
+// A late PostToolUse (the card answered in the terminal, or an older row)
+// still closes the row with grok's UserAnswered text.
+func TestGrokPostToolUseBindsTheTerminalAnswer(t *testing.T) {
+	h, ses := seedGrok(t, 0, runtime.Running)
+	grokHandle(t, h, "PreToolUse", ses, "pre-tool-use-ask-user-question")
+	grokHandle(t, h, "PostToolUse", ses, "post-tool-use-ask-user-question")
+	var state, text, via string
+	if err := h.DB.QueryRowContext(context.Background(),
+		`SELECT state, COALESCE(response_text,''), COALESCE(responded_via,'') FROM requests WHERE session_id = ? AND kind = 'question'`, ses).
+		Scan(&state, &text, &via); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" || text != "Coffee" || via != "terminal" {
+		t.Fatalf("row = %s %q %s", state, text, via)
+	}
+}
+
+func TestExtractToolResponseTextReadsGrokUserAnswered(t *testing.T) {
+	msg := func(m string) []byte {
+		b, _ := json.Marshal(map[string]any{"type": "AskUserQuestion", "UserAnswered": map[string]string{"message": m}})
+		return b
+	}
+	two := `User has answered your questions: "Tea or coffee?"="Coffee", "Size?"="Large". You can now continue with the user's answers in mind.`
+	for name, c := range map[string]struct {
+		raw          []byte
+		prompt, want string
+	}{
+		"single":              {msg(`User has answered your questions: "Tea or coffee?"="Coffee". You can now continue.`), "Tea or coffee?", "Coffee"},
+		"picks prompt":        {msg(two), "Size?", "Large"},
+		"falls back to first": {msg(two), "unrelated", "Coffee"},
+		"escaped quote":       {msg(`User has answered your questions: "Q?"="say \"hi\"". You can now continue.`), "Q?", `say "hi"`},
+		"headless":            {msg("No user is available to answer questions in this non-interactive session."), "Q?", ""},
+	} {
+		if got := extractToolResponseText(c.raw, c.prompt); got != c.want {
+			t.Errorf("%s: got %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+// The answered approval's forward-it-now next step rides the PostToolUse
+// additionalContext, as for Claude.
+func TestGrokAnsweredSwarmRefEmitsTheNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seedGrok(t, 0, runtime.Running)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+	input := map[string]any{"questions": []map[string]any{{"question": question,
+		"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}}}
+	pre, _ := json.Marshal(map[string]any{"session_id": "g1", "tool_name": "ask_user_question", "tool_input": input})
+	if _, err := h.Handle(ctx, runtime.Grok, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+	post, _ := json.Marshal(map[string]any{"session_id": "g1", "tool_name": "ask_user_question", "tool_input": input,
+		"tool_response": map[string]any{"type": "AskUserQuestion", "UserAnswered": map[string]string{
+			"message": `User has answered your questions: "` + question + `"="Approve". You can now continue with the user's answers in mind.`}}})
+	out, err := h.Handle(ctx, runtime.Grok, "PostToolUse", ses, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := contextOf(t, out)
+	if !strings.Contains(next, `Recorded "Approve" for req_PLAN1`) || !strings.Contains(next, "native_answer") {
+		t.Fatalf("additionalContext = %q", next)
+	}
+}
+
+// Grok's Stop carries lastAssistantMessage, so the print-then-ask check judges
+// it like Claude's: a printed approval block sends the ask and blocks.
+func TestGrokStopAfterPrintedBlockSendsAskAndBlocks(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seedGrok(t, 0, runtime.Running)
+	reqID, block := printingApproval(t, h, "Users table gets id and email.")
+	in, _ := json.Marshal(map[string]any{"session_id": "g1", "reason": "end_turn", "stop_hook_active": false, "last_assistant_message": "**" + block + "**"})
+	out, err := h.Handle(ctx, runtime.Grok, "Stop", ses, in)
+	if err != nil || !strings.Contains(string(out), `"decision":"block"`) {
+		t.Fatalf("out=%s err=%v", out, err)
+	}
+	if ev := relayEvent(t, h, reqID); ev != "request_ask" {
+		t.Fatalf("event = %q, want request_ask", ev)
+	}
+	// A paraphrase is sent back for a reprint.
+	h2, ses2 := seedGrok(t, 0, runtime.Running)
+	reqID2, _ := printingApproval(t, h2, "Users table gets id and email.")
+	in2, _ := json.Marshal(map[string]any{"session_id": "g1", "reason": "end_turn", "last_assistant_message": "Approving the users table."})
+	if _, err := h2.Handle(ctx, runtime.Grok, "Stop", ses2, in2); err != nil {
+		t.Fatal(err)
+	}
+	if ev := relayEvent(t, h2, reqID2); ev != "request_print" {
+		t.Fatalf("event = %q, want request_print", ev)
+	}
+}

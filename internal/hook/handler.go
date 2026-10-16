@@ -291,6 +291,35 @@ func codexAnswerText(inner string) (string, bool) {
 	return label, true
 }
 
+// grokAnswerPair is one "<question>"="<answer>" pair of grok's UserAnswered
+// message; both halves are JSON-style quoted strings.
+var grokAnswerPair = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"`)
+
+// grokAnswerText reads the answer for prompt out of grok's ask_user_question
+// result, `User has answered your questions: "<q>"="<a>", ... .` (SPIKE-52
+// TASK-1125). The pair whose question is prompt wins, else the first. "" when
+// the message carries no pair (the headless "No user is available" text).
+func grokAnswerText(msg, prompt string) string {
+	unquote := func(s string) string {
+		var out string
+		if json.Unmarshal([]byte(`"`+s+`"`), &out) != nil {
+			return s
+		}
+		return out
+	}
+	first := ""
+	for _, m := range grokAnswerPair.FindAllStringSubmatch(msg, -1) {
+		a := strings.TrimSpace(unquote(m[2]))
+		if capPrompt(unquote(m[1])) == prompt {
+			return a
+		}
+		if first == "" {
+			first = a
+		}
+	}
+	return first
+}
+
 // extractToolResponseText reads the answer text out of a question tool's
 // PostToolUse tool_response. A real claude AskUserQuestion result has the
 // shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
@@ -316,6 +345,10 @@ func extractToolResponseText(raw []byte, prompt string) string {
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err == nil {
+		if ua, ok := obj["UserAnswered"].(map[string]any); ok { // grok
+			msg, _ := ua["message"].(string)
+			return grokAnswerText(msg, prompt)
+		}
 		if answers, ok := obj["answers"].(map[string]any); ok {
 			if v, ok := answers[prompt]; ok {
 				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -429,6 +462,10 @@ func promptContextDropped(k runtime.AgentKind) bool { return runtime.StartContex
 //	  exception (swarm_ask kind:"question" stays available) rather than being refused.
 //	cursor AskQuestion: confirmed (Cursor staff, forum bug 161836) never to fire
 //	  PreToolUse/PostToolUse at all. Also not in this list, same exception as muse.
+//	grok ask_user_question: confirmed live 2026-10-16 (SPIKE-52 TASK-1125 Q3, fixtures
+//	  testdata/grok-hook-*-ask-user-question.json). A PreToolUse deny suppresses the card and
+//	  its reason reaches the model; a card answered in the terminal reports
+//	  tool_response.UserAnswered.message (grokAnswerText).
 //
 // Where a block is honored, a parented agent's question is relayed instead
 // (nativeQuestionRelay). Where the hook is absent or unconfirmed (cursor,
@@ -436,7 +473,7 @@ func promptContextDropped(k runtime.AgentKind) bool { return runtime.StartContex
 // swarm_ask stays available and Task 9 does not refuse it for these kinds.
 func isQuestionTool(name string) bool {
 	switch name {
-	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", asyncQuestionTool, "AskQuestion":
+	case "ask_question", "AskUserQuestion", "ask_user_question", "request_user_input", "experimental_request_user_input", asyncQuestionTool, "AskQuestion":
 		return true
 	}
 	return false
@@ -968,14 +1005,20 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 					return adapter.HookDecision{Block: true, Reason: "[swarm] Use native_prompt's options word for word: " +
 						strings.Join(np.Options, " / ") + ". Ask again with exactly those labels."}, nil
 				}
-				_, _ = h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
+				req, _ := h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
+				if d, denied := grokQuestionDeny(s.Kind, req.ID); denied {
+					return d, nil
+				}
 				if haveNP && kind == runtime.Claude && in.ToolName == "AskUserQuestion" {
 					if upd, changed := rewriteClaudeQuestion(in.RawToolInput, np); changed {
 						return adapter.HookDecision{UpdatedInput: upd}, nil
 					}
 				}
 			} else {
-				_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
+				req, _ := h.RT.AskQuestion(ctx, s.ID, prompt, options)
+				if d, denied := grokQuestionDeny(s.Kind, req.ID); denied {
+					return d, nil
+				}
 			}
 		}
 
@@ -1085,6 +1128,19 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 	}
 
 	return adapter.HookDecision{}, nil
+}
+
+// grokQuestionDeny turns a grok agent's recorded question into a PreToolUse
+// deny: the card would swallow the wake paste, so the question goes to Needs
+// you and the model is told to end its turn (the answer returns as a Swarm
+// message). Not denied when no row opened (reqID ""), leaving the card to show.
+func grokQuestionDeny(kind runtime.AgentKind, reqID string) (adapter.HookDecision, bool) {
+	if kind != runtime.Grok || reqID == "" {
+		return adapter.HookDecision{}, false
+	}
+	return adapter.HookDecision{Block: true, Reason: fmt.Sprintf("[swarm] Your question went to the user as request %s. "+
+		"Do not ask again or use another question tool: end your turn now. The answer reaches you as a Swarm message; "+
+		"call swarm_sync when you are woken.", reqID)}, true
 }
 
 // toolHookNotices adds the compaction and pending-inbox notices to parts (a

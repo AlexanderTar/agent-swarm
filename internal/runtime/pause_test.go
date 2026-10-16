@@ -2286,10 +2286,12 @@ func TestHandoffDismissesAnOpenNativeQuestionDialog(t *testing.T) {
 	}
 }
 
-// Cursor and Muse question rows come from swarm_ask, not a hooked dialog:
-// they must never trigger an Escape before the deadline.
+// Cursor and Muse question rows come from swarm_ask, not a hooked dialog, and
+// grok's ask_user_question is denied before its card renders: none of them may
+// trigger an interrupt before the deadline (a C-c at grok's idle prompt arms
+// quit).
 func TestPauseLeavesUnhookedQuestionRowsAlone(t *testing.T) {
-	for _, kind := range []AgentKind{Cursor, Muse} {
+	for _, kind := range []AgentKind{Cursor, Muse, Grok} {
 		t.Run(string(kind), func(t *testing.T) {
 			s, tm, ses, _ := questionDialogPause(t, kind)
 			tm.clk.Advance(5 * time.Second)

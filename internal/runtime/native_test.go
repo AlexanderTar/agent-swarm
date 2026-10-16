@@ -82,7 +82,7 @@ func TestNormForMatch(t *testing.T) {
 // the summary's first line, capped to 200 runes.
 func TestApprovalSummaryHeadForHookedKindsIsFirstLineCappedAt200Runes(t *testing.T) {
 	multiline := "First line is the important part.\nSecond line should never appear."
-	for _, kind := range []AgentKind{Claude, Agy, Codex} {
+	for _, kind := range []AgentKind{Claude, Agy, Codex, Grok} {
 		got := approvalSummaryHead(multiline, kind)
 		if got != "First line is the important part." {
 			t.Fatalf("%s head = %q, want only the first line", kind, got)

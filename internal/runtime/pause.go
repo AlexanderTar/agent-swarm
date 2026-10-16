@@ -325,7 +325,7 @@ func (s *Store) TickPause(ctx context.Context) error {
 				return err
 			}
 		case r.State == PauseRequested && r.InterruptedAt == nil && r.OpenQuestion &&
-			questionHookKinds[r.AgentKind] && !s.getDialogDismissed(r.SessionID):
+			questionDialogKinds(r.AgentKind) && !s.getDialogDismissed(r.SessionID):
 			if err := s.dismissQuestionDialog(ctx, r); err != nil {
 				return err
 			}

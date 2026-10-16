@@ -314,6 +314,12 @@ func (g *Grok) ObserveModel(transcriptPath, providerSessionID string) (string, s
 
 func (g *Grok) Wake(context.Context, WakeTarget) (bool, error) { return false, nil }
 
+// AssistantTextSinceLastTurn lets the Stop hook judge the reply for the
+// approval chat block: grok's Stop carries lastAssistantMessage, which the
+// handler prefers, and updates.jsonl is not parsed, so an empty message fails
+// open (the ask is sent) rather than trusting an unreadable transcript.
+func (g *Grok) AssistantTextSinceLastTurn(string) (string, bool) { return "", false }
+
 // grokContextCap keeps additionalContext under grok's 10,000-character limit
 // (bytes, to be safe for multi-byte text).
 const grokContextCap = 9500

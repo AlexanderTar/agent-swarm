@@ -864,16 +864,23 @@ func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, it
 // was confirmed live on 2026-09-26 (docs/specs/2026-09-26-codex-native-
 // approval.md), superseding Task 4b's unfinished check.
 const errQuestionUseNativeTool = "Ask the user with your own native question tool " +
-	"(claude AskUserQuestion, agy ask_question, codex request_user_input). " +
+	"(claude AskUserQuestion, agy ask_question, codex request_user_input, grok ask_user_question). " +
 	"Swarm shows it in Needs you and closes it when the user answers."
 
 // questionHookKinds are the kinds whose native question tool Swarm
 // intercepts via a hook (spec section 1.7; codex added 2026-09-26,
-// docs/specs/2026-09-26-codex-native-approval.md). cursor and muse are
+// docs/specs/2026-09-26-codex-native-approval.md; grok added with its
+// ask_user_question PreToolUse, probed 2026-10-16). cursor and muse are
 // absent on purpose: neither dispatches a hook for its native question
 // tool at all, so both keep swarm_ask kind:"question" as their only path
 // to Needs you.
-var questionHookKinds = map[AgentKind]bool{Claude: true, Agy: true, Codex: true}
+var questionHookKinds = map[AgentKind]bool{Claude: true, Agy: true, Codex: true, Grok: true}
+
+// questionDialogKinds are the hooked kinds whose native question leaves a
+// dialog on screen until answered. grok's is denied before its card renders
+// (the hook routes it to Needs you), so pausing has nothing to dismiss, and a
+// C-c at grok's idle prompt would only arm quit.
+func questionDialogKinds(k AgentKind) bool { return questionHookKinds[k] && k != Grok }
 
 // Ask is swarm_ask (§8.1).
 func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request, error) {
