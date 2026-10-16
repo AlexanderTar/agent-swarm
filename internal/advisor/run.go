@@ -32,9 +32,14 @@ func fillPrompt(name, role, key, contextPath string) string {
 	return r.Replace(Prompt)
 }
 
+// grokAdvisorMaxTurns bounds the advisor's read-and-answer loop.
+const grokAdvisorMaxTurns = "8"
+
 // AdvisorCommand is §11.6 step 2. Each form was run in P0-13 and blocks writes:
 // claude through --allowedTools, codex through -s read-only, agy through plan
-// mode, cursor through ask mode. Never change a flag without a new probe.
+// mode, cursor through ask mode, grok through plan mode plus a --tools
+// allowlist of read_file, grep and list_dir (SPIKE-52). Never change a flag
+// without a new probe.
 func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) ([]string, error) {
 	switch kind {
 	case runtime.Claude:
@@ -57,6 +62,15 @@ func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) (
 	case runtime.Cursor:
 		return []string{"cursor-agent", "-p", "--trust", "--mode", "ask", "--model", model,
 			"--output-format", "json", prompt}, nil
+	case runtime.Grok:
+		// runs with grokhome.Env (see Service.envFor): GROK_HOME and the compat switches
+		a := []string{"grok", "-p", prompt, "-m", model}
+		if effort != "" {
+			a = append(a, "--reasoning-effort", effort)
+		}
+		return append(a, "--permission-mode", "plan", "--tools", "read_file,grep,list_dir",
+			"--disallowed-tools", "search_tool,use_tool", "--no-subagents",
+			"--output-format", "json", "--max-turns", grokAdvisorMaxTurns, "--cwd", dir), nil
 	}
 	return nil, fmt.Errorf("%s can't run as a read-only advisor", kind.Display())
 }
@@ -90,6 +104,8 @@ func ParseAnswer(kind runtime.AgentKind, stdout, stderr []byte, dir, userHome st
 		return parseAgyAnswer(stdout, userHome)
 	case runtime.Cursor:
 		return parseCursorAnswer(stdout)
+	case runtime.Grok:
+		return parseGrokAnswer(stdout)
 	}
 	return "", Usage{}, fmt.Errorf("%s has no advisor output parser", kind.Display())
 }
@@ -180,4 +196,35 @@ func parseCursorAnswer(stdout []byte) (string, Usage, error) {
 	}
 	return r.Result, Usage{Input: r.Usage.InputTokens, Output: r.Usage.OutputTokens,
 		CacheRead: r.Usage.CacheReadTokens, CacheWrite: r.Usage.CacheWriteTokens}, nil
+}
+
+// parseGrokAnswer reads `grok -p --output-format json`: the answer is .text
+// (or .result), usage is summed over modelUsage and the cost is total_cost_usd.
+func parseGrokAnswer(stdout []byte) (string, Usage, error) {
+	var r struct {
+		Text         string  `json:"text"`
+		Result       string  `json:"result"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+		ModelUsage   map[string]struct {
+			InputTokens              int `json:"inputTokens"`
+			OutputTokens             int `json:"outputTokens"`
+			CacheReadInputTokens     int `json:"cacheReadInputTokens"`
+			CacheCreationInputTokens int `json:"cacheCreationInputTokens"`
+		} `json:"modelUsage"`
+	}
+	if err := json.Unmarshal(stdout, &r); err != nil {
+		return "", Usage{}, err
+	}
+	u := Usage{CostUSD: &r.TotalCostUSD}
+	for _, m := range r.ModelUsage {
+		u.Input += m.InputTokens
+		u.Output += m.OutputTokens
+		u.CacheRead += m.CacheReadInputTokens
+		u.CacheWrite += m.CacheCreationInputTokens
+	}
+	answer := r.Text
+	if answer == "" {
+		answer = r.Result
+	}
+	return answer, u, nil
 }

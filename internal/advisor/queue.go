@@ -16,6 +16,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
@@ -35,8 +36,11 @@ type Service struct {
 	Adapters map[runtime.AgentKind]adapter.Adapter
 	Catalog  *catalog.Service
 	Run      execx.Runner
-	Now      func() time.Time
-	Log      func(format string, args ...any)
+	// RunEnv runs the advisors that need an environment of their own (grok's
+	// GROK_HOME and compat switches); a grok advisor never falls back to Run.
+	RunEnv execx.RunnerEnv
+	Now    func() time.Time
+	Log    func(format string, args ...any)
 
 	MaxConcurrent int
 	Timeout       time.Duration
@@ -208,7 +212,7 @@ func (s *Service) Ask(ctx context.Context, sessionID, question string, focus []s
 	}
 
 	var turns []Turn
-	if tp, err := TranscriptPath(sess.AgentKind, s.UserHome, sess.Cwd, sess.ProviderSessionID); err == nil {
+	if tp, err := TranscriptPath(sess.AgentKind, s.UserHome, s.Home, sess.Cwd, sess.ProviderSessionID); err == nil {
 		turns, _ = ReadTranscript(sess.AgentKind, tp, maxTranscriptTurns) // best effort
 	}
 	body := BuildContext(ContextInput{Brief: sess.Brief, Question: question, Focus: focus, Transcript: turns})
@@ -291,7 +295,8 @@ func (s *Service) run(sess advisorSession, adv runtime.Advice, deliver func(runt
 		deliver(s.finishError(ctx, adv, "failed", err.Error(), 0))
 		return
 	}
-	if s.Run == nil {
+	env := advisorEnv(runtime.AgentKind(adv.AdvisorKind), s.Home)
+	if (env == nil && s.Run == nil) || (env != nil && s.RunEnv == nil) {
 		deliver(s.finishError(ctx, adv, "failed", "no advisor runner configured", 0))
 		return
 	}
@@ -299,7 +304,13 @@ func (s *Service) run(sess advisorSession, adv runtime.Advice, deliver func(runt
 	runCtx, cancel := context.WithTimeout(ctx, s.timeout())
 	defer cancel()
 	start := s.now()
-	out, runErr := s.Run(runCtx, argv[0], argv[1:]...)
+	var out []byte
+	var runErr error
+	if env != nil {
+		out, runErr = s.RunEnv(runCtx, env, argv[0], argv[1:]...)
+	} else {
+		out, runErr = s.Run(runCtx, argv[0], argv[1:]...)
+	}
 	dur := s.now().Sub(start)
 
 	if errors.Is(runErr, context.DeadlineExceeded) {
@@ -316,6 +327,16 @@ func (s *Service) run(sess advisorSession, adv runtime.Advice, deliver func(runt
 		return
 	}
 	deliver(s.finishOK(ctx, adv, answer, usage, dur))
+}
+
+// advisorEnv is the environment an advisor kind must run with, or nil when it
+// runs in the daemon's own. Grok without GROK_HOME reads ~/.grok and loads the
+// operator's other agents' config.
+func advisorEnv(kind runtime.AgentKind, swarmHome string) map[string]string {
+	if kind == runtime.Grok {
+		return grokhome.Env(swarmHome)
+	}
+	return nil
 }
 
 // List returns one agent's advice, newest first (§11.6). Another agent's

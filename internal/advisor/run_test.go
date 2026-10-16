@@ -6,12 +6,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -326,5 +329,164 @@ func TestRunnerTimeoutAndClosedStdin(t *testing.T) {
 	}
 	if adv.State != "timed_out" {
 		t.Fatalf("state = %s", adv.State)
+	}
+}
+
+// grokWriteTools are the tool ids in grok 1.0.60's tool_definitions.json that
+// can change a file, run a command or reach the network (live probe, SPIKE-52).
+var grokWriteTools = []string{"write", "search_replace", "run_terminal_command", "kill_command_or_subagent",
+	"image_gen", "image_edit", "image_to_video", "reference_to_video", "web_fetch", "monitor",
+	"workflow", "enter_plan_mode", "exit_plan_mode", "ask_user_question", "todo_write"}
+
+func TestAdvisorCommandGrok(t *testing.T) {
+	dir := "/Users/u/.swarm/run/advice/adv_1"
+	got, err := AdvisorCommand(runtime.Grok, "grok-4.7", "high", dir, Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"grok", "-p", Prompt, "-m", "grok-4.7", "--reasoning-effort", "high",
+		"--permission-mode", "plan", "--tools", "read_file,grep,list_dir",
+		"--disallowed-tools", "search_tool,use_tool", "--no-subagents",
+		"--output-format", "json", "--max-turns", "8", "--cwd", dir}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+	noEffort, _ := AdvisorCommand(runtime.Grok, "grok-4.7", "", dir, Prompt)
+	if strings.Contains(strings.Join(noEffort, " "), "--reasoning-effort") {
+		t.Fatalf("no effort, no flag: %v", noEffort)
+	}
+}
+
+// requireReadOnlyGrokArgv is the write-attempt check: the argv leaves grok no
+// tool that writes, runs a command or edits, and no flag that approves one.
+func requireReadOnlyGrokArgv(t *testing.T, argv []string) {
+	t.Helper()
+	flag := func(name string) (string, bool) {
+		for i, a := range argv {
+			if a == name && i+1 < len(argv) {
+				return argv[i+1], true
+			}
+		}
+		return "", false
+	}
+	if mode, ok := flag("--permission-mode"); !ok || mode != "plan" {
+		t.Errorf("--permission-mode = %q, want plan: %v", mode, argv)
+	}
+	tools, ok := flag("--tools")
+	if !ok {
+		t.Fatalf("grok runs with every tool unless --tools allowlists them: %v", argv)
+	}
+	for _, id := range strings.Split(tools, ",") {
+		if !slices.Contains([]string{"read_file", "grep", "list_dir"}, id) {
+			t.Errorf("--tools allows %q, which is not read-only", id)
+		}
+		if slices.Contains(grokWriteTools, id) {
+			t.Errorf("--tools allows the write-capable %q", id)
+		}
+	}
+	for _, bad := range []string{"--always-approve", "--yolo", "--allow", "--allowedTools", "--allowed-tools",
+		"--sandbox", "--dangerously-skip-permissions", "--trust"} {
+		if slices.Contains(argv, bad) {
+			t.Errorf("argv carries %s: %v", bad, argv)
+		}
+	}
+	if !slices.Contains(argv, "--no-subagents") {
+		t.Errorf("subagents could write: %v", argv)
+	}
+}
+
+func TestAdvisorGrokReadOnly(t *testing.T) {
+	argv, err := AdvisorCommand(runtime.Grok, "grok-4.7", "low", t.TempDir(), Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireReadOnlyGrokArgv(t, argv)
+}
+
+func TestParseAnswerGrok(t *testing.T) {
+	raw, err := os.ReadFile("testdata/grok/advisor-readonly-output.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ans, u, err := ParseAnswer(runtime.Grok, raw, nil, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ans, "server path") {
+		t.Fatalf("answer = %q", ans)
+	}
+	if u.Input != 26986 || u.Output != 478 || u.CacheRead != 57216 || u.CacheWrite != 0 {
+		t.Fatalf("usage = %+v", u)
+	}
+	if u.CostUSD == nil || *u.CostUSD != 0.085448 {
+		t.Fatalf("cost = %v", u.CostUSD)
+	}
+	// the answer may arrive as .result instead of .text
+	ans, _, err = ParseAnswer(runtime.Grok, []byte(`{"result":"ok","total_cost_usd":0.01}`), nil, "", "")
+	if err != nil || ans != "ok" {
+		t.Fatalf("ans %q err %v", ans, err)
+	}
+	if _, _, err := ParseAnswer(runtime.Grok, []byte(`not json`), nil, "", ""); err == nil {
+		t.Fatal("garbage output must be an error")
+	}
+}
+
+// grokAdvisorService is a service whose seeded session has a grok advisor and
+// whose env-capable runner records what it was asked to run.
+type grokRun struct {
+	env  map[string]string
+	argv []string
+}
+
+func grokAdvisorService(t *testing.T) (*Service, advisorSeed, *grokRun) {
+	t.Helper()
+	s, seed := newAdvisorService(t)
+	if _, err := s.DB.ExecContext(context.Background(),
+		`UPDATE agents SET advisor_kind = 'grok', advisor_model = 'grok-4.7', advisor_effort = 'low' WHERE id = ?`, seed.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("testdata/grok/advisor-readonly-output.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := &grokRun{}
+	s.Run = func(context.Context, string, ...string) ([]byte, error) {
+		t.Error("a grok advisor must run through RunEnv so GROK_HOME reaches it")
+		return nil, errors.New("plain runner used")
+	}
+	s.RunEnv = func(_ context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+		got.env, got.argv = env, append([]string{name}, args...)
+		return raw, nil
+	}
+	return s, seed, got
+}
+
+func TestAdvisorGrokEnvReachesRunner(t *testing.T) {
+	s, seed, got := grokAdvisorService(t)
+	adv, err := s.Ask(context.Background(), seed.SessionID, "Client or server?", nil, 45*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adv.State != "answered" || !strings.Contains(adv.Answer, "server path") {
+		t.Fatalf("advice = %+v", adv)
+	}
+	if !reflect.DeepEqual(got.env, grokhome.Env(s.Home)) {
+		t.Fatalf("env = %v, want grokhome.Env(%s)", got.env, s.Home)
+	}
+	if got.argv[0] != "grok" {
+		t.Fatalf("argv = %v", got.argv)
+	}
+	requireReadOnlyGrokArgv(t, got.argv)
+}
+
+func TestAdvisorGrokWithoutEnvRunnerFailsRatherThanRunningWithoutGrokHome(t *testing.T) {
+	s, seed, _ := grokAdvisorService(t)
+	s.RunEnv = nil
+	adv, err := s.Ask(context.Background(), seed.SessionID, "q", nil, 45*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adv.State != "failed" {
+		t.Fatalf("advice = %+v, want failed", adv)
 	}
 }

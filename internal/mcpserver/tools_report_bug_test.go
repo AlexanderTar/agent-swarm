@@ -165,7 +165,7 @@ func TestReportBugCopiesTheReportersTranscript(t *testing.T) {
 	if err := s.RT.DB.QueryRowContext(ctx, `SELECT cwd FROM sessions WHERE id = ?`, seed.SessionID).Scan(&cwd); err != nil {
 		t.Fatal(err)
 	}
-	src, err := advisor.TranscriptPath(runtime.Claude, s.Advisor.UserHome, cwd, "prov-1")
+	src, err := advisor.TranscriptPath(runtime.Claude, s.Advisor.UserHome, "", cwd, "prov-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func seedClaudeTranscript(t *testing.T, s *Server, seed reportBugSeed) {
 	if err := s.RT.DB.QueryRowContext(ctx, `SELECT cwd FROM sessions WHERE id = ?`, seed.SessionID).Scan(&cwd); err != nil {
 		t.Fatal(err)
 	}
-	src, err := advisor.TranscriptPath(runtime.Claude, s.Advisor.UserHome, cwd, "prov-1")
+	src, err := advisor.TranscriptPath(runtime.Claude, s.Advisor.UserHome, "", cwd, "prov-1")
 	if err != nil {
 		t.Fatal(err)
 	}

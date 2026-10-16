@@ -288,7 +288,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		return nil, fmt.Errorf("migrate repository confirmations: %w", err)
 	}
 	adv := &advisor.Service{DB: d, Events: ev, Home: cfg.Home, UserHome: userHome,
-		Adapters: rt.Adapters, Catalog: cat, Run: execx.RunFor(240 * time.Second), Now: now, Log: cfg.Log,
+		Adapters: rt.Adapters, Catalog: cat, Run: execx.RunFor(240 * time.Second), RunEnv: execx.RunEnv, Now: now, Log: cfg.Log,
 		MaxConcurrent: 2, Timeout: 240 * time.Second, Deliver: rt.DeliverAdvice}
 	rt.Advisor = adv
 	wt.OnRetained = rt.OnWorktreeRetained             // the §17.5 "Worktree kept" notification

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -59,6 +60,8 @@ func ReadTranscript(kind runtime.AgentKind, path string, maxTurns int) ([]Turn, 
 		turns = readAgyLines(lines)
 	case runtime.Cursor:
 		turns = readCursorLines(lines)
+	case runtime.Grok:
+		turns = readGrokLines(lines)
 	default:
 		return nil, fmt.Errorf("%s has no transcript reader", kind.Display())
 	}
@@ -304,6 +307,62 @@ func readCursorLines(lines [][]byte) []Turn {
 	return out
 }
 
+// ---------- grok ----------
+
+// grok's chat_history.jsonl: a "user" record with a prompt_index is a real
+// prompt (the others are synthetic reminders and hook feedback), an "assistant"
+// record carries text and/or tool_calls; reasoning and tool_result are skipped.
+type grokRecord struct {
+	Type    string `json:"type"`
+	Content json.RawMessage
+	// PromptIndex is set only on a person's prompt.
+	PromptIndex *int `json:"prompt_index"`
+	ToolCalls   []struct {
+		Name string `json:"name"`
+	} `json:"tool_calls"`
+}
+
+var grokUserQuery = regexp.MustCompile(`(?s)<user_query>\s*(.*?)\s*</user_query>`)
+
+func readGrokLines(lines [][]byte) []Turn {
+	var out []Turn
+	for _, line := range lines {
+		var r grokRecord
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+		switch r.Type {
+		case "user":
+			if r.PromptIndex == nil {
+				continue
+			}
+			var blocks []claudeContentBlock
+			_ = json.Unmarshal(r.Content, &blocks)
+			var texts []string
+			for _, b := range blocks {
+				if b.Type == "text" && b.Text != "" {
+					texts = append(texts, b.Text)
+				}
+			}
+			text := strings.Join(texts, "\n")
+			if m := grokUserQuery.FindStringSubmatch(text); m != nil {
+				text = m[1]
+			}
+			out = append(out, Turn{Role: "user", Text: text})
+		case "assistant":
+			var text string
+			_ = json.Unmarshal(r.Content, &text)
+			if text != "" {
+				out = append(out, Turn{Role: "assistant", Text: text})
+			}
+			for _, c := range r.ToolCalls {
+				out = append(out, Turn{Role: "assistant", Tool: c.Name})
+			}
+		}
+	}
+	return out
+}
+
 // ---------- transcript path derivation ----------
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -331,8 +390,19 @@ func encodeCwd(cwd string, trimLeading bool) string {
 // does not report one directly (§11.6): cursor sends transcript_path: null
 // and agy sends workspacePaths: [] (P0-2). Claude and codex hooks already
 // report transcript_path, so callers do not usually need this for them.
-func TranscriptPath(kind runtime.AgentKind, userHome, cwd, providerSessionID string) (string, error) {
+func TranscriptPath(kind runtime.AgentKind, userHome, swarmHome, cwd, providerSessionID string) (string, error) {
 	switch kind {
+	case runtime.Grok:
+		// <swarm home>/grok/sessions/<url-encoded cwd>/<id>/chat_history.jsonl; the
+		// id is unique across cwd folders, so find the folder instead of re-encoding.
+		if providerSessionID == "" {
+			return "", fmt.Errorf("grok has no transcript without a session id")
+		}
+		hits, _ := filepath.Glob(filepath.Join(grokhome.Dir(swarmHome), "sessions", "*", providerSessionID, "chat_history.jsonl"))
+		if len(hits) != 1 {
+			return "", fmt.Errorf("grok session %s has no transcript under %s", providerSessionID, grokhome.Dir(swarmHome))
+		}
+		return hits[0], nil
 	case runtime.Cursor:
 		enc := encodeCwd(cwd, true)
 		return filepath.Join(userHome, ".cursor", "projects", enc, "agent-transcripts",
