@@ -433,13 +433,6 @@ func endsTurn(ev string) bool {
 	return ev == "Stop" || ev == "StopCancelled" || ev == "StopFailure"
 }
 
-// promptContextDropped is true for a kind whose SessionStart and
-// UserPromptSubmit context never reaches the model (grok, probed 2026-10-16,
-// SPIKE-52 TASK-1125 Q2). Those hooks keep their side effects but spend no
-// notice; the kickoff, the tool hooks (additionalContext) and the Stop block
-// carry the notices instead.
-func promptContextDropped(k runtime.AgentKind) bool { return runtime.StartContextDropped(k) }
-
 // isQuestionTool is the one list of native "ask the human" tools that a
 // hook can intercept. Per-adapter status, live-probed 2026-09-25/26
 // (spec section 1.7, docs/plans/2026-09-25-needs-you-and-child-approval-routing.md
@@ -803,7 +796,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}, nil
 		}
 
-		if promptContextDropped(s.Kind) {
+		if runtime.StartContextDropped(s.Kind) {
 			// A compacted session arms the notice the next tool hook delivers.
 			if in.Source == "compact" {
 				if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 1 WHERE id = ?`, s.ID); err != nil {
@@ -871,7 +864,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				h.logf("hook: close rows after human prompt for %s: %v", s.ID, err)
 			}
 		}
-		if promptContextDropped(s.Kind) {
+		if runtime.StartContextDropped(s.Kind) {
 			return adapter.HookDecision{}, nil
 		}
 		if s.NeedsCompaction {
@@ -1005,10 +998,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 					return adapter.HookDecision{Block: true, Reason: "[swarm] Use native_prompt's options word for word: " +
 						strings.Join(np.Options, " / ") + ". Ask again with exactly those labels."}, nil
 				}
-				req, _ := h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
-				if d, denied := grokQuestionDeny(s.Kind, req.ID); denied {
-					return d, nil
-				}
+				// Not denied for grok: a daemon approval needs its card, because
+				// only a terminal answer is native_answer evidence.
+				_, _ = h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
 				if haveNP && kind == runtime.Claude && in.ToolName == "AskUserQuestion" {
 					if upd, changed := rewriteClaudeQuestion(in.RawToolInput, np); changed {
 						return adapter.HookDecision{UpdatedInput: upd}, nil
@@ -1022,7 +1014,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
-		if promptContextDropped(s.Kind) {
+		if runtime.StartContextDropped(s.Kind) {
 			// The agent is working: this is where its notices can land.
 			return h.toolHookNotices(ctx, s, nil)
 		}

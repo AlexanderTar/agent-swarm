@@ -310,28 +310,42 @@ func TestExtractToolResponseTextReadsGrokUserAnswered(t *testing.T) {
 	}
 }
 
-// The answered approval's forward-it-now next step rides the PostToolUse
-// additionalContext, as for Claude.
-func TestGrokAnsweredSwarmRefEmitsTheNextStep(t *testing.T) {
+// A daemon approval question (BindNativeQuestion finds its ref) is not denied
+// for grok: the card must show, because only a terminal answer is evidence
+// for swarm_ask native_answer. The answer then arrives in PostToolUse, binds
+// as terminal, and the forward-it-now next step rides its additionalContext.
+func TestGrokBoundApprovalShowsTheCardAndTheAnswerEmitsTheNextStep(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seedGrok(t, 0, runtime.Running)
-	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+	reqID, question := seedApproval(t, h, "Users table gets id and email.")
 	input := map[string]any{"questions": []map[string]any{{"question": question,
 		"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}}}
 	pre, _ := json.Marshal(map[string]any{"session_id": "g1", "tool_name": "ask_user_question", "tool_input": input})
-	if _, err := h.Handle(ctx, runtime.Grok, "PreToolUse", ses, pre); err != nil {
-		t.Fatal(err)
+	out, err := h.Handle(ctx, runtime.Grok, "PreToolUse", ses, pre)
+	if err != nil || len(out) != 0 {
+		t.Fatalf("PreToolUse out=%s err=%v, want the card allowed", out, err)
+	}
+	var n int
+	h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question' AND state = 'open'
+		AND json_extract(binding_json, '$.ref') = ?`, reqID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("bound question rows = %d, want 1", n)
 	}
 	post, _ := json.Marshal(map[string]any{"session_id": "g1", "tool_name": "ask_user_question", "tool_input": input,
 		"tool_response": map[string]any{"type": "AskUserQuestion", "UserAnswered": map[string]string{
 			"message": `User has answered your questions: "` + question + `"="Approve". You can now continue with the user's answers in mind.`}}})
-	out, err := h.Handle(ctx, runtime.Grok, "PostToolUse", ses, post)
+	out, err = h.Handle(ctx, runtime.Grok, "PostToolUse", ses, post)
 	if err != nil {
 		t.Fatal(err)
 	}
 	next := contextOf(t, out)
-	if !strings.Contains(next, `Recorded "Approve" for req_PLAN1`) || !strings.Contains(next, "native_answer") {
+	if !strings.Contains(next, `Recorded "Approve" for `+reqID) || !strings.Contains(next, "native_answer") {
 		t.Fatalf("additionalContext = %q", next)
+	}
+	var via string
+	h.DB.QueryRowContext(ctx, `SELECT responded_via FROM requests WHERE kind = 'question' AND session_id = ?`, ses).Scan(&via)
+	if via != "terminal" {
+		t.Fatalf("responded_via = %q, want terminal", via)
 	}
 }
 
