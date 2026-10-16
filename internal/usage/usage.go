@@ -88,7 +88,7 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 	return http.DefaultClient
 }
 
-// DefaultSources builds the five real sources: Claude and Cursor read their
+// DefaultSources builds the six real sources: Claude and Cursor read their
 // OAuth token from the login keychain via run (`security
 // find-generic-password`); Codex talks to `codex app-server` via start, with
 // UserHome's rollout files as a fallback; Agy reads its own OAuth token
@@ -108,7 +108,7 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // prompt kept coming back on Muse's own unpredictable refresh cadence. Back
 // to the MSP probe (muse.go), which was live-verified 2026-09-23 and never
 // touched the Keychain to begin with.
-func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB) []Source {
+func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB, grok *Grok) []Source {
 	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: claudeCLIVersion(run),
 		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}
 	codexSrc := &Codex{Start: start, UserHome: userHome, Timeout: 10 * time.Second, Now: time.Now}
@@ -137,6 +137,7 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 			return snap.Meters, snap.HeadlineID, err
 		}},
 		{Agent: runtime.Muse, Fetch: museSrc.Fetch, ObservedAt: museSrc.ObservedAt},
+		{Agent: runtime.Grok, Fetch: grok.Fetch},
 	}
 }
 
@@ -272,11 +273,11 @@ func cursorKeychainToken(run execx.Runner, service, account string) func(context
 // `swarm install`'s launchd plist sets SWARM_USAGE=live, and that is the only
 // place it is set.
 func SourcesFromEnv(osEnv func(string) string, userHome, user string,
-	hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB) []Source {
+	hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB, grok *Grok) []Source {
 	if osEnv("SWARM_USAGE") != "live" {
 		return nil
 	}
-	return DefaultSources(userHome, user, hc, run, start, d)
+	return DefaultSources(userHome, user, hc, run, start, d, grok)
 }
 
 // Poller fetches every enabled source on a schedule and keeps the latest

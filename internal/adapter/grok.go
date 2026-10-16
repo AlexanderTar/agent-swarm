@@ -355,9 +355,13 @@ func (g *Grok) ParseHook(event string, stdin []byte) (HookInput, error) {
 		Reason           string `json:"reason"`
 		StopHookActive   bool   `json:"stop_hook_active"`
 		NotificationType string `json:"notification_type"`
+		Error            string `json:"error"`
+		ErrorDetails     string `json:"error_details"`
+		Message          string `json:"message"`
 	}
 	_ = json.Unmarshal(stdin, &extra)
 	in.Reason, in.StopHookActive, in.NotificationType = extra.Reason, extra.StopHookActive, extra.NotificationType
+	in.Error, in.ErrorDetails, in.Message = extra.Error, extra.ErrorDetails, extra.Message
 	in.IsSwarmTool = strings.HasPrefix(in.ToolName, "swarm__") || strings.HasPrefix(in.ToolName, "mcp__swarm__")
 	if strings.HasPrefix(in.ToolName, "swarm__") {
 		var wrapped struct {

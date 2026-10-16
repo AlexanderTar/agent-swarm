@@ -303,9 +303,11 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no
 	// sources, so it reads no keychain and calls no vendor endpoint. This is
 	// the only call site, and cfg.Dev never enters this decision (F1).
+	grokExhaustion := &usagesvc.GrokExhaustion{} // the hook handler fills it, the grok usage source reads it
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
 		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
-			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d)}
+			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d,
+			&usagesvc.Grok{SwarmHome: cfg.Home, StartEnv: execx.StartEnv, Dir: cfg.Home, Exhaustion: grokExhaustion})}
 	// docs/specs/2026-09-19-usage-fallback-agent.md: rt.Usage lets the
 	// spawn/retry path substitute a configured fallback agent when the
 	// configured one is confirmed out of usage. usagegate depends on both
@@ -314,7 +316,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	rt.Usage = &usagegate.Gate{Poller: up, Now: now}
 	mcpsrv := &mcpserver.Server{RT: rt, KB: idx, Advisor: adv, Log: cfg.Log, Version: version}
 	hookH := &hook.Handler{DB: d, RT: rt, Adapters: rt.Adapters, Now: now, Log: cfg.Log, Advisor: adv,
-		WorktreesDir: filepath.Join(cfg.Home, "worktrees")}
+		GrokExhaustion: grokExhaustion, WorktreesDir: filepath.Join(cfg.Home, "worktrees")}
 
 	// the manager needs the handler and the handler needs the manager, so the
 	// handler is filled in once the API exists
