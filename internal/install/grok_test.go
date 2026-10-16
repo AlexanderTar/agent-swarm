@@ -395,3 +395,184 @@ func TestPluginsSyncLeavesGrokToWriteGrok(t *testing.T) {
 		t.Errorf("Sync for grok ran %v", calls)
 	}
 }
+
+// writtenGrokHome is a Swarm grok home as swarm install leaves it, with one
+// Claude plugin on the machine so the denylist has an entry.
+func writtenGrokHome(t *testing.T) install.Config {
+	t.Helper()
+	c := fakeHome(t)
+	seedClaudePlugins(t, c, []string{"alpha@mkt"})
+	if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func grokCheck(t *testing.T, c install.Config, name string) install.Check {
+	t.Helper()
+	for _, ch := range install.CheckGrok(context.Background(), c, nil) {
+		if ch.Name == name {
+			return ch
+		}
+	}
+	t.Fatalf("no %q check", name)
+	return install.Check{}
+}
+
+func TestCheckGrok(t *testing.T) {
+	editConfig := func(t *testing.T, c install.Config, f func(m map[string]any)) {
+		t.Helper()
+		m := readTOML(t, c.Grok("config.toml"))
+		f(m)
+		body, err := toml.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(c.Grok("config.toml"), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	good := writtenGrokHome(t)
+	for _, name := range []string{"Grok MCP", "Grok hooks", "Grok auth", "Grok plugins", "Grok skills path", "Grok skills"} {
+		if ch := grokCheck(t, good, name); !ch.OK {
+			t.Errorf("a fresh install fails %q: %+v", name, ch)
+		}
+	}
+	for _, tc := range []struct {
+		name, check, detail string
+		break_              func(t *testing.T, c install.Config)
+	}{
+		{"no config", "Grok MCP", "Not installed", func(t *testing.T, c install.Config) { os.Remove(c.Grok("config.toml")) }},
+		{"mcp entry gone", "Grok MCP", "missing from", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) { delete(m["mcp_servers"].(map[string]any), "swarm") })
+		}},
+		{"mcp points elsewhere", "Grok MCP", "points at /other", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) {
+				m["mcp_servers"].(map[string]any)["swarm"].(map[string]any)["command"] = "/other"
+			})
+		}},
+		{"binary missing", "Grok MCP", "binary is missing", func(t *testing.T, c install.Config) { os.Remove(c.Bin) }},
+		{"a hook missing", "Grok hooks", "StopFailure", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) { delete(m["hooks"].(map[string]any), "StopFailure") })
+		}},
+		{"a hook points elsewhere", "Grok hooks", "Stop", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) {
+				g := m["hooks"].(map[string]any)["Stop"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+				g["command"] = "/old/swarm hook grok Stop"
+			})
+		}},
+		{"auth link gone", "Grok auth", "auth.json.lock", func(t *testing.T, c install.Config) { os.Remove(c.Grok("auth.json.lock")) }},
+		{"auth link elsewhere", "Grok auth", "auth.json", func(t *testing.T, c install.Config) {
+			os.Remove(c.Grok("auth.json"))
+			os.Symlink("/nowhere", c.Grok("auth.json"))
+		}},
+		{"superpowers disabled", "Grok plugins", "superpowers", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) {
+				p := m["plugins"].(map[string]any)
+				p["disabled"] = append(p["disabled"].([]any), "superpowers")
+			})
+		}},
+		{"claude plugin enabled", "Grok plugins", "alpha", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) { m["plugins"].(map[string]any)["disabled"] = []any{} })
+		}},
+		{"skills path gone", "Grok skills path", "skills", func(t *testing.T, c install.Config) {
+			editConfig(t, c, func(m map[string]any) { m["skills"].(map[string]any)["paths"] = []any{} })
+		}},
+		{"skills gone", "Grok skills", "Missing", func(t *testing.T, c install.Config) { os.RemoveAll(c.Grok("skills")) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := writtenGrokHome(t)
+			tc.break_(t, c)
+			ch := grokCheck(t, c, tc.check)
+			if ch.OK || !strings.Contains(ch.Detail, tc.detail) {
+				t.Errorf("%s = %+v, want a failure mentioning %q", tc.check, ch, tc.detail)
+			}
+		})
+	}
+	// A real auth file is the operator's choice, so it passes.
+	c := writtenGrokHome(t)
+	os.Remove(c.Grok("auth.json"))
+	os.WriteFile(c.Grok("auth.json"), []byte("{}"), 0o600)
+	if ch := grokCheck(t, c, "Grok auth"); !ch.OK {
+		t.Errorf("a real auth.json should pass: %+v", ch)
+	}
+}
+
+func TestUninstallGrokRemovesOnlyOwn(t *testing.T) {
+	c := writtenGrokHome(t)
+	editUser := readTOML(t, c.Grok("config.toml"))
+	editUser["marketplace"] = map[string]any{"x": int64(1)}
+	editUser["mcp_servers"].(map[string]any)["other"] = map[string]any{"command": "other"}
+	editUser["hooks"].(map[string]any)["Stop"] = append([]any{map[string]any{"hooks": []any{
+		map[string]any{"type": "command", "command": "/usr/local/bin/user-stop"}}}},
+		editUser["hooks"].(map[string]any)["Stop"].([]any)...)
+	editUser["skills"].(map[string]any)["paths"] = append([]any{"/user/skills"}, editUser["skills"].(map[string]any)["paths"].([]any)...)
+	body, _ := toml.Marshal(editUser)
+	os.WriteFile(c.Grok("config.toml"), body, 0o644)
+	os.MkdirAll(c.Grok("skills", "mine"), 0o755)
+	os.WriteFile(c.Grok("skills", "mine", "SKILL.md"), []byte("mine"), 0o644)
+	userAuth, _ := os.ReadFile(c.UserGrok("auth.json.lock")) // seeded, empty
+	os.WriteFile(c.UserGrok("auth.json"), []byte(`{"k":1}`), 0o600)
+
+	f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
+	o := agentsOpts(t, c, f)
+	for i := 0; i < 2; i++ { // and a second run is a no-op
+		if err := install.Uninstall(context.Background(), o); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := readTOML(t, c.Grok("config.toml"))
+	if _, ok := m["mcp_servers"].(map[string]any)["swarm"]; ok {
+		t.Error("swarm MCP entry kept")
+	}
+	if _, ok := m["mcp_servers"].(map[string]any)["other"]; !ok {
+		t.Error("user's MCP entry dropped")
+	}
+	if mk, _ := m["marketplace"].(map[string]any); mk["x"] != int64(1) {
+		t.Errorf("[marketplace] lost: %v", m["marketplace"])
+	}
+	hooks := m["hooks"].(map[string]any)
+	if len(hooks) != 1 {
+		t.Errorf("hooks = %v, want only the user's Stop", hooks)
+	}
+	for _, g := range hooks["Stop"].([]any) {
+		for _, h := range g.(map[string]any)["hooks"].([]any) {
+			if cmd := h.(map[string]any)["command"].(string); cmd != "/usr/local/bin/user-stop" {
+				t.Errorf("swarm hook kept: %s", cmd)
+			}
+		}
+	}
+	paths := m["skills"].(map[string]any)["paths"].([]any)
+	if len(paths) != 1 || paths[0] != "/user/skills" {
+		t.Errorf("[skills] paths = %v, want only the user's", paths)
+	}
+	for _, name := range []string{"auth.json", "auth.json.lock"} {
+		if _, err := os.Lstat(c.Grok(name)); !os.IsNotExist(err) {
+			t.Errorf("%s link kept (%v)", name, err)
+		}
+	}
+	if b, _ := os.ReadFile(c.UserGrok("auth.json")); string(b) != `{"k":1}` {
+		t.Errorf("~/.grok/auth.json touched: %s", b)
+	}
+	if b, err := os.ReadFile(c.UserGrok("auth.json.lock")); err != nil || !bytes.Equal(b, userAuth) {
+		t.Errorf("~/.grok/auth.json.lock touched: %q %v", b, err)
+	}
+	if _, err := os.Stat(c.Grok("skills", "mine", "SKILL.md")); err != nil {
+		t.Errorf("the user's own skill was removed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(c.Grok("skills"), install.SkillNames()[0])); !os.IsNotExist(err) {
+		t.Errorf("swarm's skill link kept (%v)", err)
+	}
+}
+
+func TestUninstallGrokCreatesNothingWhenGrokWasNeverInstalled(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
+	if err := install.Uninstall(context.Background(), agentsOpts(t, c, f)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(c.Grok()); !os.IsNotExist(err) {
+		t.Errorf("uninstall created %s (%v)", c.Grok(), err)
+	}
+}

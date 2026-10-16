@@ -58,7 +58,7 @@ func WriteGrok(ctx context.Context, c Config, run execx.Runner) (changed, skippe
 			skipped = append(skipped, "grok superpowers: not installed, and no Claude copy to fall back on")
 		}
 	}
-	wrote, err := editTOML(cfg, func(m map[string]any) error {
+	wrote, err := editTOML(cfg, true, func(m map[string]any) error {
 		mergeGrokConfig(c, m)
 		refreshGrokPlugins(c, m)
 		setGrokSuperpowersFallback(c, m, fallback)
@@ -79,15 +79,18 @@ func WriteGrok(ctx context.Context, c Config, run execx.Runner) (changed, skippe
 	return append(changed, sk...), append(skipped, sks...), err
 }
 
-// editTOML applies edit to the table at path (a missing file starts empty) and
-// writes it back only when the bytes change. A file that does not parse is an
-// error and is never overwritten.
-func editTOML(path string, edit func(m map[string]any) error) (bool, error) {
+// editTOML applies edit to the table at path and writes it back only when the
+// bytes change. A missing file starts empty when create is true and is left
+// alone otherwise. A file that does not parse is an error and is never
+// overwritten.
+func editTOML(path string, create bool, edit func(m map[string]any) error) (bool, error) {
 	m := map[string]any{}
 	if old, err := os.ReadFile(path); err == nil {
 		if err := toml.Unmarshal(old, &m); err != nil {
 			return false, fmt.Errorf("%s does not parse: %w", path, err)
 		}
+	} else if os.IsNotExist(err) && !create {
+		return false, nil
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
@@ -259,7 +262,7 @@ func RefreshGrokPlugins(c Config) (bool, error) {
 	if err := os.MkdirAll(c.Grok(), 0o755); err != nil {
 		return false, err
 	}
-	return editTOML(c.Grok("config.toml"), func(m map[string]any) error { refreshGrokPlugins(c, m); return nil })
+	return editTOML(c.Grok("config.toml"), true, func(m map[string]any) error { refreshGrokPlugins(c, m); return nil })
 }
 
 func refreshGrokPlugins(c Config, m map[string]any) {
@@ -325,8 +328,201 @@ func claudePluginNames(c Config) []string {
 	return out
 }
 
-// CheckGrok is doctor's grok block. Unit 1 only has the skills check; the rest
-// lands with the writer.
+// loadGrokConfig reads the Swarm grok home's config.toml for a doctor check.
+func loadGrokConfig(c Config) (m map[string]any, fail string) {
+	p := c.Grok("config.toml")
+	body, err := os.ReadFile(p)
+	if err != nil {
+		return nil, "Not installed. Run swarm install."
+	}
+	if err := toml.Unmarshal(body, &m); err != nil {
+		return nil, "Invalid " + p + ". Run swarm install."
+	}
+	return m, ""
+}
+
+// CheckGrok is doctor's grok block: every file WriteGrok touches, plus A1's
+// skills check. (grok superpowers is the shared superpowers check.)
 func CheckGrok(_ context.Context, c Config, _ execx.Runner) []Check {
-	return []Check{CheckSkills(c, KindGrok)}
+	return []Check{grokMCPCheck(c), grokHooksCheck(c), grokAuthCheck(c), grokPluginsCheck(c),
+		grokSkillsPathCheck(c), CheckSkills(c, KindGrok)}
+}
+
+func grokMCPCheck(c Config) Check {
+	const name = "Grok MCP"
+	m, fail := loadGrokConfig(c)
+	if fail != "" {
+		return Check{name, false, fail}
+	}
+	servers, _ := m["mcp_servers"].(map[string]any)
+	entry, ok := servers["swarm"].(map[string]any)
+	p := c.Grok("config.toml")
+	if !ok {
+		return Check{name, false, "The swarm MCP server is missing from " + p + ". Run swarm install."}
+	}
+	if cmd, _ := entry["command"].(string); cmd != c.Bin {
+		return Check{name, false, "The swarm MCP server points at " + cmd + ". Run swarm install."}
+	}
+	if _, err := os.Stat(c.Bin); err != nil {
+		return Check{name, false, "The swarm binary is missing: " + c.Bin + ". Run make install."}
+	}
+	return Check{name, true, p}
+}
+
+func grokHooksCheck(c Config) Check {
+	const name = "Grok hooks"
+	m, fail := loadGrokConfig(c)
+	if fail != "" {
+		return Check{name, false, fail}
+	}
+	hooks, _ := m["hooks"].(map[string]any)
+	var bad []string
+	for _, ev := range grokHookEvents {
+		want, found := c.Bin+" hook grok "+ev, false
+		groups, _ := hooks[ev].([]any)
+		for _, g := range groups {
+			inner, _ := g.(map[string]any)["hooks"].([]any)
+			for _, h := range inner {
+				if cmd, _ := h.(map[string]any)["command"].(string); cmd == want {
+					found = true
+				}
+			}
+		}
+		if !found {
+			bad = append(bad, ev)
+		}
+	}
+	if len(bad) > 0 {
+		return Check{name, false, "Missing or stale swarm hooks for " + strings.Join(bad, ", ") + ". Run swarm install."}
+	}
+	return Check{name, true, c.Grok("config.toml")}
+}
+
+// grokAuthCheck wants both login files linked into ~/.grok. A real file there is
+// the operator's own login and passes.
+func grokAuthCheck(c Config) Check {
+	const name = "Grok auth"
+	own := false
+	for _, f := range grokAuthFiles {
+		dst := c.Grok(f)
+		fi, err := os.Lstat(dst)
+		if err != nil {
+			return Check{name, false, dst + " is missing. Run swarm install."}
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			own = true
+			continue
+		}
+		if cur, _ := os.Readlink(dst); cur != c.UserGrok(f) {
+			return Check{name, false, dst + " points at " + cur + ", not " + c.UserGrok(f) + ". Run swarm install."}
+		}
+	}
+	if own {
+		return Check{name, true, "Using its own login file in " + c.Grok() + "."}
+	}
+	return Check{name, true, "Linked to " + c.UserGrok() + "."}
+}
+
+// grokPluginsCheck wants every Claude plugin disabled and superpowers not.
+func grokPluginsCheck(c Config) Check {
+	const name = "Grok plugins"
+	m, fail := loadGrokConfig(c)
+	if fail != "" {
+		return Check{name, false, fail}
+	}
+	plugins, _ := m["plugins"].(map[string]any)
+	disabled := map[string]bool{}
+	list, _ := plugins["disabled"].([]any)
+	for _, v := range list {
+		s, _ := v.(string)
+		disabled[s] = true
+	}
+	if disabled["superpowers"] {
+		return Check{name, false, "superpowers is disabled in " + c.Grok("config.toml") + ". Run swarm install."}
+	}
+	var open []string
+	for _, n := range claudePluginNames(c) {
+		if n != "superpowers" && !disabled[n] {
+			open = append(open, n)
+		}
+	}
+	if len(open) > 0 {
+		return Check{name, false, "Claude plugins not disabled for grok: " + strings.Join(open, ", ") + ". Run swarm install."}
+	}
+	return Check{name, true, "Claude plugins are disabled."}
+}
+
+func grokSkillsPathCheck(c Config) Check {
+	const name = "Grok skills path"
+	m, fail := loadGrokConfig(c)
+	if fail != "" {
+		return Check{name, false, fail}
+	}
+	skills, _ := m["skills"].(map[string]any)
+	paths, _ := skills["paths"].([]any)
+	if !slices.Contains(paths, any(c.SkillsDir(KindGrok))) {
+		return Check{name, false, "[skills] paths in " + c.Grok("config.toml") + " lacks " + c.SkillsDir(KindGrok) + ". Run swarm install."}
+	}
+	return Check{name, true, c.SkillsDir(KindGrok)}
+}
+
+// UninstallGrok removes what WriteGrok added and nothing else: the swarm MCP
+// entry, swarm's hook groups, its skills paths and the auth links. grok's own and
+// the user's keys, the plugin denylist, the installed superpowers and ~/.grok are
+// left. (Skills are removed by Uninstall's per-kind pass.)
+func UninstallGrok(c Config) (removed []string, err error) {
+	cfg := c.Grok("config.toml")
+	wrote, err := editTOML(cfg, false, func(m map[string]any) error { dropGrokConfig(c, m); return nil })
+	if err != nil {
+		return nil, err
+	}
+	if wrote {
+		removed = append(removed, cfg)
+	}
+	for _, f := range grokAuthFiles {
+		dst := c.Grok(f)
+		if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if cur, _ := os.Readlink(dst); cur == c.UserGrok(f) {
+				if err := os.Remove(dst); err != nil {
+					return removed, err
+				}
+				removed = append(removed, dst)
+			}
+		}
+	}
+	return removed, nil
+}
+
+func dropGrokConfig(c Config, m map[string]any) {
+	if servers, ok := m["mcp_servers"].(map[string]any); ok {
+		delete(servers, "swarm")
+		if len(servers) == 0 {
+			delete(m, "mcp_servers")
+		}
+	}
+	if hooks, ok := m["hooks"].(map[string]any); ok {
+		for ev, v := range hooks {
+			groups, _ := v.([]any)
+			if kept := dropGrokHookGroups(groups); len(kept) > 0 {
+				hooks[ev] = kept
+			} else {
+				delete(hooks, ev)
+			}
+		}
+		if len(hooks) == 0 {
+			delete(m, "hooks")
+		}
+	}
+	if skills, ok := m["skills"].(map[string]any); ok {
+		setGrokSuperpowersFallback(c, m, "")
+		dir := c.SkillsDir(KindGrok)
+		paths, _ := skills["paths"].([]any)
+		skills["paths"] = slices.DeleteFunc(paths, func(p any) bool { return p == dir })
+		if len(skills["paths"].([]any)) == 0 {
+			delete(skills, "paths")
+		}
+		if len(skills) == 0 {
+			delete(m, "skills")
+		}
+	}
 }
