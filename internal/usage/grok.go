@@ -77,7 +77,6 @@ func GrokSessionUsage(ctx context.Context, run execx.RunnerEnv, swarmHome, sessi
 type Grok struct {
 	SwarmHome  string
 	StartEnv   execx.StarterEnv // nil skips the billing call (exhaustion only)
-	Dir        string           // working directory for grok agent stdio
 	Timeout    time.Duration
 	Exhaustion *GrokExhaustion // nil: no fallback record
 	Now        func() time.Time
@@ -235,9 +234,12 @@ type GrokExhaustion struct {
 }
 
 var (
-	// grokExhaustedText matches a 429 quota error, `retry_state exhausted`
-	// and the TUI's "You hit your ... usage limit" card.
-	grokExhaustedText = regexp.MustCompile(`(?i)exhausted|usage limit|actual/limit|quota`)
+	// grokExhaustedText matches only quota text: the 429's `usage-exhausted`
+	// code and `tokens (actual/limit)` counts, and the TUI's "You hit your ...
+	// usage limit" card. A bare `retry_state exhausted` carries neither, and the
+	// per-second 429 ("resource-exhausted ... Requests per Second (actual/limit)")
+	// clears in a second, so neither marks grok out for a day.
+	grokExhaustedText = regexp.MustCompile(`(?i)usage-exhausted|usage limit|tokens \(actual/limit\)`)
 	grokResetsAt      = regexp.MustCompile(`(?i)resets at (\d{4}-\d\d-\d\dT[\d:.]+Z)`)
 )
 

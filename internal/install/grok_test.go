@@ -721,3 +721,92 @@ func TestUninstallGrokRemovesOnlyWhatInstallAdded(t *testing.T) {
 		}
 	})
 }
+
+// The Swarm grok home holds session logs with token prefixes, so it is 0700 and a
+// looser one left by an earlier install is tightened.
+func TestGrokHomeIsPrivate(t *testing.T) {
+	mode := func(t *testing.T, p string) os.FileMode {
+		t.Helper()
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Mode().Perm()
+	}
+	for name, run := range map[string]func(install.Config) error{
+		"WriteGrok": func(c install.Config) error {
+			_, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner())
+			return err
+		},
+		"RefreshGrokPlugins": func(c install.Config) error { _, err := install.RefreshGrokPlugins(c); return err },
+	} {
+		t.Run(name+" creates it 0700", func(t *testing.T) {
+			c := fakeHome(t)
+			if err := run(c); err != nil {
+				t.Fatal(err)
+			}
+			if got := mode(t, c.Grok()); got != 0o700 {
+				t.Errorf("grok home mode = %o, want 700", got)
+			}
+		})
+		t.Run(name+" tightens an existing 0755", func(t *testing.T) {
+			c := fakeHome(t)
+			if err := os.MkdirAll(c.Grok(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(c.Grok(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := run(c); err != nil {
+				t.Fatal(err)
+			}
+			if got := mode(t, c.Grok()); got != 0o700 {
+				t.Errorf("grok home mode = %o, want 700", got)
+			}
+		})
+	}
+}
+
+// Install records the Claude superpowers copy it put in [skills] paths; uninstall
+// takes that one back and leaves a superpowers path the operator added.
+func TestUninstallGrokRemovesOnlyTheRecordedSuperpowersPath(t *testing.T) {
+	c := fakeHome(t)
+	ours := c.Claude("plugins", "cache", "m", "superpowers", "5.1.0", "skills")
+	theirs := c.Claude("plugins", "cache", "m", "superpowers", "5.0.1", "skills")
+	for _, d := range []string{ours, theirs} {
+		if err := os.MkdirAll(filepath.Join(d, "brainstorming"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(d, "brainstorming", "SKILL.md"), []byte("x"), 0o644)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Dir(theirs), past, past); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+		t.Fatal(err)
+	}
+	// The operator adds an older copy by hand after install.
+	m := readTOML(t, c.Grok("config.toml"))
+	skills := m["skills"].(map[string]any)
+	skills["paths"] = append(skills["paths"].([]any), theirs)
+	body, err := toml.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.Grok("config.toml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := install.UninstallGrok(c); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	if sk, ok := readTOML(t, c.Grok("config.toml"))["skills"].(map[string]any); ok {
+		for _, p := range sk["paths"].([]any) {
+			paths = append(paths, p.(string))
+		}
+	}
+	if slices.Contains(paths, ours) || !slices.Contains(paths, theirs) {
+		t.Errorf("[skills] paths = %v, want only the operator's %s left", paths, theirs)
+	}
+}
