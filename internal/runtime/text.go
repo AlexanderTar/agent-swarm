@@ -166,7 +166,7 @@ func GraphifyHint(paths []string, ready []bool) string {
 // grokKickoffNote rides on a grok agent's kickoff. Grok's `/fork` cannot be
 // disabled, so the ban is spelled out (SPIKE-52 TASK-1129 decision 13).
 const grokKickoffNote = "Grok: the superpowers skills are installed natively but grok has no skill tool; " +
-	"load one by reading its SKILL.md with read_file (under the superpowers plugin's skills folder). " +
+	"load one by reading its SKILL.md with read_file (under ~/.grok/installed-plugins/superpowers-*/skills). " +
 	"Never use /fork or --fork-session: a fork leaves Swarm's tracking. Delegate with swarm_spawn instead."
 
 // KindKickoffNote is the extra kickoff text a kind needs, or "".

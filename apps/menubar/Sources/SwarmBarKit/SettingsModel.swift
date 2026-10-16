@@ -242,8 +242,12 @@ public final class SettingsModel {
             // (`CatalogRules.hidesAdvisorEffort`); "No advisor" never has one either.
             let advisorHidden = isAdvisor && CatalogRules.hidesAdvisorEffort(orchestrator: settings[.orchestrator]?.agent,
                 advisor: .pair(d.agent, d.model), catalog: catalog)
+            // "No advisor" is a model option on this row, so drop the agent list's own "none" entry.
+            let agentOptions = isAdvisor
+                ? CatalogRules.advisorAgentOptions(enabled: settings.enabledAgents, catalog: catalog).filter { $0.value != "none" }
+                : CatalogRules.agentOptions(enabled: settings.enabledAgents)
             return DefaultsRow(role: role, label: Copy.defaultsRowLabel(role), agent: d.agent.rawValue,
-                               agentOptions: CatalogRules.agentOptions(enabled: settings.enabledAgents),
+                               agentOptions: agentOptions,
                                model: displayModel, modelOptions: models,
                                effortOptions: (none || advisorHidden) ? nil : CatalogRules.effortOptions(d.agent, model),
                                effort: d.effort,

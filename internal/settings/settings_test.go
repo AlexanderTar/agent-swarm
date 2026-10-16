@@ -463,8 +463,8 @@ func TestDisablingTheAdvisorAgentWhenTheNextCannotAdviseTurnsTheAdvisorOff(t *te
 	if err != nil {
 		t.Fatalf("disabling claude: %v", err)
 	}
-	if got.Roles[kinds.RoleAdvisor].Model != NoAdvisor {
-		t.Errorf("advisor = %+v, want none", got.Roles[kinds.RoleAdvisor])
+	if a := got.Roles[kinds.RoleAdvisor]; a.Model != NoAdvisor || a.Agent != kinds.Muse {
+		t.Errorf("advisor = %+v, want model none on an enabled agent (the menubar decodes the agent)", a)
 	}
 	if got.Roles[kinds.RoleCoder].Agent != kinds.Muse {
 		t.Errorf("coder = %+v, want it moved to muse", got.Roles[kinds.RoleCoder])
