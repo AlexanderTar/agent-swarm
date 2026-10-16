@@ -28,7 +28,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertNil(s.usage[1].error)
         XCTAssertEqual(s.notifications.unread, 4)
         XCTAssertEqual(s.notifications.items.count, 5)
-        XCTAssertEqual(s.usage.map(\.agent), [.claude, .codex, .agy, .cursor])
+        XCTAssertEqual(s.usage.map(\.agent), [.claude, .codex, .agy, .cursor, .grok])
         XCTAssertEqual(s.usage[2].headline?.label, "Gemini 5h")
         XCTAssertEqual(s.activeCount, 4)
         XCTAssertEqual(s.settings.enabledAgents, [.claude, .codex, .agy])
@@ -64,7 +64,7 @@ final class FixtureTests: XCTestCase {
 
     func testCatalogReposAndSmallShapesDecode() throws {
         let catalog: [AgentCatalogEntry] = try Fixture.decode("catalog.json")
-        XCTAssertEqual(catalog.map(\.kind), [.claude, .codex, .agy, .cursor])
+        XCTAssertEqual(catalog.map(\.kind), [.claude, .codex, .agy, .cursor, .grok])
         XCTAssertEqual(catalog[0].models[0].aliases, ["fable"])
         XCTAssertEqual(catalog[0].models[3].efforts, [])
         XCTAssertEqual(catalog[1].models[0].defaultEffort, "medium")
@@ -104,7 +104,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(failed.agent.preflightError, "Commit signing is off for endurio-chat. Enable it in git config.")
         XCTAssertEqual(try Fixture.decode("request.json", as: SwarmRequest.self).state, "answered")
         XCTAssertEqual(try Fixture.decode("notifications.json", as: [SwarmNotification].self).count, 5)
-        XCTAssertEqual(try Fixture.decode("usage.json", as: [UsageSnapshot].self).count, 4)
+        XCTAssertEqual(try Fixture.decode("usage.json", as: [UsageSnapshot].self).count, 5)
         XCTAssertEqual(try Fixture.decode("terminal-open.json", as: TerminalOpen.self),
                        TerminalOpen(name: "login-form-coder", tmux: "login-form-coder"))
         XCTAssertEqual(try Fixture.decode("error-conflict.json", as: APIErrorBody.self).error.code, "conflict")

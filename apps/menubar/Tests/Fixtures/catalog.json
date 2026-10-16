@@ -195,5 +195,34 @@
     "catalog_fetched_at": 0,
     "catalog_stale": false,
     "catalog_error": ""
+  },
+  {
+    "kind": "grok",
+    "installed": true,
+    "version": "1.0.60",
+    "auth_ok": true,
+    "auth_error": "",
+    "superpowers": true,
+    "models": [
+      {
+        "id": "grok-4.7",
+        "label": "Grok 4.7",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_effort": "high",
+        "effort_encoding": "flag",
+        "advisor_capable": false,
+        "is_default": true
+      }
+    ],
+    "default_model": "grok-4.7",
+    "catalog_source": "grok models",
+    "catalog_fetched_at": 1789641120000,
+    "catalog_stale": false,
+    "catalog_error": ""
   }
 ]

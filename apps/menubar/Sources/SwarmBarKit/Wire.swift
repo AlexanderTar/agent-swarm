@@ -7,10 +7,10 @@ import Foundation
 // menubar uses; the fixtures in Tests/Fixtures carry the full shapes for the Go check.
 
 public enum AgentKind: String, Codable, Sendable, CaseIterable {
-    case claude, codex, agy, cursor, muse, fake
+    case claude, codex, agy, cursor, muse, grok, fake
 
-    /// The five agents a user can enable, in settings order (claude first).
-    public static let selectable: [AgentKind] = [.claude, .codex, .agy, .cursor, .muse]
+    /// The six agents a user can enable, in settings order (claude first).
+    public static let selectable: [AgentKind] = [.claude, .codex, .agy, .cursor, .muse, .grok]
 }
 
 public enum Role: String, Codable, Sendable {

@@ -25,7 +25,7 @@ final class MockDaemonClientTests: XCTestCase {
         let pane = try await mock.pane("login-form-coder", lines: 40)
         XCTAssertEqual(paused, 1)
         XCTAssertEqual(firstTwo.count, 2)
-        XCTAssertEqual([catalog.count, refreshed.count, repos.recent.count], [4, 4, 1])
+        XCTAssertEqual([catalog.count, refreshed.count, repos.recent.count], [5, 5, 1])
         XCTAssertEqual(added.name, "notes")
         XCTAssertEqual(scan, ScanStats(found: 5, missing: 0))
         XCTAssertEqual(pane, try Fixture.decode("pane.json"))

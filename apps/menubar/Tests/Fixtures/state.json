@@ -565,6 +565,24 @@
       "fetched_at": 1789651860000,
       "attempted_at": 1789651860000,
       "stale": false
+    },
+    {
+      "agent": "grok",
+      "meters": [
+        {
+          "id": "weekly",
+          "label": "Weekly",
+          "window": "weekly",
+          "used_pct": 12,
+          "resets_at": 1789977600000
+        }
+      ],
+      "headline_id": "weekly",
+      "source": "grok usage",
+      "error": null,
+      "fetched_at": 1789651860000,
+      "attempted_at": 1789651860000,
+      "stale": false
     }
   ],
   "active_count": 4,

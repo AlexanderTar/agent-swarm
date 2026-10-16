@@ -78,7 +78,7 @@ final class HTTPDaemonClientTests: XCTestCase {
 
         XCTAssertEqual(requested, 3)
         XCTAssertEqual(saved.enabledAgents, [.claude, .codex, .agy])
-        XCTAssertEqual([catalog.count, refreshed.count, notes.count], [4, 4, 5])
+        XCTAssertEqual([catalog.count, refreshed.count, notes.count], [5, 5, 5])
         XCTAssertEqual(repos.all.count, 5)
         XCTAssertEqual(added.id, "repo_notes")
         XCTAssertEqual(scan.found, 112)
