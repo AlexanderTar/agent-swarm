@@ -20,6 +20,11 @@ func TestKindKickoffNote(t *testing.T) {
 	if !strings.Contains(note, "read_file") || !strings.Contains(note, "SKILL.md") {
 		t.Errorf("grok kickoff note must say to read SKILL.md with read_file: %q", note)
 	}
+	// Swarm runs grok with GROK_HOME=<swarm home>/grok, so the plugins live
+	// there, not under ~/.grok.
+	if !strings.Contains(note, "$GROK_HOME/installed-plugins/") || strings.Contains(note, "~/.grok") {
+		t.Errorf("grok kickoff note must point at $GROK_HOME/installed-plugins, not ~/.grok: %q", note)
+	}
 	if strings.Contains(note, "with the skill tool") {
 		t.Errorf("grok has no skill tool: %q", note)
 	}
