@@ -441,3 +441,32 @@ func TestPutRefusesMuseAdvisorWhileDisabled(t *testing.T) {
 		t.Fatalf("muse stays valid for other roles: %v", err)
 	}
 }
+
+// Disabling the advisor's agent moves it to the first enabled agent; when that
+// agent can't advise (muse), the advisor becomes "none" instead of the whole
+// update failing validation.
+func TestDisablingTheAdvisorAgentWhenTheNextCannotAdviseTurnsTheAdvisorOff(t *testing.T) {
+	if kinds.MuseAdvisorEnabled {
+		t.Skip("muse advisor enabled")
+	}
+	catalogs[kinds.Muse] = []catalog.CatalogModel{{ID: "muse-1", Label: "Muse 1", Efforts: []string{}}}
+	defer delete(catalogs, kinds.Muse)
+	s := newStore(t, kinds.Claude, kinds.Muse)
+	cur, _ := s.Get(ctx)
+	cur.EnabledAgents = []kinds.AgentKind{kinds.Claude, kinds.Muse}
+	if _, err := s.Put(ctx, cur); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ = s.Get(ctx)
+	cur.EnabledAgents = []kinds.AgentKind{kinds.Muse}
+	got, err := s.Put(ctx, cur)
+	if err != nil {
+		t.Fatalf("disabling claude: %v", err)
+	}
+	if got.Roles[kinds.RoleAdvisor].Model != NoAdvisor {
+		t.Errorf("advisor = %+v, want none", got.Roles[kinds.RoleAdvisor])
+	}
+	if got.Roles[kinds.RoleCoder].Agent != kinds.Muse {
+		t.Errorf("coder = %+v, want it moved to muse", got.Roles[kinds.RoleCoder])
+	}
+}

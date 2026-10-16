@@ -310,6 +310,10 @@ func (s *Store) switchDisabled(ctx context.Context, prev Settings, next *Setting
 		if !disabledNow(rd.Agent) {
 			continue
 		}
+		if role == kinds.RoleAdvisor && !first.AdvisorEnabled() {
+			next.Roles[role] = RoleDefault{Model: NoAdvisor}
+			continue
+		}
 		reassigned, err := s.reassignDefault(ctx, first, roleDefaults[role])
 		if err != nil {
 			return err
