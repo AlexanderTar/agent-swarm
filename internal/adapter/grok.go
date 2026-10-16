@@ -314,7 +314,10 @@ func (g *Grok) ObserveModel(transcriptPath, providerSessionID string) (string, s
 
 // ---- filled in by the wake package ----
 
-func (g *Grok) Wake(context.Context, WakeTarget) (bool, error) { return false, nil }
+// PasteReady is the wake-paste gate (runtime tryPaste): a paste plus one Enter
+// mid-turn queues the message (TASK-1126), so only a card, which swallows typed
+// text, blocks it.
+func (g *Grok) PasteReady(capture string) bool { return !grokCard.MatchString(StripANSI(capture)) }
 
 // AssistantTextSinceLastTurn lets the Stop hook judge the reply for the
 // approval chat block: grok's Stop carries lastAssistantMessage, which the

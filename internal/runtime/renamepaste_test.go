@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 )
 
 const busyCapture = "✽ Beboppin'… (48s · ↓ 114 tokens)\n─────\n❯ \n─────\n"
@@ -93,5 +95,53 @@ func TestRenameIsPastedBeforeTheWakeNoticeOnePerTick(t *testing.T) {
 	}
 	if len(tm.pasted) != 2 || strings.Contains(tm.pasted[1], "/rename") {
 		t.Fatalf("second tick pasted %v, want the wake notice", tm.pasted)
+	}
+}
+
+// leaderRenamer is an adapter whose session can be renamed over a socket.
+type leaderRenamer struct {
+	*adapter.Fake
+	up    bool
+	calls []string // "<session>|<provider>|<name>"
+}
+
+func (l *leaderRenamer) RenameViaLeader(_ context.Context, sessionID, providerID, name string) bool {
+	l.calls = append(l.calls, sessionID+"|"+providerID+"|"+name)
+	return l.up
+}
+
+// A kind with a leader renames its session over the socket: nothing is pasted,
+// the pending name clears, and the pane stays free for the wake notice.
+func TestRenameGoesOverTheLeaderSocketWhenItIsUp(t *testing.T) {
+	s, tm, a, ses := renameSpike(t, true) // a busy pane: only the socket can rename it
+	lr := &leaderRenamer{Fake: s.Adapters[Fake].(*adapter.Fake), up: true}
+	s.Adapters[Fake] = lr
+	if err := s.WakeDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 0 {
+		t.Fatalf("pasted %v, want nothing", tm.pasted)
+	}
+	if len(lr.calls) != 1 || !strings.HasSuffix(lr.calls[0], "|"+a.Name) || !strings.HasPrefix(lr.calls[0], ses.ID+"|") {
+		t.Fatalf("calls = %v", lr.calls)
+	}
+	if got := pendingName(t, s, ses.ID); got != "" {
+		t.Fatalf("pending_name = %q, want cleared", got)
+	}
+}
+
+// With the leader down the rename waits for the idle pane and pastes, as before.
+func TestRenameFallsBackToThePasteWhenTheLeaderIsDown(t *testing.T) {
+	s, tm, a, ses := renameSpike(t, false)
+	lr := &leaderRenamer{Fake: s.Adapters[Fake].(*adapter.Fake), up: false}
+	s.Adapters[Fake] = lr
+	if err := s.WakeDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := a.Name + "|/rename " + a.Name; len(tm.pasted) != 1 || tm.pasted[0] != want {
+		t.Fatalf("pasted = %v, want [%s]", tm.pasted, want)
+	}
+	if got := pendingName(t, s, ses.ID); got != "" {
+		t.Fatalf("pending_name = %q, want cleared", got)
 	}
 }

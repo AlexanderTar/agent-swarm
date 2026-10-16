@@ -30,6 +30,12 @@ func shortSock(t *testing.T) string {
 func fakeLeader(t *testing.T, script func(c *fakeLeaderConn)) (path string, done <-chan struct{}) {
 	t.Helper()
 	path = shortSock(t)
+	return path, fakeLeaderAt(t, path, script)
+}
+
+// fakeLeaderAt is fakeLeader on a socket path the caller chose.
+func fakeLeaderAt(t *testing.T, path string, script func(c *fakeLeaderConn)) <-chan struct{} {
+	t.Helper()
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +51,17 @@ func fakeLeader(t *testing.T, script func(c *fakeLeaderConn)) (path string, done
 		defer c.Close()
 		script(&fakeLeaderConn{t: t, c: c})
 	}()
-	return path, ch
+	return ch
+}
+
+// handshake answers register, initialize and authenticate like a probed 1.0.60 leader.
+func (f *fakeLeaderConn) handshake() {
+	f.read()
+	f.registered(1, "1.0.60")
+	for i := 0; i < 2; i++ {
+		c := f.acp()
+		f.reply(c["id"], map[string]any{})
+	}
 }
 
 // fakeLeaderConn speaks the probed wire format with its own framing code, so a

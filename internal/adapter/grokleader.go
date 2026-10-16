@@ -18,6 +18,9 @@ import (
 // shape below is the one recorded in the leader probes (TASK-1126 section 4,
 // TASK-1129 probe 6); nothing here is guessed.
 
+// ErrUnsupportedLeader is a leader whose protocol or grok version was not probed.
+var ErrUnsupportedLeader = errors.New("unsupported grok leader")
+
 // grokLeaderProtocol is the only leader_protocol_version the probes covered.
 const grokLeaderProtocol = 1
 
@@ -89,13 +92,13 @@ func (c *leaderClient) handshake() error {
 		Binary   string `json:"leader_binary_version"`
 	}
 	if err := json.Unmarshal(raw, &reg); err != nil || reg.Type != "registered" {
-		return fmt.Errorf("grok leader: register was answered with %.80s", raw)
+		return fmt.Errorf("%w: register was answered with %.80s", ErrUnsupportedLeader, raw)
 	}
 	if reg.Protocol != grokLeaderProtocol {
-		return fmt.Errorf("grok leader: leader_protocol_version %d is not the probed %d", reg.Protocol, grokLeaderProtocol)
+		return fmt.Errorf("%w: leader_protocol_version %d is not the probed %d", ErrUnsupportedLeader, reg.Protocol, grokLeaderProtocol)
 	}
 	if !slices.Contains(grokLeaderVersions, reg.Binary) {
-		return fmt.Errorf("grok leader: grok version %q is not in the probed allowlist %v", reg.Binary, grokLeaderVersions)
+		return fmt.Errorf("%w: grok version %q is not in the probed allowlist %v", ErrUnsupportedLeader, reg.Binary, grokLeaderVersions)
 	}
 	if _, err := c.call("initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}}); err != nil {
 		return err
@@ -104,20 +107,30 @@ func (c *leaderClient) handshake() error {
 	return err
 }
 
-// call sends one JSON-RPC request and returns its result, skipping every
-// notification and any response to another id.
+// call sends one JSON-RPC request and returns its result.
 func (c *leaderClient) call(method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	id, err := c.send(method, params)
+	if err != nil {
+		return nil, err
+	}
+	return c.await(id)
+}
+
+func (c *leaderClient) send(method string, params any) (int, error) {
 	c.next++
 	id := c.next
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	if err := writeLeaderFrame(c.conn, map[string]any{"type": "acp", "payload": string(body)}); err != nil {
-		return nil, err
-	}
+	return id, writeLeaderFrame(c.conn, map[string]any{"type": "acp", "payload": string(body)})
+}
+
+// await reads frames until the response to id, skipping every notification and
+// any response to another id.
+func (c *leaderClient) await(id int) (json.RawMessage, error) {
 	for {
 		raw, err := readLeaderFrame(c.conn)
 		if err != nil {
@@ -148,15 +161,33 @@ func (c *leaderClient) call(method string, params any) (json.RawMessage, error) 
 	}
 }
 
-// Prompt submits text to the session. Mid-turn it queues behind the running
-// turn (probe 6), and the call returns only when that queued turn ends, so
-// callers run it on a goroutine.
+// StartPrompt submits text to the session and returns once the request is
+// written. Mid-turn it queues behind the running turn (probe 6), and the
+// response only comes when that queued turn ends, so wait blocks for that long.
+func (c *leaderClient) StartPrompt(sessionID, text string) (wait func() error, err error) {
+	c.mu.Lock()
+	id, err := c.send("session/prompt", map[string]any{"sessionId": sessionID,
+		"prompt": []map[string]string{{"type": "text", "text": text}}})
+	if err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	return func() error {
+		defer c.mu.Unlock()
+		_, err := c.await(id)
+		return err
+	}, nil
+}
+
+// Prompt is StartPrompt and the wait, bounded by ctx.
 func (c *leaderClient) Prompt(ctx context.Context, sessionID, text string) error {
 	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
 	defer stop()
-	_, err := c.call("session/prompt", map[string]any{"sessionId": sessionID,
-		"prompt": []map[string]string{{"type": "text", "text": text}}})
-	return err
+	wait, err := c.StartPrompt(sessionID, text)
+	if err != nil {
+		return err
+	}
+	return wait()
 }
 
 // Rename sets the session title, as /rename does in the pane.

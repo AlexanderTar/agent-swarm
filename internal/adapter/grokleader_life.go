@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -105,4 +106,82 @@ func stopLeaderByPid(sock string) error {
 		return errors.New("socket peer is not a leader process")
 	}
 	return syscall.Kill(pid, syscall.SIGTERM)
+}
+
+// grokWakeTurnTimeout bounds the goroutine Wake leaves waiting for the queued
+// turn to end, so a hung turn cannot leak a connection.
+const grokWakeTurnTimeout = 30 * time.Minute
+
+// dialSessionLeader connects to the session's own leader, or returns nil when
+// the wake has to paste instead: no provider session yet, no leader running,
+// or one this client refuses (logged, since that is a grok update to look at).
+func (g *Grok) dialSessionLeader(ctx context.Context, sessionID, providerID string) *leaderClient {
+	if providerID == "" {
+		return nil
+	}
+	sock, ok := g.leaderSocket(sessionID)
+	if !ok {
+		return nil
+	}
+	if _, err := os.Stat(sock); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	c, err := dialLeader(ctx, sock)
+	if err != nil {
+		if errors.Is(err, ErrUnsupportedLeader) {
+			g.d.Log("grok: leader for %s refused, waking by paste: %v", sessionID, err)
+		}
+		return nil
+	}
+	return c
+}
+
+// Wake delivers the notice as a session/prompt on the session's leader. A
+// prompt sent mid-turn queues (it runs after the turn and fires its own
+// UserPromptSubmit), so no idle check is needed. The request only returns when
+// that turn ends, so it runs on a goroutine and Wake reports delivered as soon
+// as the prompt is written. It never errors: with the leader down, refused or
+// failing, delivered=false lets the runtime paste (one Enter), without the
+// backoff an error would add to that paste.
+func (g *Grok) Wake(ctx context.Context, w WakeTarget) (bool, error) {
+	c := g.dialSessionLeader(ctx, w.SessionID, w.ProviderSessionID)
+	if c == nil {
+		return false, nil
+	}
+	wait, err := c.StartPrompt(w.ProviderSessionID, w.Notice)
+	if err != nil {
+		c.Close()
+		g.d.Log("grok: leader prompt for %s: %v, waking by paste", w.SessionID, err)
+		return false, nil
+	}
+	go func() {
+		defer c.Close()
+		t := time.AfterFunc(grokWakeTurnTimeout, func() { c.Close() })
+		defer t.Stop()
+		// A -32003 (rate limited) still means the prompt reached the session, so
+		// any outcome here is only worth a log line.
+		if err := wait(); err != nil {
+			g.d.Log("grok: leader turn for %s ended with: %v", w.SessionID, err)
+		}
+	}()
+	return true, nil
+}
+
+// RenameViaLeader sets the session title over the leader, as /rename does in
+// the pane but without touching it. False means the runtime must paste /rename.
+func (g *Grok) RenameViaLeader(ctx context.Context, sessionID, providerID, name string) bool {
+	c := g.dialSessionLeader(ctx, sessionID, providerID)
+	if c == nil {
+		return false
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := c.Rename(ctx, providerID, name); err != nil {
+		g.d.Log("grok: leader rename for %s: %v", sessionID, err)
+		return false
+	}
+	return true
 }
