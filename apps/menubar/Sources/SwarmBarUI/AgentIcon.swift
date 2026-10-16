@@ -5,7 +5,7 @@ import SwiftUI
 /// Template icons from assets/icons (§21.1). Swarm.app carries them in Contents/Resources;
 /// `swift run` falls back to the repo's assets/icons folder.
 public enum IconName: String, Sendable {
-    case claude, codex, agy, cursor, muse, swarm
+    case claude, codex, agy, cursor, muse, grok, swarm
 
     public init(_ kind: AgentKind) {
         switch kind {
@@ -14,6 +14,7 @@ public enum IconName: String, Sendable {
         case .agy: self = .agy
         case .cursor: self = .cursor
         case .muse: self = .muse
+        case .grok: self = .grok
         }
     }
 }

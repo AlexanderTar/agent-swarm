@@ -168,11 +168,17 @@ function catalog(): AgentCatalogEntry[] {
     { ...base, kind: "codex", version: "0.154.0", default_model: "gpt-6-astra", catalog_source: "codex app-server model/list", models: [
       model({ id: "gpt-6-astra", label: "GPT-6 Astra", efforts: ["low", "medium", "high", "xhigh"], default_effort: "medium", is_default: true }),
     ] },
+    { ...base, kind: "agy", version: "1.4.2", default_model: "gemini-3-pro", catalog_source: "agy models", models: [
+      model({ id: "gemini-3-pro", label: "Gemini 3 Pro", is_default: true }),
+    ] },
+    { ...base, kind: "grok", version: "1.0.60", default_model: "grok-4.7", catalog_source: "grok models", models: [
+      model({ id: "grok-4.7", label: "Grok 4.7", efforts: ["low", "medium", "high", "xhigh"], default_effort: "high", is_default: true }),
+    ] },
   ];
 }
 
 const settings = (): Settings => ({
-  enabled_agents: ["claude", "codex"],
+  enabled_agents: ["claude", "codex", "agy", "grok"],
   roles: {
     orchestrator: { agent: "claude", model: "opus" },
     coder: { agent: "claude", model: "sonnet" },

@@ -228,6 +228,7 @@ public enum Copy {
         case .agy: return "Antigravity"
         case .cursor: return "Cursor"
         case .muse: return "Muse"
+        case .grok: return "Grok"
         case .fake: return "Fake"
         }
     }
@@ -239,6 +240,7 @@ public enum Copy {
         case .agy: return "agy"
         case .cursor: return "cursor-agent login"
         case .muse: return "muse login"
+        case .grok: return "grok login"
         case .fake: return "true"
         }
     }

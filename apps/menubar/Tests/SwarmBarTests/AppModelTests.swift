@@ -39,7 +39,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.label.count, "4")
         XCTAssertEqual(m.label.segments.map(\.text), ["42%", "18%", "6%"])
         XCTAssertEqual(m.activeLine, "4 active")
-        XCTAssertEqual(m.catalog.count, 4)
+        XCTAssertEqual(m.catalog.count, 5)
         XCTAssertEqual(m.usageAgent, .claude)
         XCTAssertEqual(m.usagePicker, [.claude, .codex, .agy])
         XCTAssertEqual(m.usageRows.map(\.label), ["5h", "Weekly (all models)", "Fable weekly"])

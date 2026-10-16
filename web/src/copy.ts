@@ -33,10 +33,10 @@ export const ROLE_EMOJI: Record<Role, string> = {
   designer: "✏️", researcher: "📚", debugger: "🐛", mechanical: "🔧",
 };
 
-export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", cursor: "Cursor", muse: "Muse", fake: "Fake" };
+export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", cursor: "Cursor", muse: "Muse", grok: "Grok", fake: "Fake" };
 // README §19 troubleshooting: how each agent signs in.
 export const AGENT_LOGIN_CMD: Record<AgentKind, string> = {
-  claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", muse: "muse login", fake: "true",
+  claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", muse: "muse login", grok: "grok login", fake: "true",
 };
 
 export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale" | "preflight_failed" | "capacity_paused" | "resume_queued", string> = {
