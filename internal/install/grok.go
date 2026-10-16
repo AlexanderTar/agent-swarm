@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,45 @@ const grokSuperpowersURL = "https://github.com/obra/superpowers.git"
 // carried, so a moved binary replaces its entry instead of doubling it.
 func isSwarmGrokHook(cmd string) bool { return strings.Contains(cmd, " hook grok ") }
 
+// grokRecord is what install added that uninstall must take back: the lock it
+// seeded in the operator's own ~/.grok and the plugin names it put in [plugins]
+// disabled. Anything already there belongs to the operator and is never listed.
+type grokRecord struct {
+	SeededLock      bool     `json:"seeded_lock,omitempty"`
+	DisabledPlugins []string `json:"disabled_plugins,omitempty"`
+}
+
+func grokRecordPath(c Config) string { return c.Grok("swarm-install.json") }
+
+func loadGrokRecord(c Config) (r grokRecord) {
+	if raw, err := os.ReadFile(grokRecordPath(c)); err == nil {
+		_ = json.Unmarshal(raw, &r) // unreadable: nothing is claimed, so nothing is removed
+	}
+	return r
+}
+
+// noteGrokAdded records what install just added.
+func noteGrokAdded(c Config, seededLock bool, plugins []string) error {
+	r := loadGrokRecord(c)
+	old := r
+	r.SeededLock = r.SeededLock || seededLock
+	r.DisabledPlugins = append(r.DisabledPlugins, plugins...)
+	sort.Strings(r.DisabledPlugins)
+	r.DisabledPlugins = slices.Compact(r.DisabledPlugins)
+	if r.SeededLock == old.SeededLock && slices.Equal(r.DisabledPlugins, old.DisabledPlugins) {
+		return nil
+	}
+	body, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, err = WriteIfChanged(grokRecordPath(c), body, 0o644)
+	return err
+}
+
+// errTOMLParse marks a config grok cannot read, which install never overwrites.
+var errTOMLParse = errors.New("does not parse")
+
 // WriteGrok writes everything swarm install owns inside the Swarm grok home:
 // the swarm MCP server, one hook per event and the skills path merged into
 // config.toml (grok's own and the user's keys are kept), the skills links, and
@@ -58,13 +98,17 @@ func WriteGrok(ctx context.Context, c Config, run execx.Runner) (changed, skippe
 			skipped = append(skipped, "grok superpowers: not installed, and no Claude copy to fall back on")
 		}
 	}
+	var disabled []string
 	wrote, err := editTOML(cfg, true, func(m map[string]any) error {
 		mergeGrokConfig(c, m)
-		refreshGrokPlugins(c, m)
+		disabled = refreshGrokPlugins(c, m)
 		setGrokSuperpowersFallback(c, m, fallback)
 		return nil
 	})
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := noteGrokAdded(c, false, disabled); err != nil {
 		return nil, nil, err
 	}
 	if wrote {
@@ -87,7 +131,7 @@ func editTOML(path string, create bool, edit func(m map[string]any) error) (bool
 	m := map[string]any{}
 	if old, err := os.ReadFile(path); err == nil {
 		if err := toml.Unmarshal(old, &m); err != nil {
-			return false, fmt.Errorf("%s does not parse: %w", path, err)
+			return false, fmt.Errorf("%s %w: %v", path, errTOMLParse, err)
 		}
 	} else if os.IsNotExist(err) && !create {
 		return false, nil
@@ -146,19 +190,30 @@ func mergeGrokConfig(c Config, m map[string]any) {
 	m["skills"] = skills
 }
 
-// dropGrokHookGroups removes the matcher groups whose commands are Swarm's.
+// dropGrokHookGroups removes Swarm's commands from the matcher groups. A group
+// the user shares with Swarm keeps its other hooks; one left empty goes.
 func dropGrokHookGroups(groups []any) []any {
 	var kept []any
 	for _, g := range groups {
 		obj, _ := g.(map[string]any)
 		inner, _ := obj["hooks"].([]any)
-		ours := false
+		var theirs []any
 		for _, h := range inner {
 			cmd, _ := h.(map[string]any)["command"].(string)
-			ours = ours || isSwarmGrokHook(cmd)
+			if !isSwarmGrokHook(cmd) {
+				theirs = append(theirs, h)
+			}
 		}
-		if !ours {
+		switch {
+		case len(theirs) == len(inner):
 			kept = append(kept, g)
+		case len(theirs) > 0:
+			rest := map[string]any{}
+			for k, v := range obj {
+				rest[k] = v
+			}
+			rest["hooks"] = theirs
+			kept = append(kept, rest)
 		}
 	}
 	return kept
@@ -175,6 +230,9 @@ func linkGrokAuth(c Config) (changed, skipped []string, err error) {
 	lock := c.UserGrok("auth.json.lock")
 	if _, err := os.Lstat(lock); os.IsNotExist(err) {
 		if err := os.WriteFile(lock, nil, 0o600); err != nil {
+			return nil, nil, err
+		}
+		if err := noteGrokAdded(c, true, nil); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -262,10 +320,16 @@ func RefreshGrokPlugins(c Config) (bool, error) {
 	if err := os.MkdirAll(c.Grok(), 0o755); err != nil {
 		return false, err
 	}
-	return editTOML(c.Grok("config.toml"), true, func(m map[string]any) error { refreshGrokPlugins(c, m); return nil })
+	var added []string
+	wrote, err := editTOML(c.Grok("config.toml"), true, func(m map[string]any) error { added = refreshGrokPlugins(c, m); return nil })
+	if err != nil {
+		return wrote, err
+	}
+	return wrote, noteGrokAdded(c, false, added)
 }
 
-func refreshGrokPlugins(c Config, m map[string]any) {
+// refreshGrokPlugins returns the names it added to the disabled list.
+func refreshGrokPlugins(c Config, m map[string]any) (added []string) {
 	plugins, _ := m["plugins"].(map[string]any)
 	if plugins == nil {
 		plugins = map[string]any{}
@@ -278,6 +342,9 @@ func refreshGrokPlugins(c Config, m map[string]any) {
 		}
 	}
 	for _, n := range claudePluginNames(c) {
+		if !set[n] && n != "superpowers" {
+			added = append(added, n)
+		}
 		set[n] = true
 	}
 	delete(set, "superpowers")
@@ -292,6 +359,7 @@ func refreshGrokPlugins(c Config, m map[string]any) {
 	}
 	plugins["disabled"] = disabled
 	m["plugins"] = plugins
+	return added
 }
 
 // claudePluginNames lists every plugin name Claude knows: the install record,
@@ -416,6 +484,9 @@ func grokAuthCheck(c Config) Check {
 		if cur, _ := os.Readlink(dst); cur != c.UserGrok(f) {
 			return Check{name, false, dst + " points at " + cur + ", not " + c.UserGrok(f) + ". Run swarm install."}
 		}
+		if _, err := os.Stat(dst); err != nil {
+			return Check{name, false, dst + " points at " + c.UserGrok(f) + ", which does not exist. Run grok login."}
+		}
 	}
 	if own {
 		return Check{name, true, "Using its own login file in " + c.Grok() + "."}
@@ -466,34 +537,55 @@ func grokSkillsPathCheck(c Config) Check {
 	return Check{name, true, c.SkillsDir(KindGrok)}
 }
 
-// UninstallGrok removes what WriteGrok added and nothing else: the swarm MCP
-// entry, swarm's hook groups, its skills paths and the auth links. grok's own and
-// the user's keys, the plugin denylist, the installed superpowers and ~/.grok are
-// left. (Skills are removed by Uninstall's per-kind pass.)
-func UninstallGrok(c Config) (removed []string, err error) {
+// UninstallGrok removes what install added and nothing else: the swarm MCP
+// entry, swarm's hook commands, its skills paths, the auth links, and what the
+// install record lists (the lock it seeded in ~/.grok, the plugin names it
+// disabled). grok's own and the user's keys, the installed superpowers and the
+// rest of ~/.grok are left. A config grok cannot parse is left alone and
+// reported in skipped; the links and the lock still go. (Skills are removed by
+// Uninstall's per-kind pass.)
+func UninstallGrok(c Config) (removed, skipped []string, err error) {
 	cfg := c.Grok("config.toml")
-	wrote, err := editTOML(cfg, false, func(m map[string]any) error { dropGrokConfig(c, m); return nil })
-	if err != nil {
-		return nil, err
-	}
-	if wrote {
-		removed = append(removed, cfg)
+	rec := loadGrokRecord(c)
+	wrote, err := editTOML(cfg, false, func(m map[string]any) error { dropGrokConfig(c, m, rec); return nil })
+	switch {
+	case errors.Is(err, errTOMLParse):
+		skipped = append(skipped, cfg+": does not parse, left alone")
+	case err != nil:
+		return nil, nil, err
+	default:
+		if wrote {
+			removed = append(removed, cfg)
+		}
+		if err := os.Remove(grokRecordPath(c)); err == nil {
+			removed = append(removed, grokRecordPath(c))
+		}
 	}
 	for _, f := range grokAuthFiles {
 		dst := c.Grok(f)
 		if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			if cur, _ := os.Readlink(dst); cur == c.UserGrok(f) {
 				if err := os.Remove(dst); err != nil {
-					return removed, err
+					return removed, skipped, err
 				}
 				removed = append(removed, dst)
 			}
 		}
 	}
-	return removed, nil
+	// A seeded lock is empty until grok first takes it (it writes pid:time then),
+	// so a lock with content is in use and stays.
+	if lock := c.UserGrok("auth.json.lock"); rec.SeededLock {
+		if fi, err := os.Stat(lock); err == nil && fi.Size() == 0 {
+			if err := os.Remove(lock); err != nil {
+				return removed, skipped, err
+			}
+			removed = append(removed, lock)
+		}
+	}
+	return removed, skipped, nil
 }
 
-func dropGrokConfig(c Config, m map[string]any) {
+func dropGrokConfig(c Config, m map[string]any, rec grokRecord) {
 	if servers, ok := m["mcp_servers"].(map[string]any); ok {
 		delete(servers, "swarm")
 		if len(servers) == 0 {
@@ -511,6 +603,18 @@ func dropGrokConfig(c Config, m map[string]any) {
 		}
 		if len(hooks) == 0 {
 			delete(m, "hooks")
+		}
+	}
+	if plugins, ok := m["plugins"].(map[string]any); ok && len(rec.DisabledPlugins) > 0 {
+		list, _ := plugins["disabled"].([]any)
+		list = slices.DeleteFunc(list, func(v any) bool { n, _ := v.(string); return slices.Contains(rec.DisabledPlugins, n) })
+		if len(list) > 0 {
+			plugins["disabled"] = list
+		} else {
+			delete(plugins, "disabled")
+		}
+		if len(plugins) == 0 {
+			delete(m, "plugins")
 		}
 	}
 	if skills, ok := m["skills"].(map[string]any); ok {

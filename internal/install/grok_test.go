@@ -402,6 +402,12 @@ func writtenGrokHome(t *testing.T) install.Config {
 	t.Helper()
 	c := fakeHome(t)
 	seedClaudePlugins(t, c, []string{"alpha@mkt"})
+	if err := os.MkdirAll(c.UserGrok(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.UserGrok("auth.json"), []byte(`{"k":1}`), 0o600); err != nil { // signed in
+		t.Fatal(err)
+	}
 	if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +517,6 @@ func TestUninstallGrokRemovesOnlyOwn(t *testing.T) {
 	os.WriteFile(c.Grok("config.toml"), body, 0o644)
 	os.MkdirAll(c.Grok("skills", "mine"), 0o755)
 	os.WriteFile(c.Grok("skills", "mine", "SKILL.md"), []byte("mine"), 0o644)
-	userAuth, _ := os.ReadFile(c.UserGrok("auth.json.lock")) // seeded, empty
 	os.WriteFile(c.UserGrok("auth.json"), []byte(`{"k":1}`), 0o600)
 
 	f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
@@ -555,8 +560,8 @@ func TestUninstallGrokRemovesOnlyOwn(t *testing.T) {
 	if b, _ := os.ReadFile(c.UserGrok("auth.json")); string(b) != `{"k":1}` {
 		t.Errorf("~/.grok/auth.json touched: %s", b)
 	}
-	if b, err := os.ReadFile(c.UserGrok("auth.json.lock")); err != nil || !bytes.Equal(b, userAuth) {
-		t.Errorf("~/.grok/auth.json.lock touched: %q %v", b, err)
+	if _, err := os.Lstat(c.UserGrok("auth.json.lock")); !os.IsNotExist(err) {
+		t.Errorf("the lock install seeded was left in ~/.grok (%v)", err)
 	}
 	if _, err := os.Stat(c.Grok("skills", "mine", "SKILL.md")); err != nil {
 		t.Errorf("the user's own skill was removed: %v", err)
@@ -575,4 +580,144 @@ func TestUninstallGrokCreatesNothingWhenGrokWasNeverInstalled(t *testing.T) {
 	if _, err := os.Stat(c.Grok()); !os.IsNotExist(err) {
 		t.Errorf("uninstall created %s (%v)", c.Grok(), err)
 	}
+}
+
+// A user hook that shares a matcher group with Swarm's keeps running: only the
+// Swarm command goes, on install and on uninstall.
+func TestGrokHookGroupSharedWithTheUserKeepsTheUsersHook(t *testing.T) {
+	shared := `[[hooks.Stop]]
+matcher = "*"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/usr/local/bin/user-stop"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/old/swarm hook grok Stop"
+`
+	userCommands := func(t *testing.T, c install.Config) (users, swarm int) {
+		t.Helper()
+		groups, _ := readTOML(t, c.Grok("config.toml"))["hooks"].(map[string]any)["Stop"].([]any)
+		for _, g := range groups {
+			for _, h := range g.(map[string]any)["hooks"].([]any) {
+				if strings.Contains(h.(map[string]any)["command"].(string), " hook grok ") {
+					swarm++
+				} else {
+					users++
+				}
+			}
+		}
+		return users, swarm
+	}
+	c := fakeHome(t)
+	seedGrokConfig(t, c, shared)
+	if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+		t.Fatal(err)
+	}
+	if users, swarm := userCommands(t, c); users != 1 || swarm != 1 {
+		t.Fatalf("after install: %d user hooks, %d swarm hooks, want 1 and 1", users, swarm)
+	}
+	if _, _, err := install.UninstallGrok(c); err != nil {
+		t.Fatal(err)
+	}
+	if users, swarm := userCommands(t, c); users != 1 || swarm != 0 {
+		t.Fatalf("after uninstall: %d user hooks, %d swarm hooks, want 1 and 0", users, swarm)
+	}
+}
+
+func TestCheckGrokFailsADanglingAuthLink(t *testing.T) {
+	c := writtenGrokHome(t)
+	if err := os.Remove(c.UserGrok("auth.json")); err != nil { // signed out, or ~/.grok cleaned
+		t.Fatal(err)
+	}
+	ch := grokCheck(t, c, "Grok auth")
+	if ch.OK || !strings.Contains(ch.Detail, "auth.json") || !strings.Contains(ch.Detail, "grok login") {
+		t.Errorf("a link to a missing login passes: %+v", ch)
+	}
+}
+
+func TestUninstallToleratesAnUnparseableGrokConfig(t *testing.T) {
+	c := writtenGrokHome(t)
+	if err := os.WriteFile(c.Grok("config.toml"), []byte("not [valid toml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
+	o := agentsOpts(t, c, f)
+	var out bytes.Buffer
+	o.Out = &out
+	if err := install.Uninstall(context.Background(), o); err != nil {
+		t.Fatalf("Uninstall aborted on a config grok cannot parse: %v", err)
+	}
+	if body, _ := os.ReadFile(c.Grok("config.toml")); string(body) != "not [valid toml" {
+		t.Errorf("the unparseable config was rewritten: %s", body)
+	}
+	if _, err := os.Lstat(c.Grok("auth.json")); !os.IsNotExist(err) {
+		t.Errorf("the rest of Uninstall did not run: auth link kept (%v)", err)
+	}
+	if !strings.Contains(out.String(), c.Grok("config.toml")) {
+		t.Errorf("the skipped config is not reported:\n%s", out.String())
+	}
+}
+
+// Uninstall removes exactly what install added: the lock install seeded in
+// ~/.grok and the plugin names install put in [plugins] disabled.
+func TestUninstallGrokRemovesOnlyWhatInstallAdded(t *testing.T) {
+	uninstall := func(t *testing.T, c install.Config) {
+		t.Helper()
+		f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
+		if err := install.Uninstall(context.Background(), agentsOpts(t, c, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disabled := func(t *testing.T, c install.Config) []string {
+		t.Helper()
+		pl, _ := readTOML(t, c.Grok("config.toml"))["plugins"].(map[string]any)
+		var out []string
+		for _, v := range pl["disabled"].([]any) {
+			out = append(out, v.(string))
+		}
+		return out
+	}
+
+	t.Run("install seeded the lock and added the plugin", func(t *testing.T) {
+		c := fakeHome(t)
+		seedClaudePlugins(t, c, []string{"alpha@mkt"})
+		seedGrokConfig(t, c, "[plugins]\ndisabled = [\"mine\"]\n")
+		if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := install.RefreshGrokPlugins(c); err != nil { // launch refreshes too
+			t.Fatal(err)
+		}
+		uninstall(t, c)
+		if _, err := os.Lstat(c.UserGrok("auth.json.lock")); !os.IsNotExist(err) {
+			t.Errorf("the seeded lock was left in ~/.grok (%v)", err)
+		}
+		if got := disabled(t, c); strings.Join(got, ",") != "mine" {
+			t.Errorf("disabled = %v, want only the user's entry", got)
+		}
+	})
+
+	t.Run("the user's own lock and disabled entries stay", func(t *testing.T) {
+		c := fakeHome(t)
+		seedClaudePlugins(t, c, []string{"alpha@mkt"})
+		seedGrokConfig(t, c, "[plugins]\ndisabled = [\"alpha\", \"mine\"]\n")
+		if err := os.MkdirAll(c.UserGrok(), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(c.UserGrok("auth.json.lock"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+			t.Fatal(err)
+		}
+		uninstall(t, c)
+		if _, err := os.Lstat(c.UserGrok("auth.json.lock")); err != nil {
+			t.Errorf("the user's own lock was removed: %v", err)
+		}
+		if got := disabled(t, c); strings.Join(got, ",") != "alpha,mine" {
+			t.Errorf("disabled = %v, want the user's alpha and mine", got)
+		}
+	})
 }
