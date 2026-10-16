@@ -1,18 +1,18 @@
 package usage
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 )
 
 func TestParseGrokSessionUsage(t *testing.T) {
@@ -62,68 +62,65 @@ func TestGrokSessionUsageRunsWithGrokHome(t *testing.T) {
 	}
 }
 
-// fakeGrokStdio answers `grok agent stdio` JSON-RPC from fixture files:
-// initialize and authenticate get {}, _x.ai/billing gets the fixture's result.
-// It records argv, env and the methods called (authenticate with its methodId).
-type fakeGrokStdio struct {
+// fakeGrokBilling serves the CLI billing proxy from a fixture file and records
+// the request's auth headers. status != 0 answers with that status instead.
+type fakeGrokBilling struct {
 	billing string
-	argv    []string
-	env     map[string]string
-	methods []string
+	status  int
+	calls   int
+	auth    string
+	tokAuth string
+	path    string
 }
 
-func (f *fakeGrokStdio) start(t *testing.T) execx.StarterEnv {
+func (f *fakeGrokBilling) server(t *testing.T) *httptest.Server {
 	t.Helper()
-	fixture, err := os.ReadFile(f.billing)
+	body, err := os.ReadFile(f.billing)
+	if err != nil && f.billing != "" {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.calls++
+		f.auth, f.tokAuth, f.path = r.Header.Get("Authorization"), r.Header.Get("x-xai-token-auth"), r.URL.RequestURI()
+		if f.status != 0 {
+			w.WriteHeader(f.status)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+var grokNow = time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
+
+// writeGrokAuth writes an auth.json shaped like grok's (scope-keyed entries)
+// with fake tokens, and returns its path.
+func writeGrokAuth(t *testing.T, entries map[string]map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var billing struct {
-		Result json.RawMessage `json:"result"`
-	}
-	if err := json.Unmarshal(fixture, &billing); err != nil {
+	p := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(p, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return func(_ context.Context, env map[string]string, name string, args ...string) (*execx.Proc, error) {
-		f.env, f.argv = env, append([]string{name}, args...)
-		inR, inW := io.Pipe()
-		outR, outW := io.Pipe()
-		go func() {
-			sc := bufio.NewScanner(inR)
-			for sc.Scan() {
-				var req struct {
-					ID     int             `json:"id"`
-					Method string          `json:"method"`
-					Params json.RawMessage `json:"params"`
-				}
-				if json.Unmarshal(sc.Bytes(), &req) != nil {
-					continue
-				}
-				entry := req.Method
-				if req.Method == "authenticate" {
-					var p struct {
-						MethodID string `json:"methodId"`
-					}
-					_ = json.Unmarshal(req.Params, &p)
-					entry += ":" + p.MethodID
-				}
-				f.methods = append(f.methods, entry)
-				result := json.RawMessage(`{}`)
-				if req.Method == "_x.ai/billing" {
-					result = billing.Result
-				}
-				resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
-				_, _ = outW.Write(append(resp, '\n'))
-			}
-		}()
-		return &execx.Proc{Stdin: inW, Stdout: outR, Kill: func() { inW.Close(); outW.Close() }}, nil
-	}
+	return p
+}
+
+func grokEntry(key string, expires time.Time) map[string]any {
+	return map[string]any{"key": key, "auth_mode": "oidc", "refresh_token": "fake-refresh", "expires_at": expires.Format(time.RFC3339Nano)}
+}
+
+func newGrok(srv *httptest.Server, paths ...string) *Grok {
+	return &Grok{BaseURL: srv.URL, HTTP: srv.Client(), AuthPaths: paths, Now: func() time.Time { return grokNow }}
 }
 
 func TestGrokAccountMeters(t *testing.T) {
-	fake := &fakeGrokStdio{billing: "testdata/grok-billing.json"}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t)}
-	meters, headline, err := g.Fetch(context.Background())
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::client-1": grokEntry("tok-supergrok", grokNow.Add(time.Hour))})
+	meters, headline, err := newGrok(fake.server(t), auth).Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,22 +132,96 @@ func TestGrokAccountMeters(t *testing.T) {
 	if m.UsedPct != 1.0 || m.Window != "weekly" || m.ResetsAt == nil || !m.ResetsAt.Equal(reset) {
 		t.Fatalf("meter %+v, want 1%% weekly resetting %s", m, reset)
 	}
-	if want := []string{"initialize", "authenticate:cached_token", "_x.ai/billing"}; !reflect.DeepEqual(fake.methods, want) {
-		t.Fatalf("methods %v want %v", fake.methods, want)
+	if fake.auth != "Bearer tok-supergrok" || fake.tokAuth != "xai-grok-cli" || fake.path != "/v1/billing?format=credits" {
+		t.Fatalf("request auth %q token-auth %q path %q", fake.auth, fake.tokAuth, fake.path)
 	}
-	if want := []string{"grok", "agent", "stdio"}; !reflect.DeepEqual(fake.argv, want) {
-		t.Fatalf("argv %v want %v", fake.argv, want)
+}
+
+// The Swarm grok home's auth.json is a link to ~/.grok/auth.json that only
+// `swarm install` makes. Without it the meter must still read the user's own
+// login (CHORE-104: the missing link sent every refresh into grok's browser
+// login).
+func TestGrokFallsBackToTheNextAuthFile(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json"}
+	user := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::client-1": grokEntry("tok-user", grokNow.Add(time.Hour))})
+	missing := filepath.Join(t.TempDir(), "auth.json")
+	if _, _, err := newGrok(fake.server(t), missing, user).Fetch(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(fake.env, grokhome.Env("/swarm")) {
-		t.Fatalf("GROK_HOME env did not reach the billing exec: %v", fake.env)
+	if fake.auth != "Bearer tok-user" {
+		t.Fatalf("Authorization %q, want the user's token", fake.auth)
+	}
+}
+
+func TestGrokPrefersTheSuperGrokEntry(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{
+		"https://accounts.x.ai/sign-in":  grokEntry("tok-legacy", grokNow.Add(time.Hour)),
+		"https://auth.x.ai::client-1":    grokEntry("tok-supergrok", grokNow.Add(time.Hour)),
+		"https://unrelated.example::abc": grokEntry("tok-other", grokNow.Add(time.Hour)),
+	})
+	if _, _, err := newGrok(fake.server(t), auth).Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.auth != "Bearer tok-supergrok" {
+		t.Fatalf("Authorization %q, want the auth.x.ai entry", fake.auth)
+	}
+}
+
+// No login, an expired token or a rejected one is an error the menubar shows;
+// nothing is called that could start a sign-in, and the token is never
+// refreshed here (grok's refresh token is single-use).
+func TestGrokWithoutAUsableTokenNeverCallsBilling(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		paths  func(t *testing.T) []string
+		status int
+		calls  int
+		want   string
+	}{
+		{"no auth file", func(t *testing.T) []string { return []string{filepath.Join(t.TempDir(), "auth.json")} }, 0, 0, "not signed in"},
+		{"no grok entry", func(t *testing.T) []string {
+			return []string{writeGrokAuth(t, map[string]map[string]any{"https://unrelated.example::abc": grokEntry("x", grokNow.Add(time.Hour))})}
+		}, 0, 0, "not signed in"},
+		{"expired", func(t *testing.T) []string {
+			return []string{writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("old", grokNow.Add(-time.Minute))})}
+		}, 0, 0, "expired"},
+		{"rejected", func(t *testing.T) []string {
+			return []string{writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("bad", grokNow.Add(time.Hour))})}
+		}, http.StatusUnauthorized, 1, "rejected"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := &fakeGrokBilling{billing: "testdata/grok-billing.json", status: c.status}
+			_, _, err := newGrok(fake.server(t), c.paths(t)...).Fetch(context.Background())
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err %v, want it to say %q", err, c.want)
+			}
+			if fake.calls != c.calls {
+				t.Fatalf("billing called %d times, want %d", fake.calls, c.calls)
+			}
+		})
+	}
+}
+
+// creditUsagePercent is left out of the response when it is zero; a period
+// with no percent is 0% used, not a missing meter.
+func TestGrokOmittedPercentWithAPeriodIsZero(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing-zero.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(time.Hour))})
+	meters, _, err := newGrok(fake.server(t), auth).Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meters) != 1 || meters[0].UsedPct != 0 || meters[0].Window != "weekly" || meters[0].ResetsAt == nil {
+		t.Fatalf("meters %+v, want one 0%% weekly meter", meters)
 	}
 }
 
 func TestGrokFreeTierHasNoMeter(t *testing.T) {
-	fake := &fakeGrokStdio{billing: "testdata/grok-billing-free.json"}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t)}
-	if _, _, err := g.Fetch(context.Background()); !errors.Is(err, ErrNoData) {
-		t.Fatalf("err %v, want ErrNoData: no creditUsagePercent means no meter", err)
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing-free.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(time.Hour))})
+	if _, _, err := newGrok(fake.server(t), auth).Fetch(context.Background()); !errors.Is(err, ErrNoData) {
+		t.Fatalf("err %v, want ErrNoData: no percent and no period means no meter", err)
 	}
 }
 
@@ -161,10 +232,12 @@ const grokQuota429 = "API error (status 429 Too Many Requests): subscription:fre
 const grokPerSecond429 = "API error (status 429 Too Many Requests): resource-exhausted: Requests per Second (actual/limit): 2/2"
 
 func TestGrokExhaustionMeterWhenBillingGivesNone(t *testing.T) {
-	now := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
-	fake := &fakeGrokStdio{billing: "testdata/grok-billing-free.json"}
+	now := grokNow
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing-free.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(time.Hour))})
 	ex := &GrokExhaustion{}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Exhaustion: ex, Now: func() time.Time { return now }}
+	g := newGrok(fake.server(t), auth)
+	g.Exhaustion = ex
 	if !ex.Note(grokQuota429, now) {
 		t.Fatal("a 429 usage-exhausted error must be recorded")
 	}
@@ -181,16 +254,29 @@ func TestGrokExhaustionMeterWhenBillingGivesNone(t *testing.T) {
 	}
 }
 
+// Signed out, a recorded exhaustion still reports a full meter.
+func TestGrokExhaustionMeterWhenSignedOut(t *testing.T) {
+	ex := &GrokExhaustion{}
+	ex.Note(grokQuota429, grokNow)
+	g := &Grok{AuthPaths: []string{filepath.Join(t.TempDir(), "auth.json")}, Exhaustion: ex, Now: func() time.Time { return grokNow }}
+	meters, _, err := g.Fetch(context.Background())
+	if err != nil || len(meters) != 1 || meters[0].UsedPct != 100 {
+		t.Fatalf("meters %+v err %v, want one 100%% meter", meters, err)
+	}
+}
+
 func TestGrokExhaustionIgnoredOnceItExpiresOrBillingHasAMeter(t *testing.T) {
-	now := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
+	now := grokNow
 	ex := &GrokExhaustion{}
 	ex.Note(grokQuota429, now)
 	if _, ok := ex.Active(now.Add(25 * time.Hour)); ok {
 		t.Fatal("an exhaustion past its reset must not be reported")
 	}
 	// billing is authoritative: a real 1% reading beats an older 429.
-	fake := &fakeGrokStdio{billing: "testdata/grok-billing.json"}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Exhaustion: ex, Now: func() time.Time { return now }}
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(time.Hour))})
+	g := newGrok(fake.server(t), auth)
+	g.Exhaustion = ex
 	meters, _, err := g.Fetch(context.Background())
 	if err != nil || meters[0].UsedPct != 1.0 {
 		t.Fatalf("meters %+v err %v, want the billing 1%%", meters, err)

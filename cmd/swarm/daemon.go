@@ -310,7 +310,8 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
 		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
 			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d,
-			&usagesvc.Grok{SwarmHome: cfg.Home, StartEnv: execx.StartEnv, Exhaustion: grokExhaustion})}
+			&usagesvc.Grok{BaseURL: usagesvc.GrokBillingURL, HTTP: &http.Client{Timeout: 10 * time.Second},
+				AuthPaths: usagesvc.GrokAuthPaths(cfg.Home, userHome), Exhaustion: grokExhaustion})}
 	// docs/specs/2026-09-19-usage-fallback-agent.md: rt.Usage lets the
 	// spawn/retry path substitute a configured fallback agent when the
 	// configured one is confirmed out of usage. usagegate depends on both

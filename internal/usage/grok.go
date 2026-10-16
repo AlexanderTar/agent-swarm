@@ -4,7 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,19 +72,38 @@ func GrokSessionUsage(ctx context.Context, run execx.RunnerEnv, swarmHome, sessi
 // Grok: the account meter and the exhaustion fallback.
 // ---------------------------------------------------------------------------
 
-// Grok reads the SuperGrok usage limit from `_x.ai/billing` over a short-lived
-// `grok agent stdio` (initialize, authenticate cached_token, _x.ai/billing;
-// live-verified on grok 1.0.60, 2026-10-16). creditUsagePercent is the percent
-// used and currentPeriod.end the reset. The unprefixed `x.ai/billing` is not a
-// method. A free account has no creditUsagePercent, so there is no meter; then
+// Grok reads the SuperGrok usage limit from the CLI billing proxy
+// (GET <BaseURL>/v1/billing?format=credits, live-verified 2026-10-16 on grok
+// 1.0.60), signed in with the token grok itself caches in auth.json: the same
+// figure as the TUI's /usage, and how CodexBar and the other usage menubars read
+// it. creditUsagePercent is the percent used and currentPeriod.end the reset.
+//
+// It never starts grok: an earlier version ran `grok agent stdio` and called
+// authenticate cached_token, and with no usable auth.json grok answers that
+// with its browser sign-in, on every refresh (CHORE-104). It never refreshes
+// the token either: the refresh token is single-use and belongs to grok, which
+// renews it whenever a grok process starts. An expired token is an error until
+// then.
+//
+// A free account has no percentage and no period, so there is no meter; then
 // the last exhaustion a hook saw (GrokExhaustion) is reported as a 100% meter,
 // which is all the usage gate needs for grok to fall back.
 type Grok struct {
-	SwarmHome  string
-	StartEnv   execx.StarterEnv // nil skips the billing call (exhaustion only)
-	Timeout    time.Duration
+	BaseURL    string // "https://cli-chat-proxy.grok.com" in production
+	HTTP       *http.Client
+	AuthPaths  []string        // auth.json files tried in order; empty skips billing (exhaustion only)
 	Exhaustion *GrokExhaustion // nil: no fallback record
 	Now        func() time.Time
+}
+
+// GrokBillingURL is the CLI billing proxy's base URL.
+const GrokBillingURL = "https://cli-chat-proxy.grok.com"
+
+// GrokAuthPaths is where grok's cached login lives: the Swarm grok home's
+// auth.json (a link `swarm install` makes to ~/.grok/auth.json), then
+// ~/.grok/auth.json itself, so the meter works before that link exists.
+func GrokAuthPaths(swarmHome, userHome string) []string {
+	return []string{filepath.Join(grokhome.Dir(swarmHome), "auth.json"), filepath.Join(userHome, ".grok", "auth.json")}
 }
 
 func (g *Grok) now() time.Time {
@@ -89,18 +113,11 @@ func (g *Grok) now() time.Time {
 	return time.Now()
 }
 
-func (g *Grok) timeout() time.Duration {
-	if g.Timeout > 0 {
-		return g.Timeout
-	}
-	return 10 * time.Second
-}
-
-// Fetch is a Source.Fetch. Billing wins when it returns a percentage; a 429
-// seen by a hook only fills in when it does not.
+// Fetch is a Source.Fetch. Billing wins when it returns a meter; a 429 seen by
+// a hook only fills in when it does not.
 func (g *Grok) Fetch(ctx context.Context) ([]Meter, string, error) {
 	var billErr error
-	if g.StartEnv != nil {
+	if len(g.AuthPaths) > 0 {
 		var m *Meter
 		if m, billErr = g.billing(ctx); m != nil {
 			return []Meter{*m}, m.ID, nil
@@ -118,88 +135,94 @@ func (g *Grok) Fetch(ctx context.Context) ([]Meter, string, error) {
 	return nil, "", ErrNoData
 }
 
-type grokRPCEnvelope struct {
-	ID     *int            `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
+// grokAuthEntry is the part of an auth.json entry the meter needs.
+type grokAuthEntry struct {
+	Key       string `json:"key"`
+	ExpiresAt string `json:"expires_at"`
 }
 
-// billing returns the account meter, or (nil, nil) when billing has no
-// percentage (free tier).
-func (g *Grok) billing(ctx context.Context) (*Meter, error) {
-	proc, err := g.StartEnv(ctx, grokhome.Env(g.SwarmHome), grokhome.Bin, "agent", "stdio")
-	if err != nil {
-		return nil, err
-	}
-	defer proc.Kill()
-	deadline := time.After(g.timeout())
-	msgs := make(chan grokRPCEnvelope)
-	readErr := make(chan error, 1)
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		dec := json.NewDecoder(proc.Stdout)
-		for {
-			var env grokRPCEnvelope
-			if err := dec.Decode(&env); err != nil {
-				readErr <- err
-				return
-			}
-			select {
-			case msgs <- env:
-			case <-done:
-				return
-			}
-		}
-	}()
-	call := func(id int, method string, params any) (json.RawMessage, error) {
-		req, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+// grokToken returns the first grok login found in g.AuthPaths. Entries are
+// keyed by OIDC scope: the SuperGrok one ("https://auth.x.ai::<client id>")
+// wins over the legacy "https://accounts.x.ai/sign-in".
+func (g *Grok) grokToken() (token string, expires time.Time, err error) {
+	for _, p := range g.AuthPaths {
+		raw, err := os.ReadFile(p)
 		if err != nil {
-			return nil, err
+			continue
 		}
-		if _, err := proc.Stdin.Write(append(req, '\n')); err != nil {
-			return nil, fmt.Errorf("grok: %s: %w", method, err)
+		var entries map[string]grokAuthEntry
+		if json.Unmarshal(raw, &entries) != nil {
+			continue
 		}
-		for {
-			select {
-			case env := <-msgs:
-				if env.ID == nil || *env.ID != id {
-					continue
-				}
-				if env.Error != nil {
-					return nil, fmt.Errorf("grok: %s: error %d: %s", method, env.Error.Code, env.Error.Message)
-				}
-				return env.Result, nil
-			case err := <-readErr:
-				return nil, fmt.Errorf("grok: %s: agent stdio closed: %w", method, err)
-			case <-deadline:
-				return nil, fmt.Errorf("grok: %s: timed out after %s", method, g.timeout())
-			case <-ctx.Done():
-				return nil, ctx.Err()
+		var best *grokAuthEntry
+		for scope, e := range entries {
+			if e.Key == "" {
+				continue
+			}
+			if strings.HasPrefix(scope, "https://auth.x.ai::") {
+				best = &e
+				break
+			}
+			if scope == "https://accounts.x.ai/sign-in" {
+				best = &e
 			}
 		}
+		if best == nil {
+			continue
+		}
+		exp, _ := time.Parse(time.RFC3339Nano, best.ExpiresAt)
+		return best.Key, exp, nil
 	}
-	if _, err := call(1, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}}); err != nil {
-		return nil, err
-	}
-	if _, err := call(2, "authenticate", map[string]any{"methodId": "cached_token"}); err != nil {
-		return nil, err
-	}
-	result, err := call(3, "_x.ai/billing", map[string]any{})
+	return "", time.Time{}, fmt.Errorf("grok: not signed in (run grok login)")
+}
+
+// billing returns the account meter, or (nil, nil) when billing has none
+// (free tier).
+func (g *Grok) billing(ctx context.Context) (*Meter, error) {
+	token, expires, err := g.grokToken()
 	if err != nil {
 		return nil, err
 	}
-	return grokBillingMeter(result)
+	if !expires.IsZero() && !expires.After(g.now()) {
+		return nil, fmt.Errorf("grok: login token expired; grok renews it the next time it runs")
+	}
+	base := g.BaseURL
+	if base == "" {
+		base = GrokBillingURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/billing?format=credits", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("x-xai-token-auth", "xai-grok-cli")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClientOrDefault(g.HTTP).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return nil, fmt.Errorf("grok: login token rejected (%d); grok renews it the next time it runs", resp.StatusCode)
+	case resp.StatusCode != http.StatusOK:
+		return nil, fmt.Errorf("grok: billing status %d", resp.StatusCode)
+	}
+	return grokBillingMeter(body)
 }
 
+// grokBillingMeter reads a billing document. creditUsagePercent is left out
+// when it is zero, so a period with no percent is 0% used; neither means no
+// meter.
 func grokBillingMeter(result json.RawMessage) (*Meter, error) {
 	var b struct {
 		Config struct {
 			CreditUsagePercent *float64 `json:"creditUsagePercent"`
-			CurrentPeriod      struct {
+			CurrentPeriod      *struct {
 				Type string `json:"type"`
 				End  string `json:"end"`
 			} `json:"currentPeriod"`
@@ -208,18 +231,24 @@ func grokBillingMeter(result json.RawMessage) (*Meter, error) {
 	if err := json.Unmarshal(result, &b); err != nil {
 		return nil, fmt.Errorf("grok: billing: %w", err)
 	}
-	if b.Config.CreditUsagePercent == nil {
+	period := b.Config.CurrentPeriod
+	if b.Config.CreditUsagePercent == nil && period == nil {
 		return nil, nil
 	}
-	m := Meter{ID: "grok_period", Label: "Period", Window: "custom", UsedPct: *b.Config.CreditUsagePercent}
-	switch b.Config.CurrentPeriod.Type {
-	case "USAGE_PERIOD_TYPE_WEEKLY":
-		m.ID, m.Label, m.Window = "grok_weekly", "Weekly", "weekly"
-	case "USAGE_PERIOD_TYPE_MONTHLY":
-		m.ID, m.Label, m.Window = "grok_monthly", "Monthly", "monthly"
+	m := Meter{ID: "grok_period", Label: "Period", Window: "custom"}
+	if b.Config.CreditUsagePercent != nil {
+		m.UsedPct = *b.Config.CreditUsagePercent
 	}
-	if end, err := time.Parse(time.RFC3339, b.Config.CurrentPeriod.End); err == nil {
-		m.ResetsAt = &end
+	if period != nil {
+		switch period.Type {
+		case "USAGE_PERIOD_TYPE_WEEKLY":
+			m.ID, m.Label, m.Window = "grok_weekly", "Weekly", "weekly"
+		case "USAGE_PERIOD_TYPE_MONTHLY":
+			m.ID, m.Label, m.Window = "grok_monthly", "Monthly", "monthly"
+		}
+		if end, err := time.Parse(time.RFC3339, period.End); err == nil {
+			m.ResetsAt = &end
+		}
 	}
 	return &m, nil
 }
