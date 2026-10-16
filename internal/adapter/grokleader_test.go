@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -33,7 +35,9 @@ func fakeLeader(t *testing.T, script func(c *fakeLeaderConn)) (path string, done
 	return path, fakeLeaderAt(t, path, script)
 }
 
-// fakeLeaderAt is fakeLeader on a socket path the caller chose.
+// fakeLeaderAt is fakeLeader on a socket path the caller chose. Like the real
+// leader it accepts many connections: one that closes without sending a byte (a
+// liveness probe) is dropped, and script runs on the first that sends something.
 func fakeLeaderAt(t *testing.T, path string, script func(c *fakeLeaderConn)) <-chan struct{} {
 	t.Helper()
 	ln, err := net.Listen("unix", path)
@@ -42,14 +46,25 @@ func fakeLeaderAt(t *testing.T, path string, script func(c *fakeLeaderConn)) <-c
 	}
 	t.Cleanup(func() { ln.Close() })
 	ch := make(chan struct{})
+	var once sync.Once
 	go func() {
-		defer close(ch)
-		c, err := ln.Accept()
-		if err != nil {
-			return
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				if _, err := br.Peek(1); err != nil {
+					return
+				}
+				once.Do(func() {
+					defer close(ch)
+					script(&fakeLeaderConn{t: t, c: c, r: br})
+				})
+			}()
 		}
-		defer c.Close()
-		script(&fakeLeaderConn{t: t, c: c})
 	}()
 	return ch
 }
@@ -69,17 +84,18 @@ func (f *fakeLeaderConn) handshake() {
 type fakeLeaderConn struct {
 	t *testing.T
 	c net.Conn
+	r io.Reader // reads go through the reader that peeked the first byte
 }
 
 func (f *fakeLeaderConn) read() map[string]any {
 	f.t.Helper()
 	var hdr [4]byte
-	if _, err := io.ReadFull(f.c, hdr[:]); err != nil {
+	if _, err := io.ReadFull(f.r, hdr[:]); err != nil {
 		f.t.Errorf("fake leader: read header: %v", err)
 		return nil
 	}
 	body := make([]byte, binary.BigEndian.Uint32(hdr[:]))
-	if _, err := io.ReadFull(f.c, body); err != nil {
+	if _, err := io.ReadFull(f.r, body); err != nil {
 		f.t.Errorf("fake leader: read body: %v", err)
 		return nil
 	}
@@ -213,7 +229,7 @@ func TestLeaderClientRefusesWhatItDidNotProbe(t *testing.T) {
 				// Anything past the refusal would be a call made to a leader the
 				// client does not understand.
 				var hdr [4]byte
-				if _, err := io.ReadFull(f.c, hdr[:]); err == nil {
+				if _, err := io.ReadFull(f.r, hdr[:]); err == nil {
 					t.Error("client kept talking after a refusal")
 				}
 			})

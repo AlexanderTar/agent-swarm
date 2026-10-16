@@ -303,7 +303,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no
 	// sources, so it reads no keychain and calls no vendor endpoint. This is
 	// the only call site, and cfg.Dev never enters this decision (F1).
-	grokExhaustion := &usagesvc.GrokExhaustion{} // the hook handler fills it, the grok usage source reads it
+	grokExhaustion := &usagesvc.GrokExhaustion{} // the hook handler and the leader pushes fill it, the grok usage source reads it
+	if g, ok := rt.Adapters[runtime.Grok].(interface{ OnExhausted(func(text string)) }); ok {
+		g.OnExhausted(func(text string) { grokExhaustion.Note(text, now()) })
+	}
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
 		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
 			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d,

@@ -28,6 +28,8 @@ type Grok struct {
 	base
 	mu     sync.Mutex
 	minted map[string]string // workspace root -> the --session-id Launch minted
+	// leader holds what the leaders push (grokleader_state.go), by Swarm session id.
+	leader leaderState
 }
 
 func newGrok(d Deps) *Grok {

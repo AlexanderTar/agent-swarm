@@ -3998,3 +3998,35 @@ func TestReconcileSweepsLeadersOfEndedSessions(t *testing.T) {
 		t.Errorf("an ended session must not be in the live set: %v", sw.swept[len(sw.swept)-1])
 	}
 }
+
+// busyLeaderAdapter reports what the leader's push stream says about a session.
+type busyLeaderAdapter struct {
+	*adapter.Fake
+	busy bool
+}
+
+func (b *busyLeaderAdapter) LeaderBusy(string) bool { return b.busy }
+
+// A pane can read idle for a moment while the leader has already started a
+// queued turn; the leader's "working" keeps the session from being waiting.
+func TestLeaderBusyKeepsAnIdlePaneFromWaiting(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	bl := &busyLeaderAdapter{Fake: s.Adapters[Fake].(*adapter.Fake), busy: true}
+	s.Adapters[Fake] = bl
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "LeaderBusy", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Reconcile(ctx)
+	if got, _ := s.LatestSession(ctx, a.ID); got.Waiting {
+		t.Fatal("the leader says a turn is running, so the session is not waiting")
+	}
+	bl.busy = false
+	s.Reconcile(ctx)
+	if got, _ := s.LatestSession(ctx, a.ID); !got.Waiting {
+		t.Fatal("an idle pane and an idle leader is waiting")
+	}
+}

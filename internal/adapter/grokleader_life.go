@@ -68,15 +68,21 @@ func removeIfStale(path string) {
 	}
 }
 
-// SweepLeaders stops the leader of every session that is not live and removes
-// the socket files nothing listens on. The runtime calls it each reconcile
-// tick, so it never waits: SIGTERM makes the leader exit and remove its own
-// socket, and a leader that is still up on the next tick is signalled again.
+// SweepLeaders is the per-tick upkeep of every session's leader: a live
+// session's leader gets a watcher (grokleader_state.go), and for a session that
+// is not live the watcher goes, its leader is stopped, and a socket file nothing
+// listens on is removed. The runtime calls it each reconcile tick, so it never
+// waits: SIGTERM makes the leader exit and remove its own socket, and a leader
+// still up on the next tick is signalled again.
 func (g *Grok) SweepLeaders(live map[string]bool) {
+	g.leader.stopWatchersExcept(live)
 	socks, _ := filepath.Glob(filepath.Join(g.d.Home, "run", leaderSockPrefix+"*"+leaderSockSuffix))
 	for _, sock := range socks {
 		id := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(sock), leaderSockPrefix), leaderSockSuffix)
 		if live[id] {
+			if listening(sock) {
+				g.watchLeader(id, sock)
+			}
 			continue
 		}
 		if !listening(sock) {

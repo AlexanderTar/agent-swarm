@@ -222,3 +222,29 @@ func readLeaderFrame(r io.Reader) ([]byte, error) {
 	_, err := io.ReadFull(r, body)
 	return body, err
 }
+
+// Watch reads the leader's pushes until the connection ends or ctx is done,
+// handing each notification's method and params to onNote. It makes no calls,
+// so it shares the connection with nothing else.
+func (c *leaderClient) Watch(ctx context.Context, onNote func(method string, params json.RawMessage)) error {
+	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
+	defer stop()
+	for {
+		raw, err := readLeaderFrame(c.conn)
+		if err != nil {
+			return err
+		}
+		var f struct {
+			Type    string `json:"type"`
+			Payload string `json:"payload"`
+		}
+		var m struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal(raw, &f) != nil || f.Type != "acp" || json.Unmarshal([]byte(f.Payload), &m) != nil || m.Method == "" {
+			continue
+		}
+		onNote(m.Method, m.Params)
+	}
+}
