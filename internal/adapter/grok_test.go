@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -279,7 +280,7 @@ func grokPane(t *testing.T, name string) string {
 func TestGrokPaneRules(t *testing.T) {
 	a := newGrok(testDeps(t))
 	for _, tc := range []struct {
-		fixture                string
+		fixture                 string
 		idle, busy, card, limit bool
 	}{
 		{"idle", true, false, false, false},
@@ -431,5 +432,87 @@ func TestGrokForgetFolder(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(path); string(after) != "[folders\nbroken" {
 		t.Errorf("unparseable file was modified: %q", after)
+	}
+}
+
+// grokSessionDir plants the session fixtures where grok writes them:
+// <grok home>/sessions/<url-encoded cwd>/<session id>/.
+func grokSessionDir(t *testing.T, d Deps, id string, files ...string) string {
+	t.Helper()
+	dir := filepath.Join(grokhome.Dir(d.Home), "sessions", url.PathEscape("/work/probe"), id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join("testdata", "grok", "session", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// Hooks hand over the session's updates.jsonl as the transcript path; the
+// context numbers live next to it in signals.json.
+func TestGrokReadContext(t *testing.T) {
+	d := testDeps(t)
+	dir := grokSessionDir(t, d, "12fc7ee2-433b-4f17-b1c7-be043d74ba18", "signals.json")
+	for _, path := range []string{filepath.Join(dir, "updates.jsonl"), filepath.Join(dir, "signals.json")} {
+		s, ok := ReadContext(kinds.Grok, path)
+		if !ok || s.Tokens != 28431 || s.Window == nil || *s.Window != 256000 || s.Model != "grok-4.7" {
+			t.Errorf("ReadContext(%s) = %+v, %v", filepath.Base(path), s, ok)
+		}
+	}
+	if _, ok := ReadContext(kinds.Grok, filepath.Join(t.TempDir(), "updates.jsonl")); ok {
+		t.Error("a session with no signals.json has no sample")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "signals.json"), []byte(`{"contextTokensUsed":0,"contextWindowTokens":256000}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ReadContext(kinds.Grok, filepath.Join(dir, "updates.jsonl")); ok {
+		t.Error("a fresh session (0 tokens used) has no sample")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "signals.json"), []byte(`not json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ReadContext(kinds.Grok, filepath.Join(dir, "updates.jsonl")); ok {
+		t.Error("garbage has no sample")
+	}
+}
+
+func TestGrokObserveModel(t *testing.T) {
+	d := testDeps(t)
+	const id = "12fc7ee2-433b-4f17-b1c7-be043d74ba18"
+	dir := grokSessionDir(t, d, id, "summary.json")
+	var mo ModelObserver = newGrok(d)
+	// By provider session id alone (the reconcile tick has no transcript path).
+	if m, e, ok := mo.ObserveModel("", id); !ok || m != "grok-4.7" || e != "low" {
+		t.Errorf("ObserveModel(by id) = %q, %q, %v", m, e, ok)
+	}
+	// By the transcript path a hook hands over.
+	if m, e, ok := mo.ObserveModel(filepath.Join(dir, "updates.jsonl"), id); !ok || m != "grok-4.7" || e != "low" {
+		t.Errorf("ObserveModel(by path) = %q, %q, %v", m, e, ok)
+	}
+	if _, _, ok := mo.ObserveModel("", "no-such-session"); ok {
+		t.Error("an unknown session observes nothing")
+	}
+	if _, _, ok := mo.ObserveModel("", ""); ok {
+		t.Error("no session id and no path observes nothing")
+	}
+	// A summary with a model but no effort still reports the model.
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), []byte(`{"current_model_id":"grok-4.6"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if m, e, ok := mo.ObserveModel("", id); !ok || m != "grok-4.6" || e != "" {
+		t.Errorf("model-only summary = %q, %q, %v", m, e, ok)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), []byte(`{"reasoning_effort":"low"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := mo.ObserveModel("", id); ok {
+		t.Error("a summary with no model observes nothing")
 	}
 }

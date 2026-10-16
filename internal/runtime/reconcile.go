@@ -187,7 +187,7 @@ func (s *Store) Reconcile(ctx context.Context) error {
 			return err
 		}
 	}
-	s.observeMuseModels(ctx, live)
+	s.observeFileModels(ctx, live)
 	terminalTmux, err := s.terminalTmuxNames(ctx)
 	if err != nil {
 		return err

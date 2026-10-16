@@ -254,6 +254,61 @@ func (g *Grok) ForgetFolder(_ context.Context, path string) error {
 	return writeFileAtomic(p, out, 0o600)
 }
 
+// grokContext reads signals.json from the session dir transcriptPath lives in
+// (hooks hand over updates.jsonl). ok is false for a missing or unreadable
+// file and for a session that has used no context yet.
+func grokContext(transcriptPath string) (ContextSample, bool) {
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(transcriptPath), "signals.json"))
+	if err != nil {
+		return ContextSample{}, false
+	}
+	var sig struct {
+		Used    int    `json:"contextTokensUsed"`
+		Window  int    `json:"contextWindowTokens"`
+		Primary string `json:"primaryModelId"`
+	}
+	if json.Unmarshal(raw, &sig) != nil || sig.Used <= 0 {
+		return ContextSample{}, false
+	}
+	s := ContextSample{Tokens: sig.Used, Model: sig.Primary}
+	if sig.Window > 0 {
+		s.Window = &sig.Window
+	}
+	return s, true
+}
+
+// ObserveModel reports the model and effort in the session's summary.json, which
+// grok rewrites when a person runs /model or /effort. transcriptPath (a hook's
+// updates.jsonl) names the session dir; without it the dir is found by the
+// provider session id, unique across every cwd folder.
+func (g *Grok) ObserveModel(transcriptPath, providerSessionID string) (string, string, bool) {
+	dir := ""
+	switch {
+	case transcriptPath != "":
+		dir = filepath.Dir(transcriptPath)
+	case providerSessionID != "":
+		hits, _ := filepath.Glob(filepath.Join(grokhome.Dir(g.d.Home), "sessions", "*", providerSessionID, "summary.json"))
+		if len(hits) != 1 {
+			return "", "", false
+		}
+		dir = filepath.Dir(hits[0])
+	default:
+		return "", "", false
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "summary.json"))
+	if err != nil {
+		return "", "", false
+	}
+	var sum struct {
+		Model  string `json:"current_model_id"`
+		Effort string `json:"reasoning_effort"`
+	}
+	if json.Unmarshal(raw, &sum) != nil || sum.Model == "" {
+		return "", "", false
+	}
+	return sum.Model, sum.Effort, true
+}
+
 // ---- filled in by the hook and wake packages ----
 
 func (g *Grok) Wake(context.Context, WakeTarget) (bool, error)  { return false, nil }

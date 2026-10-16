@@ -46,6 +46,8 @@ func ReadContext(kind kinds.AgentKind, transcriptPath string) (ContextSample, bo
 		parse = agyContextLine
 	case kinds.Muse:
 		parse = museContextLine
+	case kinds.Grok:
+		return grokContext(transcriptPath)
 	case kinds.Cursor:
 		st, err := os.Stat(transcriptPath)
 		if err != nil || st.Size() == 0 {
