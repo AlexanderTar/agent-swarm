@@ -70,6 +70,15 @@ func noteGrokAdded(c Config, seededLock bool, plugins []string) error {
 	return err
 }
 
+// ensureGrokHome creates the Swarm grok home 0700 and tightens one an earlier
+// install left looser: grok writes session logs with token prefixes into it.
+func ensureGrokHome(c Config) error {
+	if err := os.MkdirAll(c.Grok(), 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(c.Grok(), 0o700)
+}
+
 // errTOMLParse marks a config grok cannot read, which install never overwrites.
 var errTOMLParse = errors.New("does not parse")
 
@@ -82,7 +91,7 @@ var errTOMLParse = errors.New("does not parse")
 // Order matters: `grok plugin install` rewrites config.toml, so the superpowers
 // install runs first and Swarm's keys are merged after it.
 func WriteGrok(ctx context.Context, c Config, run execx.Runner) (changed, skipped []string, err error) {
-	if err := os.MkdirAll(c.Grok(), 0o755); err != nil {
+	if err := ensureGrokHome(c); err != nil {
 		return nil, nil, err
 	}
 	cfg := c.Grok("config.toml")
@@ -317,7 +326,7 @@ func setGrokSuperpowersFallback(c Config, m map[string]any, fallback string) {
 // Launch calls it before every grok start, so a plugin added to Claude later is
 // covered. There is no allowlist in grok, so a denylist is all there is.
 func RefreshGrokPlugins(c Config) (bool, error) {
-	if err := os.MkdirAll(c.Grok(), 0o755); err != nil {
+	if err := ensureGrokHome(c); err != nil {
 		return false, err
 	}
 	var added []string
