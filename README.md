@@ -8,7 +8,7 @@ Agent Swarm is a local tool with three parts:
 - **A web board** at http://127.0.0.1:7777 with hierarchy, kanban and dependency-graph views.
 - **A menu bar app** (Swarm.app) showing running agents, requests that need you, usage per agent, and notifications.
 
-Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`), Cursor CLI (`cursor-agent`) and Muse. Delivery roles are orchestrator, coder, reviewer, UI reviewer, designer, researcher, debugger and mechanical worker.
+Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`), Cursor CLI (`cursor-agent`), Muse and Grok Build (`grok`). Delivery roles are orchestrator, coder, reviewer, UI reviewer, designer, researcher, debugger and mechanical worker.
 
 ## How work flows
 
@@ -109,6 +109,7 @@ To show 5h/weekly usage in the menu bar, the daemon reads most agents' own login
 | Codex | — reads its own CLI locally, no keychain | — |
 | agy | — reads `~/.gemini/antigravity-cli/antigravity-oauth-token` directly, no keychain | — |
 | Muse | — no keychain at all, see below | — |
+| Grok | — no keychain: reads the weekly SuperGrok limit (`_x.ai/billing`) over a short-lived `grok agent stdio`, signed in with its own `auth.json`; per-session tokens and cost come from `grok usage`, and an exhausted quota seen in a session shows as a full meter | — |
 
 Claude's and Cursor's items are created with the default `apple-tool:` keychain partition, so `security` (partition `apple-tool:`) can read them silently — clicking Allow once elsewhere is enough.
 
@@ -173,7 +174,7 @@ swarm uninstall                    remove launchd job and agent integrations (ke
 
 ## Advisor
 
-Every agent can consult a stronger model before big decisions, when stuck, and before finishing. Claude agents use Claude Code's built-in advisor (set with the Advisor default, e.g. Fable). Codex, agy and Cursor agents call `swarm_advise`; Swarm runs the advisor model you chose on a condensed copy of the agent's session and returns the answer. Advice shows up in each item's Checkpoints tab.
+Every agent can consult a stronger model before big decisions, when stuck, and before finishing. Claude agents use Claude Code's built-in advisor (set with the Advisor default, e.g. Fable). Codex, Antigravity, Cursor and Grok agents call `swarm_advise`; Swarm runs the advisor model you chose on a condensed copy of the agent's session and returns the answer. Muse has no advisor yet: its read-only form is built but stays off until a live test proves it blocks writes. Advice shows up in each item's Checkpoints tab.
 
 ## How agents talk to Swarm
 
@@ -192,7 +193,8 @@ Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkp
 
 ## Troubleshooting
 
-- **Agent shows "Not signed in"**: run the agent once in a terminal and sign in (`claude`, `codex login`, `agy`, `cursor-agent login`), then Check again in Settings.
+- **Agent shows "Not signed in"**: run the agent once in a terminal and sign in (`claude`, `codex login`, `agy`, `cursor-agent login`, `muse login`, `grok login`), then Check again in Settings.
+- **Grok shows "Not signed in" after `grok login`**: Swarm's grok home links `auth.json` and `auth.json.lock` to `~/.grok/`; rerun `swarm install` to restore the links, and `swarm doctor` to check them. Never start grok with `--debug-file` for a Swarm session: the file holds MCP bearer tokens and your account email in clear text.
 - **Hooks fail with `node: command not found`**: the daemon's PATH comes from the launchd plist; rerun `swarm install` after installing Node.
 - **Terminal button does nothing**: allow Swarm to control Ghostty in System Settings → Privacy & Security → Automation.
 - **Usage shows `--` or a dimmed value**: the source was unreachable or the agent's login expired; open the agent once to refresh its login.
