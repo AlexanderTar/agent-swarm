@@ -1639,3 +1639,46 @@ func TestSkillsKeepEvidenceOutOfAttachments(t *testing.T) {
 		}
 	}
 }
+
+// The per-kind question lists in the swarm skills must name every hooked kind's
+// native question tool, and prose calls agy by its Antigravity label (the kind
+// id `agy` stays only inside code spans).
+func TestSkillsNameGrokAndAntigravity(t *testing.T) {
+	tool := "grok `ask_user_question`"
+	for file, wants := range map[string][]string{
+		"swarm/SKILL.md":              {tool},
+		"swarm-orchestrator/SKILL.md": {"Grok `ask_user_question`", "Antigravity, codex and grok"},
+		"swarm-spike/SKILL.md":        {"Grok"},
+	} {
+		for _, root := range []string{"../../skills", "skills"} {
+			var body []byte
+			var err error
+			if root == "skills" {
+				body, err = fs.ReadFile(install.SkillFS(), file)
+			} else {
+				body, err = os.ReadFile(filepath.Join(root, file))
+			}
+			if err != nil {
+				t.Fatalf("%s/%s: %v", root, file, err)
+			}
+			for _, want := range wants {
+				if !strings.Contains(string(body), want) {
+					t.Errorf("%s/%s is missing %q", root, file, want)
+				}
+			}
+		}
+	}
+	codeSpan := regexp.MustCompile("`[^`]*`")
+	bareAgy := regexp.MustCompile(`(?i)\bagy\b`)
+	for _, file := range []string{"swarm", "swarm-orchestrator", "swarm-spike"} {
+		body, err := os.ReadFile(filepath.Join("../../skills", file, "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			if bareAgy.MatchString(codeSpan.ReplaceAllString(line, "")) {
+				t.Errorf("skills/%s/SKILL.md:%d names agy in prose; write Antigravity", file, i+1)
+			}
+		}
+	}
+}
