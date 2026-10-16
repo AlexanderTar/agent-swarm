@@ -425,7 +425,7 @@ type Store struct {
 	interruptedAt      map[string]time.Time
 	dialogDismissed    map[string]bool // sessions whose native question dialog a pause already dismissed
 	pasteAttempts      map[string]int
-	museSeq            map[string]int64 // last muse log position recorded as an end-of-turn context sample
+	museSeq            map[string]int64 // last muse log position recorded as an end-of-turn context sample (muse is polled; grok is hooked and samples at Stop, so it needs none)
 	lastPasteAttemptAt map[string]time.Time
 	noticeSeen         map[string]bool // sessions that already got an inbox notice (and its trailer)
 	batchPastes        map[string]int  // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)

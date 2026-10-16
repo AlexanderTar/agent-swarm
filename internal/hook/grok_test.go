@@ -360,3 +360,23 @@ func TestGrokStopAfterPrintedBlockSendsAskAndBlocks(t *testing.T) {
 		t.Fatalf("event = %q, want request_print", ev)
 	}
 }
+
+// A grok session records its context size at a real end of turn from the
+// session dir's signals.json (the Stop hook hands over updates.jsonl).
+func TestGrokStopRecordsTheContextSample(t *testing.T) {
+	h, ses := seedGrok(t, 0, runtime.Running)
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/signals.json", []byte(`{"contextTokensUsed":1234,"contextWindowTokens":256000,"primaryModelId":"grok-4.7"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := json.Marshal(map[string]any{"session_id": "g1", "reason": "end_turn", "transcript_path": dir + "/updates.jsonl"})
+	if _, err := h.Handle(context.Background(), runtime.Grok, "Stop", ses, in); err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionFlag(t, h, "context_tokens", ses); got != 1234 {
+		t.Fatalf("context_tokens = %d, want 1234", got)
+	}
+	if got := sessionFlag(t, h, "context_window", ses); got != 256000 {
+		t.Fatalf("context_window = %d", got)
+	}
+}
