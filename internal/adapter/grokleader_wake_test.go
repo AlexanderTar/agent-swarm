@@ -228,3 +228,31 @@ func TestGrokUsageLimitCardMarksExhaustion(t *testing.T) {
 		t.Fatalf("exhaustion notes = %q, want one carrying the card's usage-limit line", got)
 	}
 }
+
+// An agent reading grok.go, a fixture or a comment shows the usage-limit text
+// in an ordinary pane; only the open card (title in the gutter plus the card
+// footer) may lock grok out.
+func TestGrokUsageLimitTextOutsideCardNotesNothing(t *testing.T) {
+	a := newGrok(Deps{})
+	var got []string
+	a.OnExhausted(func(text string) { got = append(got, text) })
+	src := "  grokUsageLimit = regexp.MustCompile(`You hit your .*usage limit`)\n" +
+		"  // the card reads: You hit your free usage limit.\n"
+	card := StripANSI(grokPane(t, "free-usage-limit-card"))
+	var title string
+	for _, l := range strings.Split(card, "\n") {
+		if strings.Contains(l, "You hit your") {
+			title = l
+		}
+	}
+	for name, pane := range map[string]string{
+		"source line":              src,
+		"fixture title, no footer": title + "\n",
+		"source above the footer":  src + "\n  Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss\n",
+	} {
+		a.ObserveCapture("ses_01", pane)
+		if len(got) != 0 {
+			t.Fatalf("%s: exhaustion noted without the open card: %q", name, got)
+		}
+	}
+}

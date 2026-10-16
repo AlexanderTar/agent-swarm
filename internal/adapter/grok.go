@@ -190,8 +190,11 @@ var (
 	// bound approval leaves it on screen and the bound question row is its
 	// Needs-you entry, so the dialog matchers exclude it.
 	grokQuestionCard = regexp.MustCompile(`Type your answer here|Waiting on answers for`)
-	// grokUsageLimit is the card title when the plan's allowance is spent.
-	grokUsageLimit = regexp.MustCompile(`You hit your .*usage limit`)
+	// grokUsageLimit is the card title when the plan's allowance is spent. The
+	// card draws it in its left gutter (┃), so anchoring to a line that starts
+	// with the gutter keeps source, fixtures and comments showing the same words
+	// from matching; ObserveCapture also requires the card footer.
+	grokUsageLimit = regexp.MustCompile(`(?m)^\s*┃\s+You hit your .*usage limit`)
 )
 
 func (g *Grok) ProcessNames() []*regexp.Regexp { return grokProcess }
@@ -388,12 +391,15 @@ func (g *Grok) ParseHook(event string, stdin []byte) (HookInput, error) {
 
 // ObserveCapture is told of every pane capture reconcile reads. The usage-limit
 // card marks grok exhausted for as long as it shows, a source that needs no
-// billing meter.
+// billing meter. Only an open card counts: its title in the gutter and its
+// footer both present.
 func (g *Grok) ObserveCapture(_, capture string) {
-	line := grokUsageLimit.FindString(StripANSI(capture))
-	if line == "" {
+	plain := StripANSI(capture)
+	line := grokUsageLimit.FindString(plain)
+	if line == "" || !grokCard.MatchString(plain) {
 		return
 	}
+	line = strings.TrimSpace(line)
 	g.leader.mu.Lock()
 	sink := g.leader.onExhausted
 	g.leader.mu.Unlock()
