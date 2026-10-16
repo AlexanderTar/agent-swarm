@@ -122,7 +122,7 @@ func (f *fakeGrokStdio) start(t *testing.T) execx.StarterEnv {
 
 func TestGrokAccountMeters(t *testing.T) {
 	fake := &fakeGrokStdio{billing: "testdata/grok-billing.json"}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Dir: t.TempDir()}
+	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t)}
 	meters, headline, err := g.Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestGrokAccountMeters(t *testing.T) {
 
 func TestGrokFreeTierHasNoMeter(t *testing.T) {
 	fake := &fakeGrokStdio{billing: "testdata/grok-billing-free.json"}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Dir: t.TempDir()}
+	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t)}
 	if _, _, err := g.Fetch(context.Background()); !errors.Is(err, ErrNoData) {
 		t.Fatalf("err %v, want ErrNoData: no creditUsagePercent means no meter", err)
 	}
@@ -156,11 +156,15 @@ func TestGrokFreeTierHasNoMeter(t *testing.T) {
 
 const grokQuota429 = "API error (status 429 Too Many Requests): subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 619434/600000."
 
+// The 429 a background "prompt suggest" side call gets (SPIKE-52): a rate limit
+// that clears in a second, not an exhausted allowance.
+const grokPerSecond429 = "API error (status 429 Too Many Requests): resource-exhausted: Requests per Second (actual/limit): 2/2"
+
 func TestGrokExhaustionMeterWhenBillingGivesNone(t *testing.T) {
 	now := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
 	fake := &fakeGrokStdio{billing: "testdata/grok-billing-free.json"}
 	ex := &GrokExhaustion{}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Dir: t.TempDir(), Exhaustion: ex, Now: func() time.Time { return now }}
+	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Exhaustion: ex, Now: func() time.Time { return now }}
 	if !ex.Note(grokQuota429, now) {
 		t.Fatal("a 429 usage-exhausted error must be recorded")
 	}
@@ -186,7 +190,7 @@ func TestGrokExhaustionIgnoredOnceItExpiresOrBillingHasAMeter(t *testing.T) {
 	}
 	// billing is authoritative: a real 1% reading beats an older 429.
 	fake := &fakeGrokStdio{billing: "testdata/grok-billing.json"}
-	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Dir: t.TempDir(), Exhaustion: ex, Now: func() time.Time { return now }}
+	g := &Grok{SwarmHome: "/swarm", StartEnv: fake.start(t), Exhaustion: ex, Now: func() time.Time { return now }}
 	meters, _, err := g.Fetch(context.Background())
 	if err != nil || meters[0].UsedPct != 1.0 {
 		t.Fatalf("meters %+v err %v, want the billing 1%%", meters, err)
@@ -201,9 +205,13 @@ func TestGrokExhaustionNoteClassifiesSignals(t *testing.T) {
 		until      time.Time
 	}{
 		{"429 quota", grokQuota429, true, now.Add(24 * time.Hour)},
-		{"retry_state exhausted", "retry_state: exhausted", true, now.Add(24 * time.Hour)},
+		{"generic retry_state exhausted", "retry_state: exhausted", false, time.Time{}},
+		{"retry_state exhausted update", `{"sessionUpdate":"retry_state","type":"exhausted"}`, false, time.Time{}},
+		{"per-second 429", grokPerSecond429, false, time.Time{}},
+		{"usage-exhausted code", "subscription:free-usage-exhausted", true, now.Add(24 * time.Hour)},
+		{"token counts", "tokens (actual/limit): 619434/600000", true, now.Add(24 * time.Hour)},
 		{"usage-limit card", "You hit your SuperGrok usage limit", true, now.Add(24 * time.Hour)},
-		{"explicit reset", "Subscription quota exhausted. Your usage window resets at 2026-10-17T00:00:00Z.", true, time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)},
+		{"explicit reset", "subscription:free-usage-exhausted. Your usage window resets at 2026-10-17T00:00:00Z.", true, time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)},
 		{"network error", "connection reset by peer", false, time.Time{}},
 		{"empty", "", false, time.Time{}},
 	} {
