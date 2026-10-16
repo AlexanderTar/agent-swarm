@@ -51,6 +51,16 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.advisorOptions([fallback], enabled: [.claude]).map(\.value), ["claude:opus", "none"])
     }
 
+    func testAnAgentWithoutAnAdvisorYetIsNotOfferedAsOne() {
+        let noAdvisor = AgentCatalogEntry(kind: .muse, models: [CatalogModel(id: "muse-1")], advisorEnabled: false)
+        let all = catalog + [noAdvisor]
+        XCTAssertEqual(R.advisorAgentOptions(enabled: [.claude, .muse], catalog: all).map(\.value), ["claude", "none"])
+        XCTAssertFalse(R.advisorOptions(all, enabled: [.claude, .muse]).map(\.value).contains("muse:muse-1"))
+        XCTAssertEqual(R.advisorAgentOptions(enabled: [.claude, .codex], catalog: catalog).map(\.value), ["claude", "codex", "none"],
+                       "an entry without the flag, or no entry at all, stays offered")
+        XCTAssertTrue(R.agentOptions(enabled: [.claude, .muse]).map(\.value).contains("muse"))
+    }
+
     func testDefaultEffortLabels() {
         // The daemon sets defaultEffort for Claude too (high when supported, else the top level); the label reads it.
         XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "high"], defaultEffort: "high")), "Default (high)")

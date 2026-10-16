@@ -18,6 +18,19 @@ const (
 // AgentKinds is the settings order (claude first).
 var AgentKinds = []AgentKind{Claude, Codex, Agy, Cursor, Muse, Grok}
 
+// MuseAdvisorEnabled keeps muse without an advisor. Its read-only argv
+// (advisor.museAdvisorCommand) and parser are built and unit-tested, but the
+// write block was never proved live: muse answered 429 (quota exhausted until
+// 2026-10-19) before any tool ran. Enabling it is CHORE-102, once a live write
+// test passes. The advisor runner, the settings validation and the catalog's
+// advisor_enabled flag all follow this one constant.
+const MuseAdvisorEnabled = false
+
+// AdvisorEnabled reports whether the kind can be picked as the advisor.
+func (k AgentKind) AdvisorEnabled() bool {
+	return k != Muse || MuseAdvisorEnabled
+}
+
 func (k AgentKind) Display() string {
 	switch k {
 	case Claude:

@@ -36,8 +36,11 @@ export function modelLabel(entry: AgentCatalogEntry | undefined, value: string):
 
 export const agentOptions = (enabled: AgentKind[]): Option[] => enabled.map((k) => ({ value: k, label: AGENT_LABEL[k] }));
 
-export const advisorAgentOptions = (enabled: AgentKind[]): Option[] => [
-  ...agentOptions(enabled),
+// An agent whose catalog entry says advisor_enabled is false (muse, until its write block is proven) can't advise.
+const canAdvise = (catalog: AgentCatalogEntry[], kind: AgentKind) => entryFor(catalog, kind)?.advisor_enabled !== false;
+
+export const advisorAgentOptions = (enabled: AgentKind[], catalog: AgentCatalogEntry[]): Option[] => [
+  ...agentOptions(enabled.filter((k) => canAdvise(catalog, k))),
   { value: "none", label: C.noAdvisor },
 ];
 
@@ -167,7 +170,7 @@ export function catalogNote(entry: AgentCatalogEntry | undefined, now = Date.now
 
 export function advisorOptions(catalog: AgentCatalogEntry[], enabled: AgentKind[]): Option[] {
   const out: Option[] = [];
-  for (const kind of enabled) {
+  for (const kind of enabled.filter((k) => canAdvise(catalog, k))) {
     for (const o of modelOptions(entryFor(catalog, kind), kind === "claude")) {
       out.push({ value: `${kind}:${o.value}`, label: `${AGENT_LABEL[kind]} · ${o.label}` });
     }

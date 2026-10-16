@@ -699,11 +699,25 @@ func cmdUsage(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *refresh {
+		// A never-polled agent has no row, so it is absent from the list: also
+		// refresh every enabled agent, which is what puts its first row there.
+		agents := map[string]bool{}
 		for _, u := range list {
+			agents[u.Agent] = true
+		}
+		var cfg struct {
+			EnabledAgents []string `json:"enabled_agents"`
+		}
+		if c.do("GET", "/api/settings", nil, &cfg) == nil {
+			for _, a := range cfg.EnabledAgents {
+				agents[a] = true
+			}
+		}
+		for agent := range agents {
 			// Best-effort: a 429 limit_reached (refreshed too recently) is not a
 			// reason to fail the whole command, only to keep showing what's there.
 			var ignore any
-			c.do("POST", "/api/usage/refresh", map[string]string{"agent": u.Agent}, &ignore)
+			c.do("POST", "/api/usage/refresh", map[string]string{"agent": agent}, &ignore)
 		}
 		if err := c.do("GET", "/api/usage", nil, &list); err != nil {
 			return fail(stderr, err)

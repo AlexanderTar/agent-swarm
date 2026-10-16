@@ -28,6 +28,7 @@ type AgentCatalogEntry struct {
 	AuthOK           bool            `json:"auth_ok"`
 	AuthError        string          `json:"auth_error"`
 	Superpowers      bool            `json:"superpowers"`
+	AdvisorEnabled   bool            `json:"advisor_enabled"`
 	Models           []CatalogModel  `json:"models"`
 	DefaultModel     string          `json:"default_model"`
 	CatalogSource    string          `json:"catalog_source"`
@@ -153,6 +154,7 @@ func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 		}
 		e := AgentCatalogEntry{Kind: f.Kind(), Models: []CatalogModel{}}
 		e.Superpowers = SuperpowersInstalled(s.Home, s.SwarmHome, f.Kind())
+		e.AdvisorEnabled = f.Kind().AdvisorEnabled()
 		if found {
 			e.Installed, e.Version = r.err != notInstalled, r.version
 			e.DefaultModel, e.CatalogSource, e.CatalogError = r.def, r.source, r.err

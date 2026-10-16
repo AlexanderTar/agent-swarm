@@ -594,9 +594,12 @@ public struct AgentCatalogEntry: Codable, Sendable, Equatable {
     public var catalogFetchedAt: Timestamp
     public var catalogStale: Bool
     public var catalogError: String
+    /// nil from a daemon that predates the field; only an explicit false hides the agent from the advisor pickers.
+    public var advisorEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case kind, installed, version, superpowers, models
+        case advisorEnabled = "advisor_enabled"
         case authOk = "auth_ok", authError = "auth_error", defaultModel = "default_model"
         case catalogSource = "catalog_source", catalogFetchedAt = "catalog_fetched_at"
         case catalogStale = "catalog_stale", catalogError = "catalog_error"
@@ -605,7 +608,8 @@ public struct AgentCatalogEntry: Codable, Sendable, Equatable {
     public init(kind: AgentKind, installed: Bool = true, version: String = "1.0", authOk: Bool = true,
                 authError: String = "", superpowers: Bool = true, models: [CatalogModel] = [], defaultModel: String = "",
                 catalogSource: String = "test", catalogFetchedAt: Timestamp = Timestamp(ms: 0),
-                catalogStale: Bool = false, catalogError: String = "") {
+                catalogStale: Bool = false, catalogError: String = "", advisorEnabled: Bool? = nil) {
+        self.advisorEnabled = advisorEnabled
         self.kind = kind; self.installed = installed; self.version = version; self.authOk = authOk
         self.authError = authError; self.superpowers = superpowers; self.models = models
         self.defaultModel = defaultModel; self.catalogSource = catalogSource

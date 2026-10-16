@@ -310,7 +310,18 @@ func (s *Store) switchDisabled(ctx context.Context, prev Settings, next *Setting
 		if !disabledNow(rd.Agent) {
 			continue
 		}
-		reassigned, err := s.reassignDefault(ctx, first, roleDefaults[role])
+		target := first
+		if role == kinds.RoleAdvisor && !first.AdvisorEnabled() {
+			// The first agent can't advise: use the first enabled one that
+			// can, and only turn the advisor off when none can.
+			i := slices.IndexFunc(next.EnabledAgents, kinds.AgentKind.AdvisorEnabled)
+			if i < 0 {
+				next.Roles[role] = RoleDefault{Agent: first, Model: NoAdvisor}
+				continue
+			}
+			target = next.EnabledAgents[i]
+		}
+		reassigned, err := s.reassignDefault(ctx, target, roleDefaults[role])
 		if err != nil {
 			return err
 		}
@@ -386,6 +397,9 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 		}
 		var advisorCapable func(catalog.CatalogModel) error
 		if role == kinds.RoleAdvisor {
+			if !rd.Agent.AdvisorEnabled() {
+				return invalid("%s can't run as an advisor yet. Choose another agent or No advisor.", rd.Agent.Display())
+			}
 			advisorCapable = func(m catalog.CatalogModel) error {
 				if rd.Agent == kinds.Claude && !m.AdvisorCapable {
 					return invalid("Choose a model available for this agent.")

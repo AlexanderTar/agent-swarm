@@ -144,6 +144,16 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertNil(m.defaultsRows[1].effortOptions, "native Claude-on-Claude advisor has no separate effort (shared predicate)")
     }
 
+    func testAdvisorRowDoesNotOfferAnAgentThatCannotAdvise() async {
+        state.settings.enabledAgents.append(.muse)
+        client.catalogEntries.append(AgentCatalogEntry(kind: .muse, models: [CatalogModel(id: "muse-1")], advisorEnabled: false))
+        let m = await model()
+        let rows = m.defaultsRows
+        XCTAssertTrue(rows[0].agentOptions.map(\.value).contains("muse"), "other roles still offer muse")
+        XCTAssertFalse(rows[1].agentOptions.map(\.value).contains("muse"))
+        XCTAssertFalse(rows[1].agentOptions.map(\.value).contains("none"), "No advisor is a model option on this row")
+    }
+
     func testDefaultsEditsSaveAndBlockOnErrors() async {
         let m = await model()
         await m.setModel(.coder, "claude-opus-5")

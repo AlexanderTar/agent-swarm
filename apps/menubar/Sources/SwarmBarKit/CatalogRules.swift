@@ -218,15 +218,20 @@ public enum CatalogRules {
 
     /// One menu of "Agent · Model" pairs plus "No advisor" (§16.3). Claude lists only models that can advise.
     public static func advisorOptions(_ catalog: [AgentCatalogEntry], enabled: [AgentKind]) -> [PickerOption] {
-        AgentKind.selectable.filter(enabled.contains).flatMap { kind in
+        AgentKind.selectable.filter { enabled.contains($0) && canAdvise($0, catalog) }.flatMap { kind in
             modelOptions(entry(catalog, kind), advisorOnly: kind == .claude).map {
                 PickerOption(AdvisorChoice.pair(kind, $0.value).encoded, "\(Copy.agentLabel(kind)) · \($0.label)")
             }
         } + [PickerOption("none", Copy.noAdvisor)]
     }
 
-    public static func advisorAgentOptions(enabled: [AgentKind]) -> [PickerOption] {
-        agentOptions(enabled: enabled) + [PickerOption("none", Copy.noAdvisor)]
+    public static func advisorAgentOptions(enabled: [AgentKind], catalog: [AgentCatalogEntry]) -> [PickerOption] {
+        agentOptions(enabled: enabled.filter { canAdvise($0, catalog) }) + [PickerOption("none", Copy.noAdvisor)]
+    }
+
+    /// An agent whose catalog entry says `advisor_enabled` is false (muse, until its write block is proven) can't advise.
+    private static func canAdvise(_ kind: AgentKind, _ catalog: [AgentCatalogEntry]) -> Bool {
+        entry(catalog, kind)?.advisorEnabled != false
     }
 
     public static func advisorModelOptions(_ agent: AgentKind?, catalog: [AgentCatalogEntry]) -> [PickerOption] {
