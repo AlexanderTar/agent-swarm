@@ -262,18 +262,18 @@ func (s *Store) WakeDue(ctx context.Context) error {
 // later tick: unlike a wake notice this is never a wake failure, so it adds no
 // backoff. It returns the sessions it pasted into this tick.
 func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.pending_name, ses.tmux_name, a.kind
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.pending_name, ses.tmux_name, a.kind, COALESCE(ses.provider_session_id, '')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE ses.pending_name IS NOT NULL
 		AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
 		return nil, err
 	}
-	type pend struct{ id, name, tmux, kind string }
+	type pend struct{ id, name, tmux, kind, providerID string }
 	var due []pend
 	for rows.Next() {
 		var p pend
-		if err := rows.Scan(&p.id, &p.name, &p.tmux, &p.kind); err != nil {
+		if err := rows.Scan(&p.id, &p.name, &p.tmux, &p.kind, &p.providerID); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -308,6 +308,21 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 		if s.Usage != nil && s.Usage.Exhausted(ctx, AgentKind(p.kind)) {
 			continue
 		}
+		clear := func() error {
+			_, err := s.DB.ExecContext(ctx, `UPDATE sessions SET pending_name = NULL WHERE id = ? AND pending_name = ?`, p.id, p.name)
+			return err
+		}
+		// A kind with a socket to its session (grok's leader) renames without
+		// touching the pane, so it neither waits for an idle pane nor takes this
+		// tick's paste from the wake notice.
+		if lr, ok := ad.(interface {
+			RenameViaLeader(ctx context.Context, sessionID, providerID, name string) bool
+		}); ok && lr.RenameViaLeader(ctx, p.id, p.providerID, p.name) {
+			if err := clear(); err != nil {
+				s.logf("wake: clear pending name for %s: %v", p.tmux, err)
+			}
+			continue
+		}
 		if why := s.panePasteReady(ctx, ad, p.tmux, command[p.tmux]); why != "" {
 			s.logf("wake: rename for %s deferred (%s)", p.tmux, why)
 			continue
@@ -316,8 +331,7 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 			s.logf("wake: rename paste for %s: %v", p.tmux, err)
 			continue
 		}
-		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET pending_name = NULL WHERE id = ? AND pending_name = ?`,
-			p.id, p.name); err != nil {
+		if err := clear(); err != nil {
 			s.logf("wake: clear pending name for %s: %v", p.tmux, err)
 			continue
 		}

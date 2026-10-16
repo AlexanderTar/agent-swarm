@@ -28,6 +28,8 @@ type Grok struct {
 	base
 	mu     sync.Mutex
 	minted map[string]string // workspace root -> the --session-id Launch minted
+	// leader holds what the leaders push (grokleader_state.go), by Swarm session id.
+	leader leaderState
 }
 
 func newGrok(d Deps) *Grok {
@@ -58,13 +60,15 @@ const grokContextWindow = 256000
 //
 // Never --disallowed-tools (it silently turns leader mode off), never --debug
 // or --debug-file (they write bearer tokens and the account email in plain
-// text), and no --leader yet: the wake package adds it once the leader runs.
+// text). --leader --leader-socket <per-session path> makes the TUI start its own
+// leader for wake (grokleader_life.go); it is left off when the path is too long.
 func (g *Grok) flags(s Spec, sessionFlag, sessionID string) []string {
 	a := []string{"grok", "--model", s.Model}
 	if s.Effort != "" {
 		a = append(a, "--reasoning-effort", s.Effort)
 	}
 	a = append(a, "--always-approve", "--trust", "--no-subagents", sessionFlag, sessionID)
+	a = append(a, g.leaderArgs(s.SessionID)...)
 	if s.Instructions != "" {
 		a = append(a, "--rules", s.Instructions)
 	}
@@ -312,7 +316,10 @@ func (g *Grok) ObserveModel(transcriptPath, providerSessionID string) (string, s
 
 // ---- filled in by the wake package ----
 
-func (g *Grok) Wake(context.Context, WakeTarget) (bool, error) { return false, nil }
+// PasteReady is the wake-paste gate (runtime tryPaste): a paste plus one Enter
+// mid-turn queues the message (TASK-1126), so only a card, which swallows typed
+// text, blocks it.
+func (g *Grok) PasteReady(capture string) bool { return !grokCard.MatchString(StripANSI(capture)) }
 
 // AssistantTextSinceLastTurn lets the Stop hook judge the reply for the
 // approval chat block: grok's Stop carries lastAssistantMessage, which the

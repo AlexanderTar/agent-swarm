@@ -27,6 +27,12 @@ const grokLiveDump = "GROK_PROBE_DUMP"
 // the dump dir its hooks write to, and a file whose content a PreToolUse hook
 // prints (empty: the hook prints nothing).
 func grokLiveSetup(t *testing.T) (env []string, dump, preReply string) {
+	env, _, dump, preReply = grokLiveSetupHome(t)
+	return env, dump, preReply
+}
+
+// grokLiveSetupHome is grokLiveSetup that also returns the Swarm home.
+func grokLiveSetupHome(t *testing.T) (env []string, home, dump, preReply string) {
 	t.Helper()
 	if os.Getenv("GROK_LIVE_PROBE") != "1" {
 		t.Skip("live probe against the real grok CLI; set GROK_LIVE_PROBE=1 to run")
@@ -34,7 +40,7 @@ func grokLiveSetup(t *testing.T) (env []string, dump, preReply string) {
 	if _, err := exec.LookPath(grokhome.Bin); err != nil {
 		t.Skipf("no %s on PATH", grokhome.Bin)
 	}
-	home := t.TempDir()
+	home = shortTempDir(t) // the leader socket lives under it: sun_path is 104 bytes
 	gh := grokhome.Dir(home)
 	if err := os.MkdirAll(gh, 0o700); err != nil {
 		t.Fatal(err)
@@ -66,7 +72,7 @@ func grokLiveSetup(t *testing.T) (env []string, dump, preReply string) {
 	for k, v := range grokhome.Env(home) {
 		env = append(env, k+"="+v)
 	}
-	return append(env, grokLiveDump+"="+dump), dump, preReply
+	return append(env, grokLiveDump+"="+dump), home, dump, preReply
 }
 
 // grokLiveRun runs one headless turn and returns its combined output.
@@ -170,4 +176,86 @@ func TestGrokLiveAskUserQuestionDeny(t *testing.T) {
 	if !asked {
 		t.Error("no PreToolUse payload for ask_user_question")
 	}
+}
+
+// TestGrokLeaderLive proves the whole leader path on the real CLI, in a private
+// tmux server (never the daemon's): the TUI starts its own leader from the
+// launch flags, Wake submits a prompt through the leader socket to the idle
+// session, a Wake mid-turn queues behind the running turn, and the sweep stops
+// the leader by pid afterwards. It spends three short turns:
+//
+//	GROK_LIVE_PROBE=1 go test ./internal/adapter/ -run TestGrokLeaderLive -v
+func TestGrokLeaderLive(t *testing.T) {
+	env, home, _, _ := grokLiveSetupHome(t)
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("no tmux on PATH")
+	}
+	g := newGrok(Deps{Home: home, Log: t.Logf})
+	const sessionID, providerID = "ses_live", "7d1c0f3e-5b1a-4c8e-9a52-0c3f9e1b2a64"
+	sock, ok := g.leaderSocket(sessionID)
+	if !ok {
+		t.Fatalf("leader socket path %q does not fit sun_path", sock)
+	}
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	tmuxSock := filepath.Join(shortTempDir(t), "t.sock")
+	tmux := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("tmux", append([]string{"-S", tmuxSock}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	argv := append([]string{"env"}, env...)
+	argv = append(argv, grokhome.Bin, "-m", "grok-4.7", "--reasoning-effort", "low", "--always-approve", "--trust",
+		"--no-subagents", "--session-id", providerID, "--leader", "--leader-socket", sock)
+	tmux(append([]string{"new-session", "-d", "-s", "w", "-x", "200", "-y", "50", "-c", cwd}, argv...)...)
+	t.Cleanup(func() {
+		g.SweepLeaders(map[string]bool{}) // the session is over: stop its leader by pid
+		exec.Command("tmux", "-S", tmuxSock, "kill-server").Run()
+	})
+	pane := func() string { return StripANSI(tmux("capture-pane", "-p", "-t", "w")) }
+	waitFor := func(what string, timeout time.Duration, cond func(string) bool) string {
+		t.Helper()
+		for end := time.Now().Add(timeout); time.Now().Before(end); time.Sleep(time.Second) {
+			b, _ := exec.Command("tmux", "-S", tmuxSock, "capture-pane", "-p", "-t", "w").Output()
+			if p := StripANSI(string(b)); cond(p) {
+				return p
+			}
+		}
+		t.Fatalf("timed out waiting for %s; pane:\n%s", what, pane())
+		return ""
+	}
+	waitFor("an idle grok", 90*time.Second, func(p string) bool { return g.Idle(p) })
+	waitFor("the leader socket", 30*time.Second, func(string) bool { return listening(sock) })
+
+	w := WakeTarget{SessionID: sessionID, ProviderSessionID: providerID, Notice: "Reply with the single word: IDLEWAKE"}
+	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
+		t.Fatalf("idle Wake = %v, %v", delivered, err)
+	}
+	// The prompt echo is one occurrence, the reply the second.
+	waitFor("the idle wake to be answered", 2*time.Minute, func(p string) bool { return strings.Count(p, "IDLEWAKE") >= 2 && g.Idle(p) })
+
+	w.Notice = "Run the shell command `sleep 12`, then reply with the single word: FIRSTDONE"
+	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
+		t.Fatalf("Wake = %v, %v", delivered, err)
+	}
+	waitFor("the first turn to start", time.Minute, func(p string) bool { return g.Busy().MatchString(p) })
+	w.Notice = "Reply with the single word: QUEUEDWAKE"
+	if delivered, err := g.Wake(context.Background(), w); err != nil || !delivered {
+		t.Fatalf("mid-turn Wake = %v, %v", delivered, err)
+	}
+	final := waitFor("both turns to finish", 3*time.Minute, func(p string) bool {
+		return strings.Count(p, "QUEUEDWAKE") >= 2 && strings.Count(p, "FIRSTDONE") >= 1 && g.Idle(p)
+	})
+	if strings.Index(final, "FIRSTDONE") > strings.LastIndex(final, "QUEUEDWAKE") {
+		t.Errorf("the mid-turn prompt did not queue behind the running turn:\n%s", final)
+	}
+	t.Logf("final pane:\n%s", final)
+
+	g.SweepLeaders(map[string]bool{})
+	waitFor("the leader to stop", 30*time.Second, func(string) bool { return !listening(sock) })
 }

@@ -188,6 +188,7 @@ func (s *Store) Reconcile(ctx context.Context) error {
 		}
 	}
 	s.observeFileModels(ctx, live)
+	s.sweepLeaders(live)
 	terminalTmux, err := s.terminalTmuxNames(ctx)
 	if err != nil {
 		return err
@@ -1192,6 +1193,11 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 		idle = ad.Idle(capture)
+		// A pane can read idle for a moment while a queued turn has already
+		// started: a leader that says a turn is running wins.
+		if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(r.SessionID) {
+			idle = false
+		}
 		if !idle && !ownedByWatchStartup {
 			plain := stripANSI(capture)
 			now := s.Now()
@@ -1392,6 +1398,22 @@ func (s *Store) terminalTmuxNames(ctx context.Context) (map[string]bool, error) 
 		out[n] = true
 	}
 	return out, nil
+}
+
+// sweepLeaders hands every adapter that keeps a per-session background process
+// (grok's leader outlives its TUI) the sessions still live, so it can stop the
+// rest. One tick late for a session that ended this tick, which only delays a
+// SIGTERM.
+func (s *Store) sweepLeaders(live []liveRow) {
+	ids := make(map[string]bool, len(live))
+	for _, r := range live {
+		ids[r.SessionID] = true
+	}
+	for _, ad := range s.Adapters {
+		if sw, ok := ad.(interface{ SweepLeaders(live map[string]bool) }); ok {
+			sw.SweepLeaders(ids)
+		}
+	}
 }
 
 // swarmOwnedWorkspace reports whether path is a Swarm-owned workspace: under

@@ -3960,3 +3960,73 @@ func TestReconcileForgetClaudeTrustMarksNothingDoneOnAParseError(t *testing.T) {
 		t.Fatalf("file rewritten: %s", b)
 	}
 }
+
+// sweepAdapter records what Reconcile hands to an adapter's leader sweep.
+type sweepAdapter struct {
+	adapter.Adapter
+	swept []map[string]bool
+}
+
+func (a *sweepAdapter) SweepLeaders(live map[string]bool) { a.swept = append(a.swept, live) }
+
+// Grok leaders outlive their TUI, so every reconcile tick tells the adapter
+// which sessions are still live and it stops the rest.
+func TestReconcileSweepsLeadersOfEndedSessions(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	sw := &sweepAdapter{Adapter: s.Adapters[Fake]}
+	s.Adapters[Fake] = sw
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Sweep", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "fake"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sw.swept) == 0 || !sw.swept[len(sw.swept)-1][ses.ID] {
+		t.Fatalf("a live session must be in the sweep's live set: %v", sw.swept)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = 1 WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sw.swept[len(sw.swept)-1][ses.ID] {
+		t.Errorf("an ended session must not be in the live set: %v", sw.swept[len(sw.swept)-1])
+	}
+}
+
+// busyLeaderAdapter reports what the leader's push stream says about a session.
+type busyLeaderAdapter struct {
+	*adapter.Fake
+	busy bool
+}
+
+func (b *busyLeaderAdapter) LeaderBusy(string) bool { return b.busy }
+
+// A pane can read idle for a moment while the leader has already started a
+// queued turn; the leader's "working" keeps the session from being waiting.
+func TestLeaderBusyKeepsAnIdlePaneFromWaiting(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	bl := &busyLeaderAdapter{Fake: s.Adapters[Fake].(*adapter.Fake), busy: true}
+	s.Adapters[Fake] = bl
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "LeaderBusy", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Reconcile(ctx)
+	if got, _ := s.LatestSession(ctx, a.ID); got.Waiting {
+		t.Fatal("the leader says a turn is running, so the session is not waiting")
+	}
+	bl.busy = false
+	s.Reconcile(ctx)
+	if got, _ := s.LatestSession(ctx, a.ID); !got.Waiting {
+		t.Fatal("an idle pane and an idle leader is waiting")
+	}
+}
