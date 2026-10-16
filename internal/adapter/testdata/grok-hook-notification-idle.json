@@ -1,0 +1,17 @@
+{
+ "hookEventName": "notification",
+ "sessionId": "22222222-2222-4222-8222-222222222222",
+ "cwd": "<scratch>/work/B",
+ "workspaceRoot": "<scratch>/work/B",
+ "timestamp": "2026-10-16T14:42:06.643026+00:00",
+ "transcriptPath": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "notificationType": "idle_prompt",
+ "message": "Waiting for your next prompt",
+ "level": "info",
+ "hook_event_name": "Notification",
+ "session_id": "22222222-2222-4222-8222-222222222222",
+ "transcript_path": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "notification_type": "idle_prompt"
+}

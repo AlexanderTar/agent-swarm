@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -292,6 +291,35 @@ func codexAnswerText(inner string) (string, bool) {
 	return label, true
 }
 
+// grokAnswerPair is one "<question>"="<answer>" pair of grok's UserAnswered
+// message; both halves are JSON-style quoted strings.
+var grokAnswerPair = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"`)
+
+// grokAnswerText reads the answer for prompt out of grok's ask_user_question
+// result, `User has answered your questions: "<q>"="<a>", ... .` (SPIKE-52
+// TASK-1125). The pair whose question is prompt wins, else the first. "" when
+// the message carries no pair (the headless "No user is available" text).
+func grokAnswerText(msg, prompt string) string {
+	unquote := func(s string) string {
+		var out string
+		if json.Unmarshal([]byte(`"`+s+`"`), &out) != nil {
+			return s
+		}
+		return out
+	}
+	first := ""
+	for _, m := range grokAnswerPair.FindAllStringSubmatch(msg, -1) {
+		a := strings.TrimSpace(unquote(m[2]))
+		if capPrompt(unquote(m[1])) == prompt {
+			return a
+		}
+		if first == "" {
+			first = a
+		}
+	}
+	return first
+}
+
 // extractToolResponseText reads the answer text out of a question tool's
 // PostToolUse tool_response. A real claude AskUserQuestion result has the
 // shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
@@ -317,6 +345,10 @@ func extractToolResponseText(raw []byte, prompt string) string {
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err == nil {
+		if ua, ok := obj["UserAnswered"].(map[string]any); ok { // grok
+			msg, _ := ua["message"].(string)
+			return grokAnswerText(msg, prompt)
+		}
 		if answers, ok := obj["answers"].(map[string]any); ok {
 			if v, ok := answers[prompt]; ok {
 				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -385,8 +417,20 @@ func normalize(kind runtime.AgentKind, event string) string {
 		return "PostCompact"
 	case "stop":
 		return "Stop"
+	case "stopfailure":
+		return "StopFailure"
+	case "stopcancelled":
+		return "StopCancelled"
+	case "notification":
+		return "Notification"
 	}
 	return event
+}
+
+// endsTurn is true for the events that close an agent turn: Stop, and grok's
+// StopCancelled (user interrupt) and StopFailure (the model call failed).
+func endsTurn(ev string) bool {
+	return ev == "Stop" || ev == "StopCancelled" || ev == "StopFailure"
 }
 
 // isQuestionTool is the one list of native "ask the human" tools that a
@@ -411,6 +455,10 @@ func normalize(kind runtime.AgentKind, event string) string {
 //	  exception (swarm_ask kind:"question" stays available) rather than being refused.
 //	cursor AskQuestion: confirmed (Cursor staff, forum bug 161836) never to fire
 //	  PreToolUse/PostToolUse at all. Also not in this list, same exception as muse.
+//	grok ask_user_question: confirmed live 2026-10-16 (SPIKE-52 TASK-1125 Q3, fixtures
+//	  testdata/grok-hook-*-ask-user-question.json). A PreToolUse deny suppresses the card and
+//	  its reason reaches the model; a card answered in the terminal reports
+//	  tool_response.UserAnswered.message (grokAnswerText).
 //
 // Where a block is honored, a parented agent's question is relayed instead
 // (nativeQuestionRelay). Where the hook is absent or unconfirmed (cursor,
@@ -418,7 +466,7 @@ func normalize(kind runtime.AgentKind, event string) string {
 // swarm_ask stays available and Task 9 does not refuse it for these kinds.
 func isQuestionTool(name string) bool {
 	switch name {
-	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", asyncQuestionTool, "AskQuestion":
+	case "ask_question", "AskUserQuestion", "ask_user_question", "request_user_input", "experimental_request_user_input", asyncQuestionTool, "AskQuestion":
 		return true
 	}
 	return false
@@ -645,7 +693,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		}
 	}
 	// native advisor accounting reads the transcript on PostToolUse and Stop (§11.6)
-	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.Advisor != nil {
+	if (ev == "PostToolUse" || endsTurn(ev)) && in.TranscriptPath != "" && h.Advisor != nil {
 		if err := h.Advisor.ScanTranscript(ctx, s.ID, in.TranscriptPath); err != nil {
 			h.logf("advisor: transcript scan for %s: %v", s.ID, err)
 		}
@@ -661,7 +709,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		}
 	}
 	// a model or effort change in the transcript tail (claude, codex)
-	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.RT != nil {
+	if (ev == "PostToolUse" || endsTurn(ev)) && in.TranscriptPath != "" && h.RT != nil {
 		if mo, ok := a.(adapter.ModelObserver); ok {
 			if model, effort, ok := h.observeTranscriptModel(mo, in.TranscriptPath, in.ProviderSessionID); ok {
 				if _, err := h.RT.RecordObservedModel(ctx, s.ID, model, effort, "transcript"); err != nil {
@@ -676,7 +724,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	}
 	// every session records its context size at a real end of turn: a blocked
 	// Stop continues the turn and fires again, so it must not sample (or strike)
-	if h.RT != nil && ev == "Stop" && !d.Block && in.TranscriptPath != "" {
+	if h.RT != nil && endsTurn(ev) && !d.Block && in.TranscriptPath != "" {
 		if err := h.RT.SampleTranscript(ctx, s.ID, s.Kind, in.TranscriptPath); err != nil {
 			h.logf("hook: record context sample for %s: %v", s.ID, err)
 		}
@@ -728,28 +776,14 @@ func (h *Handler) inboxNoticeOrFallback(ctx context.Context, s *sessionRow) stri
 }
 
 // graphifyHint is the SessionStart line for the agent's active worktrees.
-// "" when there is nothing to say. A ForAgent failure is logged and the
-// hint skipped, never blocking the hook.
+// "" when there is nothing to say; a lookup failure is logged and skipped,
+// never blocking the hook.
 func (h *Handler) graphifyHint(ctx context.Context, s *sessionRow) string {
-	if h.RT == nil || h.RT.Worktree == nil || s.AgentID == "" {
-		return ""
-	}
-	wts, err := h.RT.Worktree.ForAgent(ctx, s.AgentID)
+	hint, err := h.RT.GraphifyHintFor(ctx, s.AgentID)
 	if err != nil {
 		h.logf("hook: graphify hint for %s: %v", s.AgentID, err)
-		return ""
 	}
-	var paths []string
-	var ready []bool
-	for _, wt := range wts {
-		if wt.State != "active" {
-			continue
-		}
-		paths = append(paths, wt.Path)
-		_, statErr := os.Stat(filepath.Join(wt.Path, "graphify-out", "graph.json"))
-		ready = append(ready, statErr == nil)
-	}
-	return runtime.GraphifyHint(paths, ready)
+	return hint
 }
 
 func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.Adapter, s *sessionRow, ev string, in adapter.HookInput) (adapter.HookDecision, error) {
@@ -760,6 +794,16 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				Block:  true,
 				Reason: "[swarm] Forked sessions are disabled. Work must run within the assigned Swarm session.",
 			}, nil
+		}
+
+		if runtime.StartContextDropped(s.Kind) {
+			// A compacted session arms the notice the next tool hook delivers.
+			if in.Source == "compact" {
+				if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 1 WHERE id = ?`, s.ID); err != nil {
+					return adapter.HookDecision{}, err
+				}
+			}
+			return adapter.HookDecision{}, nil
 		}
 
 		var parts []string
@@ -778,7 +822,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{Context: strings.Join(parts, " "), SessionTitle: s.AgentName}, nil
 
 	case "PreCompact":
-		if kind == runtime.Codex || kind == runtime.Cursor || s.Kind == runtime.Codex || s.Kind == runtime.Cursor {
+		if kind == runtime.Codex || kind == runtime.Cursor || s.Kind == runtime.Codex || s.Kind == runtime.Cursor || s.Kind == runtime.Grok {
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 1 WHERE id = ?`, s.ID); err != nil {
 				return adapter.HookDecision{}, err
 			}
@@ -819,6 +863,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			if err := h.RT.ResolveAnsweredInTerminal(ctx, s.AgentID); err != nil {
 				h.logf("hook: close rows after human prompt for %s: %v", s.ID, err)
 			}
+		}
+		if runtime.StartContextDropped(s.Kind) {
+			return adapter.HookDecision{}, nil
 		}
 		if s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())
@@ -944,13 +991,15 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			if ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt); bound {
 				// Hold the native tool to the stored options word for word: an
 				// agent that invents labels from decision codes gets its input
-				// rewritten (Claude) or the call denied (Codex, agy).
+				// rewritten (Claude) or the call denied (Codex, agy, grok).
 				np, haveNP := h.RT.NativePromptForRef(ctx, ref)
 				haveNP = haveNP && len(np.Options) > 0
-				if haveNP && (kind == runtime.Codex || kind == runtime.Agy) && !slices.Equal(options, np.Options) {
+				if haveNP && (kind == runtime.Codex || kind == runtime.Agy || kind == runtime.Grok) && !slices.Equal(options, np.Options) {
 					return adapter.HookDecision{Block: true, Reason: "[swarm] Use native_prompt's options word for word: " +
 						strings.Join(np.Options, " / ") + ". Ask again with exactly those labels."}, nil
 				}
+				// Not denied for grok: a daemon approval needs its card, because
+				// only a terminal answer is native_answer evidence.
 				_, _ = h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
 				if haveNP && kind == runtime.Claude && in.ToolName == "AskUserQuestion" {
 					if upd, changed := rewriteClaudeQuestion(in.RawToolInput, np); changed {
@@ -958,10 +1007,17 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 					}
 				}
 			} else {
-				_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
+				req, _ := h.RT.AskQuestion(ctx, s.ID, prompt, options)
+				if d, denied := grokQuestionDeny(s.Kind, req.ID); denied {
+					return d, nil
+				}
 			}
 		}
 
+		if runtime.StartContextDropped(s.Kind) {
+			// The agent is working: this is where its notices can land.
+			return h.toolHookNotices(ctx, s, nil)
+		}
 		return adapter.HookDecision{}, nil
 
 	case "PermissionRequest":
@@ -1000,36 +1056,22 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
-		gaveNotice := false
-		if s.NeedsCompaction {
-			parts = append(parts, runtime.CompactionNotice())
-			gaveNotice = true
-			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
+		return h.toolHookNotices(ctx, s, parts)
+
+	case "StopCancelled", "StopFailure":
+		// A cancelled or failed turn cannot be blocked; it only closes the turn.
+		if s.StopBlocks > 0 {
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = 0 WHERE id = ?`, s.ID); err != nil {
 				return adapter.HookDecision{}, err
 			}
 		}
-		canNotice := s.LastNoticeAt == nil || h.now().Sub(*s.LastNoticeAt) >= noticeGap
-		if s.Pending > 0 && canNotice {
-			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
-			gaveNotice = true
-		}
-		if len(parts) == 0 {
-			return adapter.HookDecision{}, nil
-		}
-		// Only a rate-limited notice (compaction/pending) stamps noticeAt --
-		// the native-answer next step above is neither rate-limited nor a
-		// reason to suppress a later pending-inbox notice.
-		if gaveNotice {
-			h.mu.Lock()
-			if h.noticeAt == nil {
-				h.noticeAt = make(map[string]time.Time)
-			}
-			h.noticeAt[s.ID] = h.now()
-			h.mu.Unlock()
-		}
-		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
+		return adapter.HookDecision{}, nil
 
 	case "Stop":
+		// grok fires a second Stop at shutdown; it ends no turn.
+		if in.Reason == "shutdown" {
+			return adapter.HookDecision{}, nil
+		}
 		if s.State.Pausing() && !s.HasHandoff {
 			reason := runtime.PausePreservationNotice(s.AgentName, s.ItemKey)
 			if s.Handoff {
@@ -1058,7 +1100,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				return adapter.HookDecision{Block: true, Reason: h.inboxNoticeOrFallback(ctx, s)}, nil
 			}
 		}
-		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {
+		// stopHookActive (grok) marks the re-fire after our own block: unread mail
+		// blocks once per turn.
+		if s.Pending > 0 && s.StopBlocks < maxStopBlocks && !in.StopHookActive {
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = stop_blocks + 1 WHERE id = ?`, s.ID); err != nil {
 				return adapter.HookDecision{}, err
 			}
@@ -1076,6 +1120,52 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 	}
 
 	return adapter.HookDecision{}, nil
+}
+
+// grokQuestionDeny turns a grok agent's recorded question into a PreToolUse
+// deny: the card would swallow the wake paste, so the question goes to Needs
+// you and the model is told to end its turn (the answer returns as a Swarm
+// message). Not denied when no row opened (reqID ""), leaving the card to show.
+func grokQuestionDeny(kind runtime.AgentKind, reqID string) (adapter.HookDecision, bool) {
+	if kind != runtime.Grok || reqID == "" {
+		return adapter.HookDecision{}, false
+	}
+	return adapter.HookDecision{Block: true, Reason: fmt.Sprintf("[swarm] Your question went to the user as request %s. "+
+		"Do not ask again or use another question tool: end your turn now. The answer reaches you as a Swarm message; "+
+		"call swarm_sync when you are woken.", reqID)}, true
+}
+
+// toolHookNotices adds the compaction and pending-inbox notices to parts (a
+// PreToolUse or PostToolUse decision's context) and stamps the rate limit.
+func (h *Handler) toolHookNotices(ctx context.Context, s *sessionRow, parts []string) (adapter.HookDecision, error) {
+	gaveNotice := false
+	if s.NeedsCompaction {
+		parts = append(parts, runtime.CompactionNotice())
+		gaveNotice = true
+		if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
+			return adapter.HookDecision{}, err
+		}
+	}
+	canNotice := s.LastNoticeAt == nil || h.now().Sub(*s.LastNoticeAt) >= noticeGap
+	if s.Pending > 0 && canNotice {
+		parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+		gaveNotice = true
+	}
+	if len(parts) == 0 {
+		return adapter.HookDecision{}, nil
+	}
+	// Only a rate-limited notice (compaction/pending) stamps noticeAt --
+	// a native-answer next step already in parts is neither rate-limited nor a
+	// reason to suppress a later pending-inbox notice.
+	if gaveNotice {
+		h.mu.Lock()
+		if h.noticeAt == nil {
+			h.noticeAt = make(map[string]time.Time)
+		}
+		h.noticeAt[s.ID] = h.now()
+		h.mu.Unlock()
+	}
+	return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 }
 
 // rewriteClaudeQuestion returns tool_input with questions[0] (the bound

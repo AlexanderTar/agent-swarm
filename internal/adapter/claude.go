@@ -555,6 +555,12 @@ func (c *Claude) HookOutput(event string, d HookDecision) ([]byte, error) {
 }
 
 func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
+	return parseClaudeHook(event, stdin)
+}
+
+// parseClaudeHook reads the Claude-shaped hook stdin; grok sends the same
+// snake_case keys beside its own camelCase ones, so Grok.ParseHook builds on it.
+func parseClaudeHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
 		SessionID      string          `json:"session_id"`
 		ToolName       string          `json:"tool_name"`

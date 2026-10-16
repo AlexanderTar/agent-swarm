@@ -163,6 +163,25 @@ func GraphifyHint(paths []string, ready []bool) string {
 	return strings.Join(out, " ")
 }
 
+// grokKickoffNote rides on a grok agent's kickoff. Grok's `/fork` cannot be
+// disabled, so the ban is spelled out (SPIKE-52 TASK-1129 decision 13).
+const grokKickoffNote = "Grok: the superpowers skills are installed natively; invoke them with the skill tool. " +
+	"Never use /fork or --fork-session: a fork leaves Swarm's tracking. Delegate with swarm_spawn instead."
+
+// KindKickoffNote is the extra kickoff text a kind needs, or "".
+func KindKickoffNote(k AgentKind) string {
+	if k == Grok {
+		return grokKickoffNote
+	}
+	return ""
+}
+
+// StartContextDropped is true for a kind whose SessionStart and
+// UserPromptSubmit hook context never reaches the model (grok, SPIKE-52
+// TASK-1125 Q2). Its inbox and compaction notices ride the tool hooks, and
+// what SessionStart would say (the graphify hint) rides the kickoff.
+func StartContextDropped(k AgentKind) bool { return k == Grok }
+
 // ErrBriefTooLong is the §17.3 copy for an over-long brief.
 const ErrBriefTooLong = "Brief too long (max 6000 characters). Move detail into an artifact and reference it."
 

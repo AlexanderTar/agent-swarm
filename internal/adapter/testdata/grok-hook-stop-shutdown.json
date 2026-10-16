@@ -1,0 +1,16 @@
+{
+ "hookEventName": "stop",
+ "sessionId": "01a1452d-c2c5-7c41-b2b8-25cef017d70d",
+ "cwd": "<scratch>/work/C",
+ "workspaceRoot": "<scratch>/work/C",
+ "timestamp": "2026-10-16T14:46:37.190390+00:00",
+ "transcriptPath": "/grok/sessions/w/01a1452d-c2c5-7c41-b2b8-25cef017d70d/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "reason": "shutdown",
+ "stopHookActive": false,
+ "hook_event_name": "Stop",
+ "session_id": "01a1452d-c2c5-7c41-b2b8-25cef017d70d",
+ "transcript_path": "/grok/sessions/w/01a1452d-c2c5-7c41-b2b8-25cef017d70d/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "stop_hook_active": false
+}

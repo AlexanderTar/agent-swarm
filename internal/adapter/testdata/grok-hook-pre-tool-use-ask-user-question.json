@@ -1,0 +1,52 @@
+{
+ "hookEventName": "pre_tool_use",
+ "sessionId": "22222222-2222-4222-8222-222222222222",
+ "cwd": "<scratch>/work/B",
+ "workspaceRoot": "<scratch>/work/B",
+ "timestamp": "2026-10-16T14:43:50.762100+00:00",
+ "transcriptPath": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "toolName": "ask_user_question",
+ "toolUseId": "call-abc7a3b2-f1f0-4372-8923-24973e567cf5-2",
+ "toolInput": {
+  "questions": [
+   {
+    "question": "Tea or coffee?",
+    "options": [
+     {
+      "label": "Tea",
+      "description": "Tea"
+     },
+     {
+      "label": "Coffee",
+      "description": "Coffee"
+     }
+    ]
+   }
+  ]
+ },
+ "toolInputTruncated": false,
+ "hook_event_name": "PreToolUse",
+ "session_id": "22222222-2222-4222-8222-222222222222",
+ "transcript_path": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "tool_name": "ask_user_question",
+ "tool_input": {
+  "questions": [
+   {
+    "question": "Tea or coffee?",
+    "options": [
+     {
+      "label": "Tea",
+      "description": "Tea"
+     },
+     {
+      "label": "Coffee",
+      "description": "Coffee"
+     }
+    ]
+   }
+  ]
+ },
+ "tool_use_id": "call-abc7a3b2-f1f0-4372-8923-24973e567cf5-2"
+}

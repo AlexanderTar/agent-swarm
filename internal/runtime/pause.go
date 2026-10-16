@@ -269,6 +269,9 @@ type pausingRow struct {
 	// repointed from a predecessor (repointRequestsTx) or left open by an
 	// unmatched hook reply; neither means a dialog is on screen.
 	OpenQuestion bool
+	// OpenBoundQuestion: OpenQuestion for a row bound to an approval, whose
+	// card stays on screen even for grok (which denies unbound questions).
+	OpenBoundQuestion bool
 }
 
 // pausingSessions loads every session in a pausing state (§10.5).
@@ -277,7 +280,9 @@ func (s *Store) pausingSessions(ctx context.Context) ([]pausingRow, error) {
 		ses.pause_deadline_at, ses.attempt,
 		(SELECT MAX(created_at) FROM checkpoints c WHERE c.session_id = ses.id AND c.kind = 'handoff'),
 		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open'
-			AND q.created_at >= ses.started_at)
+			AND q.created_at >= ses.started_at),
+		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open'
+			AND q.created_at >= ses.started_at AND json_extract(q.binding_json, '$.ref') IS NOT NULL)
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE ses.state IN ('pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -291,7 +296,7 @@ func (s *Store) pausingSessions(ctx context.Context) ([]pausingRow, error) {
 		var deadline sql.NullInt64
 		var handoff sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.TmuxName, &kind, &state,
-			&deadline, &r.Attempt, &handoff, &r.OpenQuestion); err != nil {
+			&deadline, &r.Attempt, &handoff, &r.OpenQuestion, &r.OpenBoundQuestion); err != nil {
 			return nil, err
 		}
 		r.AgentKind, r.State = AgentKind(kind), SessionState(state)
@@ -325,7 +330,8 @@ func (s *Store) TickPause(ctx context.Context) error {
 				return err
 			}
 		case r.State == PauseRequested && r.InterruptedAt == nil && r.OpenQuestion &&
-			questionHookKinds[r.AgentKind] && !s.getDialogDismissed(r.SessionID):
+			(questionDialogKinds(r.AgentKind) || r.AgentKind == Grok && r.OpenBoundQuestion) &&
+			!s.getDialogDismissed(r.SessionID):
 			if err := s.dismissQuestionDialog(ctx, r); err != nil {
 				return err
 			}
@@ -369,13 +375,16 @@ func (s *Store) interrupt(ctx context.Context, r pausingRow) error {
 }
 
 // dismissQuestionDialog closes the native question dialog (Claude
-// AskUserQuestion, Codex request_user_input, agy ask_question) a
+// AskUserQuestion, Codex request_user_input, agy ask_question, grok's bound
+// ask_user_question) a
 // pause_requested agent is blocked in, so it returns to its prompt and the
 // wake loop can deliver the pause/handoff control message instead of the
 // pause stalling to its deadline. It sends the interrupt keys once per
 // session and withdraws the question rows the dismissal orphans (no
 // PostToolUse fires), which clears the bound approval's native_pending; the
-// approval itself stays open for the successor to re-ask.
+// approval itself stays open for the successor to re-ask. For grok only rows
+// bound to an approval are withdrawn: an unbound one is a live Needs-you
+// question with no card.
 func (s *Store) dismissQuestionDialog(ctx context.Context, r pausingRow) error {
 	ad, ok := s.Adapters[r.AgentKind]
 	if !ok {
@@ -390,7 +399,8 @@ func (s *Store) dismissQuestionDialog(ctx context.Context, r pausingRow) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM requests
 			WHERE session_id = ? AND kind = 'question' AND state = 'open'
-			AND created_at >= (SELECT started_at FROM sessions WHERE id = ?)`, r.SessionID, r.SessionID)
+			AND created_at >= (SELECT started_at FROM sessions WHERE id = ?)
+			AND (? OR json_extract(binding_json, '$.ref') IS NOT NULL)`, r.SessionID, r.SessionID, r.AgentKind != Grok)
 		if err != nil {
 			return err
 		}

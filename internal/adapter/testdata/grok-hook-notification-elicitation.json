@@ -1,0 +1,17 @@
+{
+ "hookEventName": "notification",
+ "sessionId": "01a144e9-14fb-79b1-b0c9-deb1dac31129",
+ "cwd": "<probe>",
+ "workspaceRoot": "<probe>",
+ "timestamp": "2026-10-16T13:31:34.167088+00:00",
+ "transcriptPath": "/grok/sessions/w/01a144e9-14fb-79b1-b0c9-deb1dac31129/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "notificationType": "elicitation_dialog",
+ "message": "User question requested",
+ "level": "info",
+ "hook_event_name": "Notification",
+ "session_id": "01a144e9-14fb-79b1-b0c9-deb1dac31129",
+ "transcript_path": "/grok/sessions/w/01a144e9-14fb-79b1-b0c9-deb1dac31129/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "notification_type": "elicitation_dialog"
+}

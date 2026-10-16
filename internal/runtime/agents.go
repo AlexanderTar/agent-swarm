@@ -159,6 +159,10 @@ func loginCommand(k AgentKind) string {
 		return "agy login"
 	case Cursor:
 		return "cursor-agent login"
+	case Muse:
+		return "muse login"
+	case Grok:
+		return "grok login"
 	}
 	return string(k) + " login"
 }
@@ -1514,6 +1518,16 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 	kickoff += reminder
+	if note := KindKickoffNote(a.Kind); note != "" {
+		kickoff += " " + note
+	}
+	if StartContextDropped(a.Kind) {
+		if hint, err := s.GraphifyHintFor(ctx, a.ID); err != nil {
+			s.logf("start session %s: graphify hint: %v", a.Name, err)
+		} else if hint != "" {
+			kickoff += " " + hint
+		}
+	}
 	// Re-read a: the caller's copy may predate a low-token toggle.
 	cur, err := s.agentByID(ctx, a.ID)
 	if err != nil {
@@ -1523,6 +1537,8 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		s.logf("start session %s: low-token lookup: %v", a.Name, err)
 	} else if on && resume && a.Kind == Muse {
 		// Muse's resume drops the kickoff, so the guidance rides as a note.
+		// Grok needs no such branch: its resume keeps the positional kickoff
+		// (probed 2026-10-16; TestGrokResumeKeepsLowTokenBlockOnTheKickoff).
 		if err := s.noteLowTokenOn(ctx, a); err != nil {
 			s.logf("start session %s: low-token note: %v", a.Name, err)
 		}
@@ -1560,6 +1576,8 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 			spec.LowTokenCap = NativeCapTokens(string(a.Kind))
 			if spec.LowTokenCap > 0 && a.Kind == Muse {
 				// Muse reports no window of its own; this is Swarm's launch limit.
+				// Grok does: signals.json carries contextWindowTokens, so the
+				// cap stays only the compaction knob (TestGrokLowTokenLaunchSetsCapButNotTheWindow).
 				if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET context_window = ? WHERE id = ?`, spec.LowTokenCap, ses.ID); err != nil {
 					s.logf("start session %s: muse window: %v", a.Name, err)
 				}
@@ -1897,7 +1915,9 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 
 // discoverProviderSession is the muse-shaped fallback for kinds with no hook
 // surface to populate ProviderSessionID via ParseHook (spec: DiscoverSession
-// on the Adapter interface). It is strictly best-effort: startup correctness
+// on the Adapter interface). Grok needs no branch of its own: its hooks carry
+// the id, and Grok.DiscoverSession (the id Launch minted) is the same generic
+// seam, covered by TestGrokDiscoverSession. It is strictly best-effort: startup correctness
 // must never depend on it, so every failure (no matching pane, no match in
 // the adapter's own registry, a write error) is logged and swallowed rather
 // than returned, and it never runs at all once a hook path has already

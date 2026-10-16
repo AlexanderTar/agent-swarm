@@ -1,0 +1,21 @@
+{
+ "hookEventName": "stop",
+ "sessionId": "22222222-2222-4222-8222-222222222222",
+ "cwd": "<scratch>/work/B",
+ "workspaceRoot": "<scratch>/work/B",
+ "timestamp": "2026-10-16T14:41:06.531595+00:00",
+ "transcriptPath": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "promptId": "bf5efb7c-9a32-4eea-bc15-82c61ae52ccc",
+ "permissionMode": "bypassPermissions",
+ "reason": "end_turn",
+ "stopHookActive": false,
+ "lastAssistantMessage": "server pid 71117 SWARM_SESSION=sesA-111\nPROBE-PRE-CODEWORD: pelican\nPROBE-POST-CODEWORD: walrus",
+ "backgroundTasks": [],
+ "sessionCrons": [],
+ "hook_event_name": "Stop",
+ "session_id": "22222222-2222-4222-8222-222222222222",
+ "transcript_path": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "stop_hook_active": false,
+ "last_assistant_message": "server pid 71117 SWARM_SESSION=sesA-111\nPROBE-PRE-CODEWORD: pelican\nPROBE-POST-CODEWORD: walrus"
+}

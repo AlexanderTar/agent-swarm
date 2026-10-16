@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 const (
@@ -18,12 +20,21 @@ const (
 	timeout  = 1500 * time.Millisecond
 )
 
+// usage lists every agent kind, so a new kind shows up without editing a string.
+func usage() string {
+	names := make([]string, 0, len(kinds.AgentKinds)+1)
+	for _, k := range kinds.AgentKinds {
+		names = append(names, string(k))
+	}
+	return "usage: swarm hook <" + strings.Join(append(names, "fake"), "|") + "> <event>"
+}
+
 // Run is the hook client. It never blocks or fails the agent: any problem is a
 // silent exit 0 (§11.2). A hook in a session the user started by hand sees no
 // SWARM_SESSION and returns in well under 50 ms (§23.2 scenario 15).
 func Run(args []string, stdin io.Reader, stdout io.Writer, env func(string) string, client *http.Client) int {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: swarm hook <claude|codex|agy|cursor|fake> <event>")
+		fmt.Fprintln(os.Stderr, usage())
 		return 2
 	}
 	agent, event := args[0], args[1]

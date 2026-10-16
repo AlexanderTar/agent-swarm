@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 // envFunc builds the os.Getenv stand-in from a map.
@@ -169,5 +171,16 @@ func TestNoDaemonURLAllowsWithoutAnyRequest(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", out.String())
+	}
+}
+
+func TestUsageNamesEveryAgentKind(t *testing.T) {
+	for _, k := range kinds.AgentKinds {
+		if !strings.Contains(usage(), string(k)) {
+			t.Errorf("usage %q does not list %s", usage(), k)
+		}
+	}
+	if !strings.Contains(usage(), "fake") {
+		t.Errorf("usage %q does not list fake", usage())
 	}
 }

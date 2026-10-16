@@ -1,0 +1,19 @@
+{
+ "hookEventName": "stop_failure",
+ "sessionId": "01a144ec-43c3-7af2-9998-e4ea7728067b",
+ "cwd": "<probe>",
+ "workspaceRoot": "<probe>",
+ "timestamp": "2026-10-16T13:35:00.035248+00:00",
+ "transcriptPath": "/grok/sessions/w/01a144ec-43c3-7af2-9998-e4ea7728067b/updates.jsonl",
+ "promptId": "8eb85787-3f42-4088-8b9f-6e1c7abcacee",
+ "permissionMode": "bypassPermissions",
+ "error": "rate_limit",
+ "errorDetails": "API error (status 429 Too Many Requests): subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window \u2014 tokens (actual/limit): 619434/600000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok",
+ "lastAssistantMessage": "Turn failed: API error (status 429 Too Many Requests): subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window \u2014 tokens (actual/limit): 619434/600000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok",
+ "hook_event_name": "StopFailure",
+ "session_id": "01a144ec-43c3-7af2-9998-e4ea7728067b",
+ "transcript_path": "/grok/sessions/w/01a144ec-43c3-7af2-9998-e4ea7728067b/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "last_assistant_message": "Turn failed: API error (status 429 Too Many Requests): subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window \u2014 tokens (actual/limit): 619434/600000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok",
+ "error_details": "API error (status 429 Too Many Requests): subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window \u2014 tokens (actual/limit): 619434/600000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok"
+}
