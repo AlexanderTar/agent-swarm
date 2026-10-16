@@ -478,3 +478,14 @@ func TestMuseStrikesOnlyAtEndOfTurn(t *testing.T) {
 		t.Fatalf("budget ops = %v, want one budget:%s", keys, ses.ID)
 	}
 }
+
+// Grok compacts at a percentage of its 256k window; Swarm's low-token cap is
+// 60% of it, which the adapter turns into GROK_AUTO_COMPACT_THRESHOLD_PERCENT.
+func TestNativeCapTokensGrok(t *testing.T) {
+	if got := NativeCapTokens("grok"); got != 153600 {
+		t.Fatalf("NativeCapTokens(grok) = %d, want 153600 (60%% of 256000)", got)
+	}
+	if got, want := BackstopTokens("grok"), 153600*3/2; got != want {
+		t.Fatalf("BackstopTokens(grok) = %d, want %d", got, want)
+	}
+}
