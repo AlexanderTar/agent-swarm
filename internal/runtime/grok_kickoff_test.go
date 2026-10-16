@@ -16,6 +16,13 @@ func TestKindKickoffNote(t *testing.T) {
 	if !strings.Contains(note, "never") && !strings.Contains(note, "Never") {
 		t.Errorf("grok kickoff note must forbid /fork: %q", note)
 	}
+	// grok 1.0.60 has no skill tool: agents load a skill by reading its SKILL.md.
+	if !strings.Contains(note, "read_file") || !strings.Contains(note, "SKILL.md") {
+		t.Errorf("grok kickoff note must say to read SKILL.md with read_file: %q", note)
+	}
+	if strings.Contains(note, "with the skill tool") {
+		t.Errorf("grok has no skill tool: %q", note)
+	}
 	for _, k := range []AgentKind{Claude, Codex, Agy, Cursor, Muse, Fake} {
 		if got := KindKickoffNote(k); got != "" {
 			t.Errorf("KindKickoffNote(%s) = %q, want none", k, got)
