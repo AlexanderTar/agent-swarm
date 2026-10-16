@@ -63,10 +63,12 @@ func TestGrokSessionUsageRunsWithGrokHome(t *testing.T) {
 }
 
 // fakeGrokBilling serves the CLI billing proxy from a fixture file and records
-// the request's auth headers. status != 0 answers with that status instead.
+// the request's auth headers. status != 0 answers with that status instead;
+// accept != "" answers 401 to any other bearer token.
 type fakeGrokBilling struct {
 	billing string
 	status  int
+	accept  string
 	calls   int
 	auth    string
 	tokAuth string
@@ -84,6 +86,10 @@ func (f *fakeGrokBilling) server(t *testing.T) *httptest.Server {
 		f.auth, f.tokAuth, f.path = r.Header.Get("Authorization"), r.Header.Get("x-xai-token-auth"), r.URL.RequestURI()
 		if f.status != 0 {
 			w.WriteHeader(f.status)
+			return
+		}
+		if f.accept != "" && f.auth != "Bearer "+f.accept {
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		_, _ = w.Write(body)
@@ -168,10 +174,9 @@ func TestGrokPrefersTheSuperGrokEntry(t *testing.T) {
 	}
 }
 
-// No login, an expired token or a rejected one is an error the menubar shows;
-// nothing is called that could start a sign-in, and the token is never
-// refreshed here (grok's refresh token is single-use).
-func TestGrokWithoutAUsableTokenNeverCallsBilling(t *testing.T) {
+// No login, or a token the server rejects with no way to renew it, is an error
+// the menubar shows. Nothing that could start a sign-in runs.
+func TestGrokWithoutAUsableTokenIsAnError(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		paths  func(t *testing.T) []string
@@ -183,23 +188,93 @@ func TestGrokWithoutAUsableTokenNeverCallsBilling(t *testing.T) {
 		{"no grok entry", func(t *testing.T) []string {
 			return []string{writeGrokAuth(t, map[string]map[string]any{"https://unrelated.example::abc": grokEntry("x", grokNow.Add(time.Hour))})}
 		}, 0, 0, "not signed in"},
-		{"expired", func(t *testing.T) []string {
-			return []string{writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("old", grokNow.Add(-time.Minute))})}
-		}, 0, 0, "expired"},
-		{"rejected", func(t *testing.T) []string {
-			return []string{writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("bad", grokNow.Add(time.Hour))})}
+		{"rejected, no refresh token", func(t *testing.T) []string {
+			e := grokEntry("bad", grokNow.Add(time.Hour))
+			delete(e, "refresh_token")
+			return []string{writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": e})}
 		}, http.StatusUnauthorized, 1, "rejected"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fake := &fakeGrokBilling{billing: "testdata/grok-billing.json", status: c.status}
-			_, _, err := newGrok(fake.server(t), c.paths(t)...).Fetch(context.Background())
+			g := newGrok(fake.server(t), c.paths(t)...)
+			refreshed := 0
+			g.Refresh = func(context.Context, string) error { refreshed++; return nil }
+			_, _, err := g.Fetch(context.Background())
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err %v, want it to say %q", err, c.want)
 			}
-			if fake.calls != c.calls {
-				t.Fatalf("billing called %d times, want %d", fake.calls, c.calls)
+			if fake.calls != c.calls || refreshed != 0 {
+				t.Fatalf("billing called %d times (want %d), refresh %d times (want 0)", fake.calls, c.calls, refreshed)
 			}
 		})
+	}
+}
+
+// The server keeps accepting a token for a while past its expires_at, so an
+// expired-looking token is still tried rather than reported.
+func TestGrokTriesATokenPastItsExpiry(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(-time.Minute))})
+	meters, _, err := newGrok(fake.server(t), auth).Fetch(context.Background())
+	if err != nil || len(meters) != 1 {
+		t.Fatalf("meters %+v err %v, want the billing meter", meters, err)
+	}
+}
+
+// A rejected token is renewed by grok itself (`grok models` refreshes the
+// cached login silently under grok's own lock, live-verified 2026-10-16), in
+// the grok home the token came from, and billing is tried once more.
+func TestGrokRejectedTokenIsRenewedByGrokOnce(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json", accept: "tok-new"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok-old", grokNow.Add(-time.Hour))})
+	g := newGrok(fake.server(t), filepath.Join(t.TempDir(), "auth.json"), auth)
+	var homes []string
+	g.Refresh = func(_ context.Context, home string) error {
+		homes = append(homes, home)
+		raw, _ := json.Marshal(map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok-new", grokNow.Add(6*time.Hour))})
+		return os.WriteFile(auth, raw, 0o600)
+	}
+	meters, _, err := g.Fetch(context.Background())
+	if err != nil || len(meters) != 1 || meters[0].UsedPct != 1.0 {
+		t.Fatalf("meters %+v err %v, want the billing meter after the renewal", meters, err)
+	}
+	if want := []string{filepath.Dir(auth)}; !reflect.DeepEqual(homes, want) {
+		t.Fatalf("refresh ran in %v, want %v", homes, want)
+	}
+	if fake.calls != 2 {
+		t.Fatalf("billing called %d times, want 2", fake.calls)
+	}
+}
+
+func TestGrokStillRejectedAfterRenewalIsAnError(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json", status: http.StatusUnauthorized}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(time.Hour))})
+	g := newGrok(fake.server(t), auth)
+	refreshed := 0
+	g.Refresh = func(context.Context, string) error { refreshed++; return nil }
+	if _, _, err := g.Fetch(context.Background()); err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("err %v, want rejected", err)
+	}
+	if refreshed != 1 || fake.calls != 2 {
+		t.Fatalf("refresh %d times, billing %d times; want 1 and 2", refreshed, fake.calls)
+	}
+}
+
+func TestGrokRefreshRunsGrokModelsInThatHome(t *testing.T) {
+	var gotEnv map[string]string
+	var gotArgs []string
+	run := func(_ context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+		gotEnv, gotArgs = env, append([]string{name}, args...)
+		return nil, nil
+	}
+	if err := GrokRefresh(run)(context.Background(), "/u/.grok"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"grok", "models"}; !reflect.DeepEqual(gotArgs, want) {
+		t.Fatalf("argv %v want %v", gotArgs, want)
+	}
+	if gotEnv["GROK_HOME"] != "/u/.grok" {
+		t.Fatalf("GROK_HOME %q", gotEnv["GROK_HOME"])
 	}
 }
 

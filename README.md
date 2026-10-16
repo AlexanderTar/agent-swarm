@@ -109,7 +109,7 @@ To show 5h/weekly usage in the menu bar, the daemon reads most agents' own login
 | Codex | — reads its own CLI locally, no keychain | — |
 | agy | — reads `~/.gemini/antigravity-cli/antigravity-oauth-token` directly, no keychain | — |
 | Muse | — no keychain at all, see below | — |
-| Grok | — no keychain: reads the weekly SuperGrok limit (`_x.ai/billing`) over a short-lived `grok agent stdio`, signed in with its own `auth.json`; per-session tokens and cost come from `grok usage`, and an exhausted quota seen in a session shows as a full meter | — |
+| Grok | — no keychain: reads the weekly SuperGrok limit from grok's CLI billing API with the token grok caches in `auth.json` (no grok process; a rejected token is renewed by running `grok models`); per-session tokens and cost come from `grok usage`, and an exhausted quota seen in a session shows as a full meter | — |
 
 Claude's and Cursor's items are created with the default `apple-tool:` keychain partition, so `security` (partition `apple-tool:`) can read them silently — clicking Allow once elsewhere is enough.
 

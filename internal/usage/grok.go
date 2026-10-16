@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,12 +79,15 @@ func GrokSessionUsage(ctx context.Context, run execx.RunnerEnv, swarmHome, sessi
 // figure as the TUI's /usage, and how CodexBar and the other usage menubars read
 // it. creditUsagePercent is the percent used and currentPeriod.end the reset.
 //
-// It never starts grok: an earlier version ran `grok agent stdio` and called
-// authenticate cached_token, and with no usable auth.json grok answers that
-// with its browser sign-in, on every refresh (CHORE-104). It never refreshes
-// the token either: the refresh token is single-use and belongs to grok, which
-// renews it whenever a grok process starts. An expired token is an error until
-// then.
+// It never asks grok to sign in: an earlier version ran `grok agent stdio` and
+// called authenticate cached_token, and with no usable auth.json grok answers
+// that with its browser sign-in, on every refresh (CHORE-104). Nor does it
+// refresh the token itself: the refresh token is single-use and belongs to
+// grok. The server keeps accepting a token for a while past its expires_at, so
+// the token is always tried; only when billing rejects it does Refresh let
+// grok renew it (`grok models` does so silently under grok's own lock,
+// live-verified 2026-10-16), and billing is tried once more. Refresh runs only
+// for a login that has a refresh token, so grok never falls into its sign-in.
 //
 // A free account has no percentage and no period, so there is no meter; then
 // the last exhaustion a hook saw (GrokExhaustion) is reported as a 100% meter,
@@ -91,8 +95,9 @@ func GrokSessionUsage(ctx context.Context, run execx.RunnerEnv, swarmHome, sessi
 type Grok struct {
 	BaseURL    string // "https://cli-chat-proxy.grok.com" in production
 	HTTP       *http.Client
-	AuthPaths  []string        // auth.json files tried in order; empty skips billing (exhaustion only)
-	Exhaustion *GrokExhaustion // nil: no fallback record
+	AuthPaths  []string                                         // auth.json files tried in order; empty skips billing (exhaustion only)
+	Refresh    func(ctx context.Context, grokHome string) error // lets grok renew a rejected token; nil never renews
+	Exhaustion *GrokExhaustion                                  // nil: no fallback record
 	Now        func() time.Time
 }
 
@@ -104,6 +109,16 @@ const GrokBillingURL = "https://cli-chat-proxy.grok.com"
 // ~/.grok/auth.json itself, so the meter works before that link exists.
 func GrokAuthPaths(swarmHome, userHome string) []string {
 	return []string{filepath.Join(grokhome.Dir(swarmHome), "auth.json"), filepath.Join(userHome, ".grok", "auth.json")}
+}
+
+// GrokRefresh renews grok's cached login by running `grok models` in grokHome:
+// any grok process renews an expired token at startup, and this one needs no
+// session and no terminal.
+func GrokRefresh(run execx.RunnerEnv) func(ctx context.Context, grokHome string) error {
+	return func(ctx context.Context, grokHome string) error {
+		_, err := run(ctx, map[string]string{"GROK_HOME": grokHome}, grokhome.Bin, "models")
+		return err
+	}
 }
 
 func (g *Grok) now() time.Time {
@@ -137,14 +152,20 @@ func (g *Grok) Fetch(ctx context.Context) ([]Meter, string, error) {
 
 // grokAuthEntry is the part of an auth.json entry the meter needs.
 type grokAuthEntry struct {
-	Key       string `json:"key"`
-	ExpiresAt string `json:"expires_at"`
+	Key          string `json:"key"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// grokLogin is the token found and the grok home whose auth.json holds it.
+type grokLogin struct {
+	token, home string
+	renewable   bool
 }
 
 // grokToken returns the first grok login found in g.AuthPaths. Entries are
 // keyed by OIDC scope: the SuperGrok one ("https://auth.x.ai::<client id>")
 // wins over the legacy "https://accounts.x.ai/sign-in".
-func (g *Grok) grokToken() (token string, expires time.Time, err error) {
+func (g *Grok) grokToken() (grokLogin, error) {
 	for _, p := range g.AuthPaths {
 		raw, err := os.ReadFile(p)
 		if err != nil {
@@ -170,22 +191,35 @@ func (g *Grok) grokToken() (token string, expires time.Time, err error) {
 		if best == nil {
 			continue
 		}
-		exp, _ := time.Parse(time.RFC3339Nano, best.ExpiresAt)
-		return best.Key, exp, nil
+		return grokLogin{token: best.Key, home: filepath.Dir(p), renewable: best.RefreshToken != ""}, nil
 	}
-	return "", time.Time{}, fmt.Errorf("grok: not signed in (run grok login)")
+	return grokLogin{}, fmt.Errorf("grok: not signed in (run grok login)")
 }
+
+// errGrokRejected is billing's answer to a token it no longer accepts.
+var errGrokRejected = errors.New("grok: login token rejected; run grok to renew it")
 
 // billing returns the account meter, or (nil, nil) when billing has none
 // (free tier).
 func (g *Grok) billing(ctx context.Context) (*Meter, error) {
-	token, expires, err := g.grokToken()
+	login, err := g.grokToken()
 	if err != nil {
 		return nil, err
 	}
-	if !expires.IsZero() && !expires.After(g.now()) {
-		return nil, fmt.Errorf("grok: login token expired; grok renews it the next time it runs")
+	m, err := g.billingWith(ctx, login.token)
+	if !errors.Is(err, errGrokRejected) || !login.renewable || g.Refresh == nil {
+		return m, err
 	}
+	if err := g.Refresh(ctx, login.home); err != nil {
+		return nil, fmt.Errorf("grok: renewing the login token: %w", err)
+	}
+	if login, err = g.grokToken(); err != nil {
+		return nil, err
+	}
+	return g.billingWith(ctx, login.token)
+}
+
+func (g *Grok) billingWith(ctx context.Context, token string) (*Meter, error) {
 	base := g.BaseURL
 	if base == "" {
 		base = GrokBillingURL
@@ -208,7 +242,7 @@ func (g *Grok) billing(ctx context.Context) (*Meter, error) {
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, fmt.Errorf("grok: login token rejected (%d); grok renews it the next time it runs", resp.StatusCode)
+		return nil, fmt.Errorf("%w (%d)", errGrokRejected, resp.StatusCode)
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("grok: billing status %d", resp.StatusCode)
 	}
