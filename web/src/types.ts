@@ -163,7 +163,7 @@ export interface Checkpoint {
   created_at: number;
 }
 
-export type AgentKind = "claude" | "codex" | "agy" | "cursor" | "muse" | "fake";
+export type AgentKind = "claude" | "codex" | "agy" | "cursor" | "muse" | "grok" | "fake";
 export type Role = "orchestrator" | "coder" | "reviewer" | "ui_reviewer" | "researcher" | "debugger" | "mechanical" | "designer";
 export type AgentState = "queued" | "active" | "finished" | "acknowledged";
 export type SessionState =

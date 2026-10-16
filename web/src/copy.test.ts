@@ -168,6 +168,11 @@ describe("re-dress copy", () => {
     expect(AGENT_LOGIN_CMD.agy).toBe("agy");
   });
 
+  it("names Grok with its login command", () => {
+    expect(AGENT_LABEL.grok).toBe("Grok");
+    expect(AGENT_LOGIN_CMD.grok).toBe("grok login");
+  });
+
   it("has the toast messages", () => {
     expect(T.toastItemCreated("TASK-9")).toBe("Created TASK-9");
     expect(T.toastStarted("auth-orch", "EPIC-3")).toBe("Started auth-orch on EPIC-3");

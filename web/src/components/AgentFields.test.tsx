@@ -35,8 +35,8 @@ describe("AgentFields (§16.3, §16.10)", () => {
   it("splits advisor into agent and model", async () => {
     const user = userEvent.setup();
     render(<Host />);
-    expect(await optionTexts(user, "Agent")).toEqual(["Claude", "Codex"]);
-    expect(await optionTexts(user, "Advisor")).toEqual(["Claude", "Codex", "No advisor"]);
+    expect(await optionTexts(user, "Agent")).toEqual(["Claude", "Codex", "Antigravity", "Grok"]);
+    expect(await optionTexts(user, "Advisor")).toEqual(["Claude", "Codex", "Antigravity", "Grok", "No advisor"]);
     expect(await optionTexts(user, "Advisor model")).not.toContain("Haiku 4.5");
     await pickOption(user, "Advisor", "No advisor");
     expect(screen.getByRole("combobox", { name: "Advisor model" })).toBeDisabled();
