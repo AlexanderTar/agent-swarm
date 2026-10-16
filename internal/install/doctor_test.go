@@ -147,7 +147,7 @@ func TestDoctorFailures(t *testing.T) {
 		{"Ollama", func(e *doctorEnv) {
 			e.ollamaErr = errors.New("Search unavailable: run `ollama pull qwen3-embedding:0.6b`")
 		}, "Search unavailable: run `ollama pull qwen3-embedding:0.6b`"},
-		{"Agents", func(e *doctorEnv) { e.found = map[string]bool{} }, "Install at least one agent CLI: claude, codex, agy or cursor-agent."},
+		{"Agents", func(e *doctorEnv) { e.found = map[string]bool{} }, "Install at least one agent CLI: claude, codex, agy, cursor-agent, muse or grok."},
 		{"Commit signing", func(e *doctorEnv) {
 			e.fake.Responses["git config --global commit.gpgsign"] = execx.Result{Out: "false\n"}
 		}, "Commit signing is off. Enable it in git config."},
@@ -227,5 +227,14 @@ func TestDoctorLANRow(t *testing.T) {
 		if row == nil || row.OK != c.ok || !strings.Contains(row.Detail, c.want) {
 			t.Errorf("%s: row = %+v, want ok=%v containing %q", name, row, c.ok, c.want)
 		}
+	}
+}
+
+// muse and grok count as agents: a Mac with only one of them is not "no agents".
+func TestDoctorAgentsListsMuseAndGrok(t *testing.T) {
+	e := newDoctorEnv(t)
+	e.found = map[string]bool{"muse": true, "grok": true}
+	if got := byName(t, e.d.Checks(bg))["Agents"]; !got.OK || got.Detail != "muse, grok" {
+		t.Errorf("Agents = %+v, want ok with \"muse, grok\"", got)
 	}
 }

@@ -81,6 +81,8 @@ func (d Doctor) Checks(ctx context.Context) []Check {
 			out = append(out, CheckAgy(ctx, d.Cfg, d.Run)...)
 		case KindMuse:
 			out = append(out, CheckMuse(ctx, d.Cfg, d.Run)...)
+		case KindGrok:
+			out = append(out, CheckGrok(ctx, d.Cfg, d.Run)...)
 		}
 	}
 	return append(out, d.superpowers(ctx)...)
@@ -186,14 +188,17 @@ func (d Doctor) ollama(ctx context.Context) Check {
 }
 
 func (d Doctor) agents() Check {
-	var found []string
-	for _, bin := range []string{"claude", "codex", "agy", "cursor-agent"} {
+	var found, all []string
+	for _, k := range Kinds {
+		bin := agentBinaries[k]
+		all = append(all, bin)
 		if _, err := d.LookPath(bin); err == nil {
 			found = append(found, bin)
 		}
 	}
 	if len(found) == 0 {
-		return Check{"Agents", false, "Install at least one agent CLI: claude, codex, agy or cursor-agent."}
+		return Check{"Agents", false, "Install at least one agent CLI: " +
+			strings.Join(all[:len(all)-1], ", ") + " or " + all[len(all)-1] + "."}
 	}
 	return Check{"Agents", true, strings.Join(found, ", ")}
 }

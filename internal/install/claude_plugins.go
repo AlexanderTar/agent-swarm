@@ -90,6 +90,11 @@ func supportedByAllKinds(name string) bool {
 		have[k] = true
 	}
 	for _, k := range Kinds {
+		// Grok installs superpowers through its own native command, never from
+		// this matrix (see RefreshGrokPlugins), so it does not gate Claude's list.
+		if k == KindGrok {
+			continue
+		}
 		if !have[k] {
 			return false
 		}
@@ -123,6 +128,25 @@ func claudeDisabledPlugins(userHome string) map[string]bool {
 	}
 	for k, enabled := range doc.EnabledPlugins {
 		if !enabled {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// claudeEnabledPluginKeys returns every key of enabledPlugins in
+// ~/.claude/settings.json, enabled or not. Any failure yields an empty set.
+func claudeEnabledPluginKeys(userHome string) map[string]bool {
+	out := map[string]bool{}
+	body, err := os.ReadFile(filepath.Join(userHome, ".claude", "settings.json"))
+	if err != nil {
+		return out
+	}
+	var doc struct {
+		EnabledPlugins map[string]bool `json:"enabledPlugins"`
+	}
+	if json.Unmarshal(body, &doc) == nil {
+		for k := range doc.EnabledPlugins {
 			out[k] = true
 		}
 	}

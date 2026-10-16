@@ -1479,6 +1479,7 @@ func TestSkillLinkModePerKind(t *testing.T) {
 		install.KindAgy:    install.Symlink,
 		install.KindCursor: install.Symlink,
 		install.KindMuse:   install.Symlink,
+		install.KindGrok:   install.Symlink,
 	}
 	for _, k := range install.Kinds {
 		got, ok := want[k]
