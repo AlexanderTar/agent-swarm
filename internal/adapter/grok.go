@@ -385,3 +385,19 @@ func (g *Grok) ParseHook(event string, stdin []byte) (HookInput, error) {
 	}
 	return in, nil
 }
+
+// ObserveCapture is told of every pane capture reconcile reads. The usage-limit
+// card marks grok exhausted for as long as it shows, a source that needs no
+// billing meter.
+func (g *Grok) ObserveCapture(_, capture string) {
+	line := grokUsageLimit.FindString(StripANSI(capture))
+	if line == "" {
+		return
+	}
+	g.leader.mu.Lock()
+	sink := g.leader.onExhausted
+	g.leader.mu.Unlock()
+	if sink != nil {
+		sink(line)
+	}
+}

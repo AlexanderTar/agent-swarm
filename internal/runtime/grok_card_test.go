@@ -71,3 +71,25 @@ func TestReconcileOpensNoDialogRowForGrokQuestionCard(t *testing.T) {
 		t.Fatalf("%d dialog prompt rows for the usage-limit card, want 1", n)
 	}
 }
+
+// The usage-limit card is a source of grok's exhaustion record: reconcile hands
+// every capture it reads to an adapter that wants them.
+func TestReconcileFeedsTheUsageLimitCardToGrokExhaustion(t *testing.T) {
+	s, tm, ses, _ := questionDialogSession(t, Grok)
+	ctx := context.Background()
+	real, err := adapter.New(kinds.Grok, adapter.Deps{Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted []string
+	real.(interface{ OnExhausted(func(string)) }).OnExhausted(func(text string) { noted = append(noted, text) })
+	s.Adapters[Grok] = real
+	panes(tm, Pane{Session: ses.TmuxName, Command: "grok-1.0.60-mac"})
+	tm.captures[ses.TmuxName] = []string{grokCapture(t, "free-usage-limit-card")}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(noted) != 1 {
+		t.Fatalf("exhaustion notes = %q, want one from the usage-limit card", noted)
+	}
+}

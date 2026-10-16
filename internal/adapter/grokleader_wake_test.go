@@ -187,3 +187,44 @@ func TestGrokRenameViaLeader(t *testing.T) {
 		}
 	})
 }
+
+// A working session already gets its mail through the hooks (additionalContext
+// on tool use, the once-per-turn Stop block), so a queued session/prompt would
+// only run an extra metered turn after it has synced. delivered=false hands the
+// notice back to the runtime, which retries the native wake next tick.
+func TestGrokWakeWaitsOutARunningTurn(t *testing.T) {
+	a := newGrok(testDeps(t))
+	w := wakeTarget()
+	prompted := make(chan struct{}, 1)
+	leaderUp(t, a, w.SessionID, func(f *fakeLeaderConn) {
+		f.handshake()
+		p := f.acp()
+		prompted <- struct{}{}
+		f.reply(p["id"], map[string]any{"stopReason": "end_turn"})
+	})
+	a.leader.busy = map[string]map[string]bool{w.SessionID: {w.ProviderSessionID: true}}
+	delivered, err := a.Wake(context.Background(), w)
+	if err != nil || delivered {
+		t.Fatalf("Wake = %v, %v, want false, nil while the leader reports a turn running", delivered, err)
+	}
+	select {
+	case <-prompted:
+		t.Fatal("a session/prompt was sent while a turn was running")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestGrokUsageLimitCardMarksExhaustion(t *testing.T) {
+	a := newGrok(Deps{})
+	var got []string
+	a.OnExhausted(func(text string) { got = append(got, text) })
+	a.ObserveCapture("ses_01", grokPane(t, "idle"))
+	a.ObserveCapture("ses_01", grokPane(t, "question-card"))
+	if len(got) != 0 {
+		t.Fatalf("exhaustion noted for a pane without the usage-limit card: %q", got)
+	}
+	a.ObserveCapture("ses_01", grokPane(t, "free-usage-limit-card"))
+	if len(got) != 1 || !grokUsageLimit.MatchString(got[0]) {
+		t.Fatalf("exhaustion notes = %q, want one carrying the card's usage-limit line", got)
+	}
+}

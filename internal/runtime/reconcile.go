@@ -1193,6 +1193,11 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 		idle = ad.Idle(capture)
+		if o, ok := ad.(interface {
+			ObserveCapture(sessionID, capture string)
+		}); ok {
+			o.ObserveCapture(r.SessionID, capture)
+		}
 		// A pane can read idle for a moment while a queued turn has already
 		// started: a leader that says a turn is running wins.
 		if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(r.SessionID) {

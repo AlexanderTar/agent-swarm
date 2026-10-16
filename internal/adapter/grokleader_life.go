@@ -145,13 +145,18 @@ func (g *Grok) dialSessionLeader(ctx context.Context, sessionID, providerID stri
 }
 
 // Wake delivers the notice as a session/prompt on the session's leader. A
-// prompt sent mid-turn queues (it runs after the turn and fires its own
-// UserPromptSubmit), so no idle check is needed. The request only returns when
+// turn in progress gets no prompt: its mail already reaches the agent through
+// the hooks, and a queued prompt would run as an extra metered turn after it
+// synced, so Wake reports delivered=false and the runtime tries again next
+// tick. The request only returns when
 // that turn ends, so it runs on a goroutine and Wake reports delivered as soon
 // as the prompt is written. It never errors: with the leader down, refused or
 // failing, delivered=false lets the runtime paste (one Enter), without the
 // backoff an error would add to that paste.
 func (g *Grok) Wake(ctx context.Context, w WakeTarget) (bool, error) {
+	if g.LeaderBusy(w.SessionID) {
+		return false, nil
+	}
 	c := g.dialSessionLeader(ctx, w.SessionID, w.ProviderSessionID)
 	if c == nil {
 		return false, nil
