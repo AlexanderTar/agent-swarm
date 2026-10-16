@@ -217,6 +217,7 @@ func (g *Grok) billing(ctx context.Context) (*Meter, error) {
 		return m, err
 	}
 	if err := g.Refresh(ctx, login.home); err != nil {
+		g.markDead(login.token)
 		return nil, fmt.Errorf("grok: renewing the login token: %w", err)
 	}
 	if login, err = g.grokToken(); err != nil {
@@ -224,11 +225,16 @@ func (g *Grok) billing(ctx context.Context) (*Meter, error) {
 	}
 	m, err = g.billingWith(ctx, login.token)
 	if errors.Is(err, errGrokRejected) {
-		g.mu.Lock()
-		g.deadToken = login.token
-		g.mu.Unlock()
+		g.markDead(login.token)
 	}
 	return m, err
+}
+
+// markDead stops renewing token until auth.json holds a different one.
+func (g *Grok) markDead(token string) {
+	g.mu.Lock()
+	g.deadToken = token
+	g.mu.Unlock()
 }
 
 func (g *Grok) billingWith(ctx context.Context, token string) (*Meter, error) {

@@ -414,3 +414,21 @@ func TestGrokFailedRenewalIsNotRepeatedForTheSameToken(t *testing.T) {
 		t.Fatalf("a new login must be read: %v", err)
 	}
 }
+
+// A renewal that fails outright (grok missing, grok erroring) also marks the
+// token, so grok is not started on every poll.
+func TestGrokRenewalErrorIsNotRepeatedForTheSameToken(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json", status: http.StatusUnauthorized}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok", grokNow.Add(time.Hour))})
+	g := newGrok(fake.server(t), auth)
+	refreshed := 0
+	g.Refresh = func(context.Context, string) error { refreshed++; return errors.New("grok: not found") }
+	for i := 0; i < 3; i++ {
+		if _, _, err := g.Fetch(context.Background()); err == nil {
+			t.Fatal("want an error")
+		}
+	}
+	if refreshed != 1 {
+		t.Fatalf("refresh ran %d times, want 1", refreshed)
+	}
+}
