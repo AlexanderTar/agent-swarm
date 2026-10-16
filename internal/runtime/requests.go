@@ -877,9 +877,10 @@ const errQuestionUseNativeTool = "Ask the user with your own native question too
 var questionHookKinds = map[AgentKind]bool{Claude: true, Agy: true, Codex: true, Grok: true}
 
 // questionDialogKinds are the hooked kinds whose native question leaves a
-// dialog on screen until answered. grok's is denied before its card renders
-// (the hook routes it to Needs you), so pausing has nothing to dismiss, and a
-// C-c at grok's idle prompt would only arm quit.
+// dialog on screen until answered. grok is absent: it denies an unbound
+// ask_user_question before its card renders (no dialog; a C-c at its idle
+// prompt would only arm quit). A bound daemon-approval question is the
+// exception, its card stays up, so pausing dismisses it (see TickPause).
 func questionDialogKinds(k AgentKind) bool { return questionHookKinds[k] && k != Grok }
 
 // Ask is swarm_ask (§8.1).

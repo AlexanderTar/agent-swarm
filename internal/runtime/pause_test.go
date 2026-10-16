@@ -2291,7 +2291,7 @@ func TestHandoffDismissesAnOpenNativeQuestionDialog(t *testing.T) {
 // trigger an interrupt before the deadline (a C-c at grok's idle prompt arms
 // quit).
 func TestPauseLeavesUnhookedQuestionRowsAlone(t *testing.T) {
-	for _, kind := range []AgentKind{Cursor, Muse, Grok} {
+	for _, kind := range []AgentKind{Cursor, Muse} {
 		t.Run(string(kind), func(t *testing.T) {
 			s, tm, ses, _ := questionDialogPause(t, kind)
 			tm.clk.Advance(5 * time.Second)
@@ -2305,6 +2305,55 @@ func TestPauseLeavesUnhookedQuestionRowsAlone(t *testing.T) {
 				t.Fatalf("question row closed for %s: open=%d", kind, n)
 			}
 		})
+	}
+}
+
+// grok denies an unbound ask_user_question before its card renders, so there
+// is no dialog to dismiss and its row is a real Needs-you question: left alone.
+func TestPauseLeavesAnUnboundGrokQuestionAlone(t *testing.T) {
+	s, tm, ses, _ := questionDialogSession(t, Grok)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET binding_json = NULL WHERE session_id = ? AND kind = 'question'`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := s.agentByID(ctx, ses.AgentID)
+	if _, err := s.Pause(ctx, a.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 0 {
+		t.Fatalf("keys sent for an unbound grok question: %v", tm.keys)
+	}
+	if n := openQuestions(t, s, ses.ID); n != 1 {
+		t.Fatalf("unbound question row closed: open=%d", n)
+	}
+}
+
+// A bound grok approval keeps its card on screen (only a terminal answer is
+// native_answer evidence), so pausing dismisses it and withdraws the row,
+// clearing the approval's native_pending.
+func TestPauseDismissesABoundGrokQuestionDialog(t *testing.T) {
+	s, tm, ses, req := questionDialogPause(t, Grok)
+	ctx := context.Background()
+	if w, _ := s.RequestWireByID(ctx, req.ID); !w.NativePending {
+		t.Fatal("fixture: native_pending must be true while the card is open")
+	}
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 1 {
+		t.Fatalf("interrupt keys sent %d times, want 1 (keys=%v)", got, tm.keys)
+	}
+	if n := openQuestions(t, s, ses.ID); n != 0 {
+		t.Fatalf("bound question row still open: %d", n)
+	}
+	w, _ := s.RequestWireByID(ctx, req.ID)
+	if w.NativePending || w.State != "open" {
+		t.Fatalf("approval after dismissal: native_pending=%v state=%s, want false/open", w.NativePending, w.State)
 	}
 }
 

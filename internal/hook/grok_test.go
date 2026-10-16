@@ -349,6 +349,29 @@ func TestGrokBoundApprovalShowsTheCardAndTheAnswerEmitsTheNextStep(t *testing.T)
 	}
 }
 
+// A bound grok card is held to native_prompt's options like Codex's and
+// agy's: invented labels are denied with the stored options in the reason.
+func TestGrokBoundApprovalWithInventedLabelsIsDenied(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seedGrok(t, 0, runtime.Running)
+	reqID, question := seedApproval(t, h, "Users table gets id and email.")
+	input := map[string]any{"questions": []map[string]any{{"question": question,
+		"options": []map[string]any{{"label": "D6-A"}, {"label": "D6-B"}}}}}
+	pre, _ := json.Marshal(map[string]any{"session_id": "g1", "tool_name": "ask_user_question", "tool_input": input})
+	out, err := h.Handle(ctx, runtime.Grok, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"permissionDecision":"deny"`) || !strings.Contains(string(out), "word for word") {
+		t.Fatalf("out = %s, want a deny naming native_prompt's options", out)
+	}
+	var n int
+	h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question' AND json_extract(binding_json, '$.ref') = ?`, reqID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("denied call recorded %d bound question rows, want 0", n)
+	}
+}
+
 // Grok's Stop carries lastAssistantMessage, so the print-then-ask check judges
 // it like Claude's: a printed approval block sends the ask and blocks.
 func TestGrokStopAfterPrintedBlockSendsAskAndBlocks(t *testing.T) {

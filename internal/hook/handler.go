@@ -991,10 +991,10 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			if ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt); bound {
 				// Hold the native tool to the stored options word for word: an
 				// agent that invents labels from decision codes gets its input
-				// rewritten (Claude) or the call denied (Codex, agy).
+				// rewritten (Claude) or the call denied (Codex, agy, grok).
 				np, haveNP := h.RT.NativePromptForRef(ctx, ref)
 				haveNP = haveNP && len(np.Options) > 0
-				if haveNP && (kind == runtime.Codex || kind == runtime.Agy) && !slices.Equal(options, np.Options) {
+				if haveNP && (kind == runtime.Codex || kind == runtime.Agy || kind == runtime.Grok) && !slices.Equal(options, np.Options) {
 					return adapter.HookDecision{Block: true, Reason: "[swarm] Use native_prompt's options word for word: " +
 						strings.Join(np.Options, " / ") + ". Ask again with exactly those labels."}, nil
 				}
