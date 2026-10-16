@@ -386,6 +386,9 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 		}
 		var advisorCapable func(catalog.CatalogModel) error
 		if role == kinds.RoleAdvisor {
+			if !rd.Agent.AdvisorEnabled() {
+				return invalid("%s can't run as an advisor yet. Choose another agent or No advisor.", rd.Agent.Display())
+			}
 			advisorCapable = func(m catalog.CatalogModel) error {
 				if rd.Agent == kinds.Claude && !m.AdvisorCapable {
 					return invalid("Choose a model available for this agent.")

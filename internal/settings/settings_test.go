@@ -422,3 +422,22 @@ func TestSetInstructionsIgnoresRetiredRoleModel(t *testing.T) {
 		t.Fatalf("events = %+v", evs)
 	}
 }
+
+func TestPutRefusesMuseAdvisorWhileDisabled(t *testing.T) {
+	if kinds.MuseAdvisorEnabled {
+		t.Skip("muse advisor enabled")
+	}
+	catalogs[kinds.Muse] = []catalog.CatalogModel{{ID: "muse-1", Label: "Muse 1", Efforts: []string{}}}
+	defer delete(catalogs, kinds.Muse)
+	s := newStore(t, kinds.Claude, kinds.Muse)
+	cur, _ := s.Get(ctx)
+	cur.EnabledAgents = append(cur.EnabledAgents, kinds.Muse)
+	cur.Roles[kinds.RoleAdvisor] = RoleDefault{kinds.Muse, "muse-1", "", ""}
+	_, err := s.Put(ctx, cur)
+	verr(t, err, "Muse can't run as an advisor yet. Choose another agent or No advisor.")
+	cur.Roles[kinds.RoleCoder] = RoleDefault{kinds.Muse, "muse-1", "", ""}
+	cur.Roles[kinds.RoleAdvisor] = RoleDefault{Model: NoAdvisor}
+	if _, err := s.Put(ctx, cur); err != nil {
+		t.Fatalf("muse stays valid for other roles: %v", err)
+	}
+}

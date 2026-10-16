@@ -51,7 +51,7 @@ public final class AgentPickerModel {
     public var effortOptions: [PickerOption]? {
         CatalogRules.effortOptions(choice.agent, CatalogRules.resolve(CatalogRules.entry(catalog, choice.agent), choice.model))
     }
-    public var advisorAgentOptions: [PickerOption] { CatalogRules.advisorAgentOptions(enabled: settings.enabledAgents) }
+    public var advisorAgentOptions: [PickerOption] { CatalogRules.advisorAgentOptions(enabled: settings.enabledAgents, catalog: catalog) }
     public var advisorModelOptions: [PickerOption] {
         guard case let .pair(agent, _) = advisor else { return [] }
         return CatalogRules.advisorModelOptions(agent, catalog: catalog)

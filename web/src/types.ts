@@ -340,6 +340,7 @@ export interface AgentCatalogEntry {
   auth_ok: boolean;
   auth_error: string;
   superpowers: boolean;
+  advisor_enabled?: boolean; // absent from an older daemon; only an explicit false hides the agent from the advisor pickers
   models: CatalogModel[];
   default_model: string;
   catalog_source: string;

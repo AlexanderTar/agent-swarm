@@ -135,7 +135,7 @@ func TestEntryJSON(t *testing.T) {
 	}
 	var keys map[string]json.RawMessage
 	json.Unmarshal(b, &keys)
-	if len(keys) != 12 {
+	if len(keys) != 13 {
 		t.Errorf("fields = %d: %s", len(keys), b)
 	}
 	b, _ = json.Marshal([]AgentCatalogEntry{{}})

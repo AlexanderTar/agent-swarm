@@ -13,9 +13,16 @@ const m = (p: Partial<CatalogModel> & { id: string }): CatalogModel => ({
 
 describe("advisor split (menubar parity)", () => {
   it("offers enabled agents followed by No advisor", () => {
-    expect(advisorAgentOptions(["claude", "codex"])).toEqual([
+    expect(advisorAgentOptions(["claude", "codex"], catalog)).toEqual([
       { value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "none", label: "No advisor" },
     ]);
+  });
+
+  it("leaves out an agent whose catalog entry says it has no advisor yet", () => {
+    const withMuse = [...catalog, entry({ kind: "muse", models: [m({ id: "muse-1" })], advisor_enabled: false })];
+    expect(advisorAgentOptions(["claude", "muse"], withMuse).map((o) => o.value)).toEqual(["claude", "none"]);
+    expect(advisorOptions(withMuse, ["claude", "muse"]).map((o) => o.value)).not.toContain("muse:muse-1");
+    expect(agentOptions(["claude", "muse"]).map((o) => o.value)).toContain("muse");
   });
 
   it("lists only advisor-capable Claude models", () => {

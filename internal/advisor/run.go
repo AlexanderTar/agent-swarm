@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -32,12 +33,6 @@ func fillPrompt(name, role, key, contextPath string) string {
 	r := strings.NewReplacer("{name}", name, "{role}", role, "{KEY}", key, "{context_path}", contextPath)
 	return r.Replace(Prompt)
 }
-
-// museAdvisorEnabled keeps muse without an advisor. Its read-only argv
-// (museAdvisorCommand) and parser are built and unit-tested, but the write block
-// was never proved live: muse answered 429 (quota exhausted until 2026-10-19)
-// before any tool ran. Enabling it is CHORE-102, once a live write test passes.
-const museAdvisorEnabled = false
 
 // grokAdvisorMaxTurns bounds the advisor's read-and-answer loop.
 const grokAdvisorMaxTurns = "8"
@@ -70,7 +65,7 @@ func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) (
 		return []string{"cursor-agent", "-p", "--trust", "--mode", "ask", "--model", model,
 			"--output-format", "json", prompt}, nil
 	case runtime.Muse:
-		if !museAdvisorEnabled {
+		if !kinds.MuseAdvisorEnabled {
 			return nil, fmt.Errorf("%s can't run as a read-only advisor yet: its write block is unproven", kind.Display())
 		}
 		return museAdvisorCommand(model, effort, dir, prompt)

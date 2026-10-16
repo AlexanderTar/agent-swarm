@@ -84,7 +84,7 @@ export function AgentFields(p: {
       </div>
       <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] max-sm:grid-cols-1 items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)]">
         <Label htmlFor={`${id}-advisor`}>{C.advisor}</Label>
-        <Pick agent id={`${id}-advisor`} label={C.advisor} value={advisor === "none" ? "none" : advisor.agent} options={advisorAgentOptions(p.settings.enabled_agents)} onChange={(v) => p.onChange({ ...p.value, advisor: changeAdvisorAgent(v as AgentKind | "none", p.settings, p.catalog) })} />
+        <Pick agent id={`${id}-advisor`} label={C.advisor} value={advisor === "none" ? "none" : advisor.agent} options={advisorAgentOptions(p.settings.enabled_agents, p.catalog)} onChange={(v) => p.onChange({ ...p.value, advisor: changeAdvisorAgent(v as AgentKind | "none", p.settings, p.catalog) })} />
         <Label htmlFor={`${id}-advisor-model`}>{C.model}</Label>
         <Pick id={`${id}-advisor-model`} label={C.advisorModel} value={advisor === "none" ? "" : advisor.model} placeholder="—" disabled={advisor === "none"} options={advisor === "none" ? [] : advisorModelOptions(p.catalog, advisor.agent)} onChange={(m) => advisor !== "none" && p.onChange({ ...p.value, advisor: { agent: advisor.agent, model: m } })} />
         {errors.advisor && <p className="col-start-2 text-xs text-destructive @min-[700px]:col-end-5">{errors.advisor}</p>}
