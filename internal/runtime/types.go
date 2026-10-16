@@ -13,6 +13,7 @@ const (
 	Agy    = kinds.Agy
 	Cursor = kinds.Cursor
 	Muse   = kinds.Muse
+	Grok   = kinds.Grok
 	Fake   = kinds.Fake
 )
 

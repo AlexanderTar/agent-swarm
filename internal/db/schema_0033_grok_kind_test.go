@@ -30,12 +30,12 @@ func TestGrokMigrationKeepsColumns(t *testing.T) {
 			parent_agent_id, advisor_kind, advisor_model, advisor_effort, advisor_mode,
 			brief, state, preflight_error, created_at, finished_at, role_overrides,
 			auto_restart, kind_reason, advisor_requested_effort, low_token`
-	exec(`INSERT INTO agents (`+cols+`)
+	exec(`INSERT INTO agents (` + cols + `)
 		VALUES ('agt_1', 'agent-one', 'claude', 'claude-3-opus', 'high', 'coder', 'itm_task', 'itm_root',
 			NULL, 'codex', 'gpt-5', 'low', 'native',
 			'brief one', 'active', 'preflight one', 100, 200, '{"a":1}',
 			0, 'reason one', 'xhigh', 1)`)
-	exec(`INSERT INTO agents (`+cols+`)
+	exec(`INSERT INTO agents (` + cols + `)
 		VALUES ('agt_2', 'agent-two', 'agy', 'gemini', 'medium', 'reviewer', 'itm_task', 'itm_root',
 			'agt_1', 'cursor', 'gpt-4o', 'high', 'simulated',
 			'brief two', 'finished', 'preflight two', 150, 250, '{"b":2}',

@@ -1,6 +1,10 @@
 package install
 
-import "path/filepath"
+import (
+	"path/filepath"
+
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+)
 
 // Kind is the set of agents swarm install writes configuration for (L2). The
 // `fake` kind exists only in tests and gets no installed configuration, so it is
@@ -20,21 +24,7 @@ const (
 var Kinds = []Kind{KindClaude, KindCodex, KindAgy, KindCursor, KindMuse}
 
 // Display is the name shown to the user (§17.3 "{Agent} isn't installed…").
-func (k Kind) Display() string {
-	switch k {
-	case KindClaude:
-		return "Claude"
-	case KindCodex:
-		return "Codex"
-	case KindAgy:
-		return "agy"
-	case KindCursor:
-		return "Cursor"
-	case KindMuse:
-		return "Muse"
-	}
-	return string(k)
-}
+func (k Kind) Display() string { return kinds.AgentKind(k).Display() }
 
 // The agent configuration roots. Each one is UserHome-relative: S-5 forbids a
 // fallback, so a zero Config yields relative paths a test cannot mistake for real

@@ -71,11 +71,11 @@ func TestSkillsDirPerAgent(t *testing.T) {
 	}
 }
 
-// §17 / Copy.swift agentLabel: agy is lowercase, the other three are capitalised.
+// §17 / Copy.swift agentLabel: every kind is capitalised; agy shows as Antigravity.
 func TestKindDisplayMatchesTheCopyTable(t *testing.T) {
 	want := map[install.Kind]string{
 		install.KindClaude: "Claude", install.KindCodex: "Codex",
-		install.KindAgy: "agy", install.KindCursor: "Cursor",
+		install.KindAgy: "Antigravity", install.KindCursor: "Cursor",
 		install.KindMuse: "Muse",
 	}
 	if len(install.Kinds) != 5 {

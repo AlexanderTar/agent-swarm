@@ -11,11 +11,12 @@ const (
 	Agy    AgentKind = "agy"
 	Cursor AgentKind = "cursor"
 	Muse   AgentKind = "muse"
+	Grok   AgentKind = "grok"
 	Fake   AgentKind = "fake"
 )
 
 // AgentKinds is the settings order (claude first).
-var AgentKinds = []AgentKind{Claude, Codex, Agy, Cursor, Muse}
+var AgentKinds = []AgentKind{Claude, Codex, Agy, Cursor, Muse, Grok}
 
 func (k AgentKind) Display() string {
 	switch k {
@@ -24,11 +25,13 @@ func (k AgentKind) Display() string {
 	case Codex:
 		return "Codex"
 	case Agy:
-		return "agy"
+		return "Antigravity"
 	case Cursor:
 		return "Cursor"
 	case Muse:
 		return "Muse"
+	case Grok:
+		return "Grok"
 	case Fake:
 		return "Fake"
 	}
