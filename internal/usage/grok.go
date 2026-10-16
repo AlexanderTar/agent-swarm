@@ -99,6 +99,9 @@ type Grok struct {
 	Refresh    func(ctx context.Context, grokHome string) error // lets grok renew a rejected token; nil never renews
 	Exhaustion *GrokExhaustion                                  // nil: no fallback record
 	Now        func() time.Time
+
+	mu        sync.Mutex
+	deadToken string // still rejected after a renewal: not renewed again until auth.json changes
 }
 
 // GrokBillingURL is the CLI billing proxy's base URL.
@@ -207,7 +210,10 @@ func (g *Grok) billing(ctx context.Context) (*Meter, error) {
 		return nil, err
 	}
 	m, err := g.billingWith(ctx, login.token)
-	if !errors.Is(err, errGrokRejected) || !login.renewable || g.Refresh == nil {
+	g.mu.Lock()
+	dead := login.token == g.deadToken
+	g.mu.Unlock()
+	if !errors.Is(err, errGrokRejected) || !login.renewable || g.Refresh == nil || dead {
 		return m, err
 	}
 	if err := g.Refresh(ctx, login.home); err != nil {
@@ -216,7 +222,13 @@ func (g *Grok) billing(ctx context.Context) (*Meter, error) {
 	if login, err = g.grokToken(); err != nil {
 		return nil, err
 	}
-	return g.billingWith(ctx, login.token)
+	m, err = g.billingWith(ctx, login.token)
+	if errors.Is(err, errGrokRejected) {
+		g.mu.Lock()
+		g.deadToken = login.token
+		g.mu.Unlock()
+	}
+	return m, err
 }
 
 func (g *Grok) billingWith(ctx context.Context, token string) (*Meter, error) {

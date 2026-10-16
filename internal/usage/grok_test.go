@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 )
 
 func TestParseGrokSessionUsage(t *testing.T) {
@@ -386,5 +387,30 @@ func TestGrokExhaustionNoteClassifiesSignals(t *testing.T) {
 				t.Fatalf("Active = %v,%v want %v,%v", until, ok, c.until, c.want)
 			}
 		})
+	}
+}
+
+// A renewal that leaves the same rejected token in auth.json is not retried on
+// the next poll; a different token (the user signed in again) is tried as usual.
+func TestGrokFailedRenewalIsNotRepeatedForTheSameToken(t *testing.T) {
+	fake := &fakeGrokBilling{billing: "testdata/grok-billing.json", accept: "tok-new"}
+	auth := writeGrokAuth(t, map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok-dead", grokNow.Add(-time.Hour))})
+	g := newGrok(fake.server(t), auth)
+	refreshed := 0
+	g.Refresh = func(context.Context, string) error { refreshed++; return nil }
+	for i := 0; i < 3; i++ {
+		if _, _, err := g.Fetch(context.Background()); err == nil {
+			t.Fatal("a dead token must stay an error")
+		}
+	}
+	if refreshed != 1 {
+		t.Fatalf("refresh ran %d times for one dead token, want 1", refreshed)
+	}
+	raw, _ := json.Marshal(map[string]map[string]any{"https://auth.x.ai::c": grokEntry("tok-new", grokNow.Add(time.Hour))})
+	if err := os.WriteFile(auth, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := g.Fetch(context.Background()); err != nil {
+		t.Fatalf("a new login must be read: %v", err)
 	}
 }
