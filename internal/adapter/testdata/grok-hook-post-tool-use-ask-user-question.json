@@ -1,0 +1,68 @@
+{
+ "hookEventName": "post_tool_use",
+ "sessionId": "22222222-2222-4222-8222-222222222222",
+ "cwd": "<scratch>/work/B",
+ "workspaceRoot": "<scratch>/work/B",
+ "timestamp": "2026-10-16T14:44:18.925513+00:00",
+ "transcriptPath": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "toolName": "ask_user_question",
+ "toolUseId": "call-e6475569-7d15-4a19-97a9-6c84ddd90462-3",
+ "toolInput": {
+  "questions": [
+   {
+    "question": "Tea or coffee?",
+    "options": [
+     {
+      "label": "Tea",
+      "description": "Tea"
+     },
+     {
+      "label": "Coffee",
+      "description": "Coffee"
+     }
+    ]
+   }
+  ]
+ },
+ "toolResult": {
+  "type": "AskUserQuestion",
+  "UserAnswered": {
+   "message": "User has answered your questions: \"Tea or coffee?\"=\"Coffee\". You can now continue with the user's answers in mind."
+  }
+ },
+ "toolInputTruncated": false,
+ "toolResultTruncated": false,
+ "durationMs": 4175,
+ "isBackgrounded": false,
+ "hook_event_name": "PostToolUse",
+ "session_id": "22222222-2222-4222-8222-222222222222",
+ "transcript_path": "/grok/sessions/w/22222222-2222-4222-8222-222222222222/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "tool_name": "ask_user_question",
+ "tool_input": {
+  "questions": [
+   {
+    "question": "Tea or coffee?",
+    "options": [
+     {
+      "label": "Tea",
+      "description": "Tea"
+     },
+     {
+      "label": "Coffee",
+      "description": "Coffee"
+     }
+    ]
+   }
+  ]
+ },
+ "tool_response": {
+  "type": "AskUserQuestion",
+  "UserAnswered": {
+   "message": "User has answered your questions: \"Tea or coffee?\"=\"Coffee\". You can now continue with the user's answers in mind."
+  }
+ },
+ "tool_use_id": "call-e6475569-7d15-4a19-97a9-6c84ddd90462-3",
+ "duration_ms": 4175
+}

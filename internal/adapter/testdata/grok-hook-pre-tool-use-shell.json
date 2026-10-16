@@ -1,0 +1,26 @@
+{
+ "hookEventName": "pre_tool_use",
+ "sessionId": "11111111-1111-4111-8111-111111111111",
+ "cwd": "<scratch>/work/a",
+ "workspaceRoot": "<scratch>/work/a",
+ "timestamp": "2026-10-16T14:41:03.602182+00:00",
+ "transcriptPath": "/grok/sessions/w/11111111-1111-4111-8111-111111111111/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "toolName": "run_terminal_command",
+ "toolUseId": "call-cae845d8-8385-40fe-b37b-1d9003947c68-2",
+ "toolInput": {
+  "command": "echo hi",
+  "description": "Print hi as requested"
+ },
+ "toolInputTruncated": false,
+ "hook_event_name": "PreToolUse",
+ "session_id": "11111111-1111-4111-8111-111111111111",
+ "transcript_path": "/grok/sessions/w/11111111-1111-4111-8111-111111111111/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "tool_name": "run_terminal_command",
+ "tool_input": {
+  "command": "echo hi",
+  "description": "Print hi as requested"
+ },
+ "tool_use_id": "call-cae845d8-8385-40fe-b37b-1d9003947c68-2"
+}

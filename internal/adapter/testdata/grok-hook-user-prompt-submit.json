@@ -1,0 +1,15 @@
+{
+ "hookEventName": "user_prompt_submit",
+ "sessionId": "11111111-1111-4111-8111-111111111111",
+ "cwd": "<scratch>/work/a",
+ "workspaceRoot": "<scratch>/work/a",
+ "timestamp": "2026-10-16T14:40:58.700089+00:00",
+ "transcriptPath": "/grok/sessions/w/11111111-1111-4111-8111-111111111111/updates.jsonl",
+ "promptId": "5213168c-9ac7-4554-b035-81b499447c6d",
+ "permissionMode": "bypassPermissions",
+ "prompt": "Use the swarm MCP server tool swarm_sync once (via use_tool), then run the shell command `echo hi`. Then reply with the exact tool result text and any PROBE codewords you saw in system context, nothing else.",
+ "hook_event_name": "UserPromptSubmit",
+ "session_id": "11111111-1111-4111-8111-111111111111",
+ "transcript_path": "/grok/sessions/w/11111111-1111-4111-8111-111111111111/updates.jsonl",
+ "permission_mode": "bypassPermissions"
+}

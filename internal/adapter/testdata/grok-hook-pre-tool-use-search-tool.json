@@ -1,0 +1,26 @@
+{
+ "hookEventName": "pre_tool_use",
+ "sessionId": "11111111-1111-4111-8111-111111111111",
+ "cwd": "<scratch>/work/a",
+ "workspaceRoot": "<scratch>/work/a",
+ "timestamp": "2026-10-16T14:41:01.588325+00:00",
+ "transcriptPath": "/grok/sessions/w/11111111-1111-4111-8111-111111111111/updates.jsonl",
+ "permissionMode": "bypassPermissions",
+ "toolName": "search_tool",
+ "toolUseId": "call-6f1c3248-bd4e-44c4-9d03-f21b42d441a2-0",
+ "toolInput": {
+  "query": "swarm swarm_sync",
+  "limit": 3
+ },
+ "toolInputTruncated": false,
+ "hook_event_name": "PreToolUse",
+ "session_id": "11111111-1111-4111-8111-111111111111",
+ "transcript_path": "/grok/sessions/w/11111111-1111-4111-8111-111111111111/updates.jsonl",
+ "permission_mode": "bypassPermissions",
+ "tool_name": "search_tool",
+ "tool_input": {
+  "query": "swarm swarm_sync",
+  "limit": 3
+ },
+ "tool_use_id": "call-6f1c3248-bd4e-44c4-9d03-f21b42d441a2-0"
+}

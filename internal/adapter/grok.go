@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/pelletier/go-toml/v2"
@@ -309,8 +310,56 @@ func (g *Grok) ObserveModel(transcriptPath, providerSessionID string) (string, s
 	return sum.Model, sum.Effort, true
 }
 
-// ---- filled in by the hook and wake packages ----
+// ---- filled in by the wake package ----
 
-func (g *Grok) Wake(context.Context, WakeTarget) (bool, error)  { return false, nil }
-func (g *Grok) HookOutput(string, HookDecision) ([]byte, error) { return nil, nil }
-func (g *Grok) ParseHook(string, []byte) (HookInput, error)     { return HookInput{}, nil }
+func (g *Grok) Wake(context.Context, WakeTarget) (bool, error) { return false, nil }
+
+// grokContextCap keeps additionalContext under grok's 10,000-character limit
+// (bytes, to be safe for multi-byte text).
+const grokContextCap = 9500
+
+// HookOutput speaks Claude's JSON, which grok honours (TASK-1125 Q2/Q3): a deny
+// on PreToolUse, a block on Stop, and additionalContext on the two tool hooks.
+// SessionStart and UserPromptSubmit context never reaches the model, and grok
+// never rewrites tool input, so those print nothing: the handler routes such
+// notices to the kickoff and the tool hooks instead.
+func (g *Grok) HookOutput(event string, d HookDecision) ([]byte, error) {
+	if d.Block {
+		return (&Claude{}).HookOutput(event, HookDecision{Block: true, Reason: d.Reason})
+	}
+	if (event != "PreToolUse" && event != "PostToolUse") || d.Context == "" {
+		return nil, nil
+	}
+	ctx := d.Context
+	if len(ctx) > grokContextCap {
+		ctx = strings.ToValidUTF8(ctx[:grokContextCap], "") + "…"
+	}
+	return (&Claude{}).HookOutput(event, HookDecision{Context: ctx})
+}
+
+// ParseHook is Claude's parser plus grok's deltas: qualified MCP names
+// (swarm__<tool>, with the tool's own arguments wrapped in
+// tool_input.tool_input), and the Stop/Notification fields the handler gates on.
+func (g *Grok) ParseHook(event string, stdin []byte) (HookInput, error) {
+	in, err := parseClaudeHook(event, stdin)
+	if err != nil || len(stdin) == 0 {
+		return in, err
+	}
+	var extra struct {
+		Reason           string `json:"reason"`
+		StopHookActive   bool   `json:"stop_hook_active"`
+		NotificationType string `json:"notification_type"`
+	}
+	_ = json.Unmarshal(stdin, &extra)
+	in.Reason, in.StopHookActive, in.NotificationType = extra.Reason, extra.StopHookActive, extra.NotificationType
+	in.IsSwarmTool = strings.HasPrefix(in.ToolName, "swarm__") || strings.HasPrefix(in.ToolName, "mcp__swarm__")
+	if strings.HasPrefix(in.ToolName, "swarm__") {
+		var wrapped struct {
+			Inner json.RawMessage `json:"tool_input"`
+		}
+		if json.Unmarshal(in.RawToolInput, &wrapped) == nil && len(wrapped.Inner) > 0 && string(wrapped.Inner) != "null" {
+			in.RawToolInput = wrapped.Inner
+		}
+	}
+	return in, nil
+}

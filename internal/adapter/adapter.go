@@ -96,8 +96,14 @@ type HookInput struct {
 	// carries it separately. Both empty when the hook says nothing.
 	Model  string
 	Effort string
-	// LastAssistantMessage is the Stop hook's final reply text (Claude only); empty when not sent.
+	// LastAssistantMessage is the Stop hook's final reply text (Claude, grok); empty when not sent.
 	LastAssistantMessage string
+	// Reason, StopHookActive and NotificationType are grok's: why a Stop or
+	// SessionEnd fired ("end_turn", "shutdown", "user_interrupt"), whether this
+	// Stop follows a hook block, and a Notification's kind. Empty/false elsewhere.
+	Reason           string
+	StopHookActive   bool
+	NotificationType string
 	// ContextTokens/ContextWindow are an exact context reading a hook carried
 	// (cursor preCompact only); zero when absent.
 	ContextTokens, ContextWindow int
