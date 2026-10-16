@@ -1514,6 +1514,16 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 	kickoff += reminder
+	if note := KindKickoffNote(a.Kind); note != "" {
+		kickoff += " " + note
+	}
+	if StartContextDropped(a.Kind) {
+		if hint, err := s.GraphifyHintFor(ctx, a.ID); err != nil {
+			s.logf("start session %s: graphify hint: %v", a.Name, err)
+		} else if hint != "" {
+			kickoff += " " + hint
+		}
+	}
 	// Re-read a: the caller's copy may predate a low-token toggle.
 	cur, err := s.agentByID(ctx, a.ID)
 	if err != nil {
