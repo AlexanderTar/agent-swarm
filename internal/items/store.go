@@ -48,6 +48,11 @@ type Store struct {
 	// story has an after_tasks workflow. It relays story_ready_for_review to the
 	// orchestrator.
 	StoryReadyForReview func(ctx context.Context, tx *sql.Tx, story Item) error
+	// CheckWorkflowBriefs fires when a patch changes what a step kickoff renders
+	// (brief, acceptance, units, verify, steps) on an item. it carries the patched
+	// text; the hook refuses the update if the item has a live workflow and any
+	// of its steps' kickoffs would no longer fit. nil allows every update.
+	CheckWorkflowBriefs func(ctx context.Context, tx *sql.Tx, it Item) error
 }
 
 type CreateInput struct {
@@ -762,6 +767,11 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		}
 		if err := validateStepsUnits(it.Key, it.Steps, it.Units); err != nil {
 			return Item{}, err
+		}
+		if s.CheckWorkflowBriefs != nil && (p.Brief != nil || p.Acceptance != nil || p.Units != nil || p.Verify != nil || p.Steps != nil) {
+			if err := s.CheckWorkflowBriefs(ctx, tx, it); err != nil {
+				return Item{}, err
+			}
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE items SET title = ?, brief = ?, acceptance_json = ?, priority = ?,
 			tdd_exempt = NULLIF(?, ''), role_hint = NULLIF(?, ''), workflow_json = NULLIF(?, ''), steps_json = ?,

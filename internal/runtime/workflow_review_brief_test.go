@@ -148,3 +148,47 @@ func TestStartWorkflowRefusesLegacyOverlongBriefBeforeSpawning(t *testing.T) {
 		}
 	}
 }
+
+// TASK-1221 (BUG-106): a brief update on an item with a live workflow is
+// measured against every step's kickoff, not just the raw 6000. A brief the
+// write check accepts could otherwise overflow the reviewer's kickoff after the
+// coder finished.
+func TestLiveWorkflowRefusesBriefUpdateThatOverflowsAStep(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	if _, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}}); err != nil {
+		t.Fatal(err)
+	}
+	update := func(brief string) error {
+		t.Helper()
+		cur, err := s.Items.Get(ctx, taskKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.Items.Update(ctx, taskKey, items.Patch{Revision: cur.Revision, Brief: &brief},
+			items.Orchestrator(orch.ID, orch.RootItemID))
+		return err
+	}
+
+	// The raw brief passes the 6000 write check, but the kickoffs add a header,
+	// the Workflow section and the verdict contract on top.
+	err := update(strings.Repeat("x", items.MaxBrief-200))
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeBadRequest || ie.Message != taskKey+": "+ErrBriefTooLong {
+		t.Fatalf("err = %v, want %q bad_request", err, taskKey+": "+ErrBriefTooLong)
+	}
+	it, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(it.Brief) > items.MaxBrief-200 {
+		t.Fatalf("refused update still stored a %d-char brief", len(it.Brief))
+	}
+	// A small edit still goes through.
+	if err := update("a shorter brief"); err != nil {
+		t.Fatalf("small update refused: %v", err)
+	}
+}
