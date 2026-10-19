@@ -7,14 +7,12 @@ import { pickOption } from "../test/select";
 import { Header } from "./Header";
 
 const narrow = (matches: boolean) =>
-  vi
-    .spyOn(window, "matchMedia")
-    .mockImplementation(((query: string) => ({
-      matches: query.includes("639px") ? matches : false,
-      media: query,
-      addEventListener() {},
-      removeEventListener() {},
-    })) as unknown as typeof window.matchMedia);
+  vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+    matches: query.includes("639px") ? matches : false,
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia);
 
 function setup(url: Partial<BoardUrl> = {}, matches: number | null = null) {
   const setUrl = vi.fn();

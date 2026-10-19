@@ -1150,14 +1150,12 @@ for (const width of [375, 430, 768]) {
     await noHorizontalOverflow(page);
     const sheetBox = await sheet.boundingBox();
     expect(sheetBox?.width).toBeLessThanOrEqual(width);
-    const sizes = await sheet
-      .getByRole("button", { name: /^Remove shot-/ })
-      .evaluateAll((els) =>
-        els.map((e) => ({
-          w: e.getBoundingClientRect().width,
-          h: e.getBoundingClientRect().height,
-        })),
-      );
+    const sizes = await sheet.getByRole("button", { name: /^Remove shot-/ }).evaluateAll((els) =>
+      els.map((e) => ({
+        w: e.getBoundingClientRect().width,
+        h: e.getBoundingClientRect().height,
+      })),
+    );
     for (const s of sizes)
       expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual((width < 768 ? 44 : 24) - 0.5);
   });

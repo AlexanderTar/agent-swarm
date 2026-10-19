@@ -93,14 +93,12 @@ describe("responsive shell", () => {
 
   it("places toasts top-center below sm and bottom-left above", async () => {
     const mq = (matches: boolean) =>
-      vi
-        .spyOn(window, "matchMedia")
-        .mockImplementation(((query: string) => ({
-          matches,
-          media: query,
-          addEventListener() {},
-          removeEventListener() {},
-        })) as unknown as typeof window.matchMedia);
+      vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+        matches,
+        media: query,
+        addEventListener() {},
+        removeEventListener() {},
+      })) as unknown as typeof window.matchMedia);
     const toaster = () => document.querySelector("[data-sonner-toaster]");
     mq(true);
     const narrow = render(<Toaster />);
