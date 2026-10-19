@@ -1486,3 +1486,22 @@ func TestNextPinnedFromFailedOutranksStale(t *testing.T) {
 		}
 	})
 }
+
+// TestNextDebugRetriesFixNotDiagnose: on the debug template a
+// changes_requested review retries the coder's fix step in round 2 and
+// carries the debugger's diagnose step forward without respawning it.
+func TestNextDebugRetriesFixNotDiagnose(t *testing.T) {
+	dbg := resolveT(t, "debug")
+	runs := []Run{
+		cr2("diagnose", 1, "debugger", ""),
+		cr2("fix", 1, "coder", "f1"),
+		r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+	}
+	if got, want := Next(dbg, runs, 2, 0), (Action{Kind: ActionSpawn, StepID: "fix", Roles: []string{"coder"}, Round: 2}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 after changes_requested: Next() = %+v, want %+v", got, want)
+	}
+	waiting := append(append([]Run{}, runs...), active3("fix", 2, "coder"))
+	if got, want := Next(dbg, waiting, 2, 0), (Action{Kind: ActionWait, StepID: "fix", Round: 2}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 fix active: Next() = %+v, want %+v", got, want)
+	}
+}

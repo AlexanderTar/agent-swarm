@@ -17,7 +17,11 @@ var Templates = map[string][]Step{
 	"tdd-reviewed":    reviewed("build", "coder", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer"}, 3),
 	"ui-tdd-reviewed": reviewed("build", "coder", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer", "ui_reviewer"}, 3),
 	"design-reviewed": reviewed("design", "designer", []Gate{GateArtifactDesign}, []string{"ui_reviewer"}, 2),
-	"debug":           reviewed("fix", "debugger", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer"}, 3),
+	// debug: the debugger only diagnoses and writes a report; a coder fixes
+	// it with TDD. The review loop retries fix, so diagnose is not respawned.
+	"debug": append(
+		[]Step{{ID: "diagnose", Run: "debugger", Gates: []Gate{GateArtifactNotes}}},
+		reviewed("fix", "coder", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer"}, 3)...),
 	"mechanical": {
 		{ID: "change", Run: "mechanical", Gates: []Gate{GateCommit, GateVerify}},
 	},

@@ -36,7 +36,8 @@ func TestTemplateResolves(t *testing.T) {
 		"debug": {
 			Retries: &one,
 			Steps: []Step{
-				{ID: "fix", Run: "debugger", Gates: []Gate{GateTDD, GateCommit, GateVerify}},
+				{ID: "diagnose", Run: "debugger", Gates: []Gate{GateArtifactNotes}},
+				{ID: "fix", Run: "coder", Gates: []Gate{GateTDD, GateCommit, GateVerify}},
 				{ID: "review", Review: []string{"reviewer"}, Of: "fix", Loop: &Loop{Fix: "fix", MaxRounds: 3, OnExhausted: "escalate"}},
 			},
 		},
