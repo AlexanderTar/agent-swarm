@@ -1,6 +1,6 @@
 # Adding an agent kind
 
-Follow this when you add a CLI (a new "kind", like `muse`, `cursor` or `grok`) to Swarm, or change how an existing kind is launched, hooked or measured. A kind touches about 45 production files in 12 areas plus a DB migration, and most of the seam is not enforced by the compiler. Muse shipped with a dozen same-day fix rounds because of that; section 8 lists them.
+Follow this when you add a CLI (a new "kind", like `muse`, `cursor` or `grok`) to Swarm, or change how an existing kind is launched, hooked or measured. A kind touches about 45 production files in 12 areas plus a DB migration, and most of the seam is not enforced by the compiler. Muse shipped with a dozen same-day fix rounds because of that; section 9 lists them.
 
 Worked examples: `internal/adapter/muse.go` (unhooked, isolated HOME), `internal/adapter/cursor.go` (hooked via `hooks.json`), `internal/adapter/claude.go` (fully hooked). Muse's delivery spec and plan are in `docs/specs/2026-09-23-muse-first-class-agent.md` and the menubar follow-up in `docs/specs/2026-09-23-menubar-muse-support.md`.
 
