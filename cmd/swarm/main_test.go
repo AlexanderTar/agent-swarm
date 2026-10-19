@@ -1239,3 +1239,19 @@ func TestIsolatedUninstallDoesNotClaimToRemoveAnything(t *testing.T) {
 		t.Errorf("output = %q", out.String())
 	}
 }
+
+// An isolated dry run must not claim it would touch the 1.x integrations or
+// agent configuration: the real isolated run does neither.
+func TestIsolatedInstallDryRunDoesNotClaimAgentConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saved := installLaunchd
+	t.Cleanup(func() { installLaunchd = saved })
+	installLaunchd = func(context.Context, install.Config, execx.Runner, bool, io.Writer) error { return nil }
+	var out bytes.Buffer
+	if code := run([]string{"install", "--dry-run", "--home", t.TempDir()}, &out, io.Discard); code != 0 {
+		t.Fatalf("code %d", code)
+	}
+	if strings.Contains(out.String(), "write the agent configuration") {
+		t.Errorf("output = %q", out.String())
+	}
+}

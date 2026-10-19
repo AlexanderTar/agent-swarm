@@ -41,6 +41,8 @@ env -i PATH="$S/shim:/usr/bin:/bin:/opt/homebrew/bin" HOME="$S/fakehome" USER=te
 - Never use `--live` without the fake `HOME` and the stub.
 - An agent started inside the run can still guess the real home from its work-dir path and write to `~/.swarm/research`; check the live folder afterwards and remove strays.
 - `scripts/e2e.sh` follows this rule for the fake adapter: it never runs `swarm install`.
+- An isolated `swarm install` writes no plist and starts no daemon, so here it only proves nothing live is touched. To run an isolated daemon, start it yourself under the same `env -i ...` prefix: `swarm daemon --home "$S/home" --port 17778` (any free port other than 7777), and stop it with Ctrl-C.
+- `swarm migrate` (the one-time 1.x upgrade) is not covered: it always acts on the fixed launchd labels. Never run it with a scratch home.
 
 ## Safe setup for Go tests
 

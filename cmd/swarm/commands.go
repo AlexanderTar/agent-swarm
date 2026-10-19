@@ -235,7 +235,10 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	}
 	if *dry {
 		// A dry run reports the plist and stops before touching agent configuration.
-		fmt.Fprintln(stdout, "Would remove the Agent Swarm 1.x integrations and write the agent configuration.")
+		// An isolated install never touches either, so it doesn't claim to.
+		if !cfg.Isolated {
+			fmt.Fprintln(stdout, "Would remove the Agent Swarm 1.x integrations and write the agent configuration.")
+		}
 		return 0
 	}
 	if err := installAgents(context.Background(), o); err != nil {
