@@ -102,7 +102,6 @@ function Card(p: {
             {needs}
           </span>
         )}
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: stops card selection */}
         <span
           className={needs ? "" : "ml-auto"}
           onClick={(e) => e.stopPropagation()}
@@ -139,6 +138,7 @@ function Card(p: {
           title="Active workflow crew"
         >
           {p.crew.roles.map((role, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a crew can list the same role twice and the list is static, so there is no stable id
             <span key={i} role="img" aria-label={role}>
               {ROLE_EMOJI[role]}
             </span>
@@ -190,7 +190,11 @@ function Cell(p: {
 
 // Touch uses the Move to… menu, so only mouse and pen pointers may start a drag; otherwise a swipe
 // on a card can start one that sticks until reload.
-const pointerDown = PointerSensor.activators[0]!;
+const pointerDown =
+  PointerSensor.activators[0] ??
+  (() => {
+    throw new Error("dnd-kit PointerSensor has no activators");
+  })();
 export class MousePenSensor extends PointerSensor {
   static activators = [
     {
@@ -255,6 +259,7 @@ export function Kanban(p: KanbanProps) {
   // `if (!p.loaded) return null` guard below), so `scroller` is never attached to a DOM node on the
   // one run an empty-deps effect gets. Depend on `p.loaded` so this fires once the scroller actually
   // exists.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: p.loaded re-runs the scroll restore once the scroller exists, the effect does not read it
   useEffect(() => {
     const pos = readJson(storage("localStorage"), SCROLL_KEY, { left: 0, top: 0 });
     scroller.current?.scrollTo?.(pos.left, pos.top);

@@ -1,7 +1,7 @@
 // Port of Go ids.Kebab (§4). Keep it in step with internal/ids.
 // The daemon owns collision suffixes (-2, -3, …); this only normalises.
 export function kebab(input: string, max = 48): string {
-  const ascii = input.normalize("NFKD").replace(/[^\x00-\x7F]/g, "");
+  const ascii = input.normalize("NFKD").replace(/\P{ASCII}/gu, "");
   let s = ascii
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")

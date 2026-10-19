@@ -47,6 +47,7 @@ function Snapshot({ r }: { r: Request }) {
           <h3 className="font-semibold">Plan warnings</h3>
           <ul className="list-disc pl-5">
             {art.data.warnings.map((warning, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: warnings are plain strings that can repeat and the list is never reordered
               <li key={i}>{warning}</li>
             ))}
           </ul>

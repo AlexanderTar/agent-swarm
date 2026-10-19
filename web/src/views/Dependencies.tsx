@@ -77,9 +77,9 @@ const nodeTypes = { item: ItemNode, story: StoryNode };
 // First root that waits for something or is waited on; the first root when none does.
 // ponytail: reads blocked_by, which lists unresolved dependencies only, so a root whose
 // dependencies are all resolved looks edge-free; upgrade by asking the daemon for the edges.
-function firstRootWithEdges(roots: Item[], items: Item[]): Item {
+function firstRootWithEdges(roots: Item[], items: Item[]): Item | undefined {
   const blockers = new Set(items.flatMap((i) => i.blocked_by));
-  return roots.find((r) => r.blocked_by.length > 0 || blockers.has(r.key)) ?? roots[0]!;
+  return roots.find((r) => r.blocked_by.length > 0 || blockers.has(r.key)) ?? roots[0];
 }
 
 function Graph(p: DependenciesProps) {
@@ -102,13 +102,17 @@ function Graph(p: DependenciesProps) {
     if (p.selected) setAnchor(p.selected);
     else if (!anchor && !autoPicked.current && idx.roots[0]) {
       autoPicked.current = true;
-      if (phone) setAnchor(firstRootWithEdges(idx.roots, p.items).key);
-      else p.onSelect(idx.roots[0].key);
+      if (phone) {
+        const first = firstRootWithEdges(idx.roots, p.items);
+        if (first) setAnchor(first.key);
+      } else p.onSelect(idx.roots[0].key);
     }
   }, [p.selected, anchor, idx, p.items, p.onSelect, phone]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: p.selected is the trigger that clears the picked item, the effect does not read it
   useEffect(() => setPicked(null), [p.selected]);
 
   const g = graph.data;
+  const anchorItem = idx.byKey.get(anchor);
   const flow = useMemo(() => {
     if (!g) return null;
     const rootKey = idx.byKey.get(anchor)?.root_key ?? anchor;
@@ -247,9 +251,9 @@ function Graph(p: DependenciesProps) {
       {g && !touching ? (
         <div className="p-8 text-center">
           <p>{C.noDeps}</p>
-          {phone && idx.byKey.get(anchor) && (
+          {phone && anchorItem && (
             <p className="mt-1 text-muted-foreground">
-              <Key>{anchor}</Key> {idx.byKey.get(anchor)!.title}
+              <Key>{anchor}</Key> {anchorItem.title}
             </p>
           )}
         </div>

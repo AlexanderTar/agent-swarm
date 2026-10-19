@@ -39,6 +39,7 @@ export function App() {
   const filter = filterOf(url);
   const all = items.data?.items ?? EMPTY_ITEMS;
   const active = isFilterActive(filter);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filterOf rebuilds the filter object every render; the memo is keyed on its fields so the count recomputes only when one changes
   const matches = useMemo(
     () => (active ? filterItems(all, filter).count : null),
     [active, all, filter.q, filter.type, filter.status],
@@ -188,7 +189,7 @@ export default function Root() {
       () => setAuth("ready"),
     );
   }, [api]);
-  useEffect(load, [load]);
+  useEffect(() => load(), [load]);
   if (auth === "loading") return null;
   if (auth === "login") return <Login login={api.login} onSignedIn={load} />;
   const signOut = () =>

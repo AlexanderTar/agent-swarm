@@ -48,6 +48,7 @@ const Field = ({
   className,
   children,
 }: { label: string; className: string; children: ReactNode }) => (
+  // biome-ignore lint/a11y/noLabelWithoutControl: every caller passes the control it labels as children
   <label className={className}>
     {label}
     {children}

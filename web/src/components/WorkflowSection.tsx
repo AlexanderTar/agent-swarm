@@ -99,6 +99,7 @@ export function WorkflowSection(p: {
                               <CollapsibleContent>
                                 <ul className="list-disc pl-5">
                                   {run.findings.map((f, j) => (
+                                    // biome-ignore lint/suspicious/noArrayIndexKey: findings are plain objects with no id and the list is never reordered
                                     <li key={j}>{findingText(f)}</li>
                                   ))}
                                 </ul>

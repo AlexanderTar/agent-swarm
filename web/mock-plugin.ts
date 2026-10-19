@@ -31,10 +31,12 @@ export function mockDaemon(): Plugin {
       if (process.env.SWARM_MOCK !== "1") return;
       let current: Promise<MockDaemon> | undefined;
       let remote = false;
-      const daemon = () =>
-        (current ??= server
+      const daemon = () => {
+        current ??= server
           .ssrLoadModule("/src/mock/daemon.ts")
-          .then((m) => (m.createMockDaemon as () => MockDaemon)()));
+          .then((m) => (m.createMockDaemon as () => MockDaemon)());
+        return current;
+      };
 
       server.middlewares.use(
         async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
@@ -50,8 +52,14 @@ export function mockDaemon(): Plugin {
             remote = new URL(url, "http://mock.test").searchParams.get("on") === "1";
             return void res.end("ok");
           }
-          if (url === "/__mock/disconnect") return void (d.disconnect(), res.end("ok"));
-          if (url === "/__mock/reconnect") return void (d.reconnect(), res.end("ok"));
+          if (url === "/__mock/disconnect") {
+            d.disconnect();
+            return void res.end("ok");
+          }
+          if (url === "/__mock/reconnect") {
+            d.reconnect();
+            return void res.end("ok");
+          }
           if (d.offline) {
             res.statusCode = 503;
             return void res.end();

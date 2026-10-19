@@ -54,6 +54,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
   const [confirming, setConfirming] = useState<AgentAction | null>(null);
   // Keyed on the raw session state: displayState also flips on waiting/stale flags without the pause landing.
   const sessionState = agent.session?.state;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionState is the trigger that drops the pending request, the effect does not read it
   useEffect(() => setRequested(null), [sessionState]);
   const onAction = async (a: AgentAction) => {
     if (!live.connected) return;

@@ -14,7 +14,9 @@ function ConnectedQuestion() {
   return (
     <>
       <QuestionView request={question()} connected={connected} />
-      <button onClick={retry}>Reconnect stream</button>
+      <button type="button" onClick={retry}>
+        Reconnect stream
+      </button>
     </>
   );
 }

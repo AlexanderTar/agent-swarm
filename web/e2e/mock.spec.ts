@@ -662,11 +662,8 @@ test("artifact wraps long text in a bounded scroller and keeps close keyboard fo
   await page.route("**/api/artifacts/art_epic_spec**", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
-    body.markdown =
-      ("Paragraph " + "x".repeat(500) + "\n\n").repeat(35) +
-      "\n```\n" +
-      "y".repeat(800) +
-      "\n```\n\nEND OF ARTIFACT";
+    const paragraphs = `Paragraph ${"x".repeat(500)}\n\n`.repeat(35);
+    body.markdown = `${paragraphs}\n\`\`\`\n${"y".repeat(800)}\n\`\`\`\n\nEND OF ARTIFACT`;
     await route.fulfill({ response, json: body });
   });
   await page.goto("/#/hierarchy?item=EPIC-12");
@@ -777,7 +774,7 @@ for (const start of [false, true]) {
           ...body.recent,
           ...body.groups.flatMap((g: { repos: object[] }) => g.repos),
         ]) {
-          repo.path = "/Users/alex/" + "verylongfolder".repeat(40) + "/repository";
+          repo.path = `/Users/alex/${"verylongfolder".repeat(40)}/repository`;
         }
         await route.fulfill({ response, json: body });
       });

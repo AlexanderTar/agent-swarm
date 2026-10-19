@@ -56,7 +56,9 @@ function ConnectedDetails() {
         onReview={vi.fn()}
         onStartOrchestrator={vi.fn()}
       />
-      <button onClick={retry}>Reconnect stream</button>
+      <button type="button" onClick={retry}>
+        Reconnect stream
+      </button>
     </>
   );
 }

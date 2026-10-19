@@ -3,7 +3,15 @@
   "organizeImports": { "enabled": true },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true }
+    "rules": {
+      "recommended": true,
+      "a11y": {
+        "noLabelWithoutControl": {
+          "level": "error",
+          "options": { "inputComponents": ["Input", "Select"] }
+        }
+      }
+    }
   },
   "formatter": {
     "enabled": true,
@@ -11,6 +19,12 @@
     "indentWidth": 2,
     "lineWidth": 100
   },
+  "overrides": [
+    {
+      "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "e2e/**"],
+      "linter": { "rules": { "style": { "noNonNullAssertion": "off" } } }
+    }
+  ],
   "files": {
     "ignore": [
       "**/dist/**",

@@ -114,7 +114,7 @@ describe("MergeList", () => {
   });
 
   it("uses a neutral heading once nothing is awaiting a merge, and wraps long notes", () => {
-    const note = "https://example.com/" + "a".repeat(200);
+    const note = `https://example.com/${"a".repeat(200)}`;
     render(
       <MergeList
         merges={[

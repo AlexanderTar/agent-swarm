@@ -97,6 +97,8 @@ export function RepoPicker(p: {
       )}
       {p.caption && <p className="text-xs text-muted-foreground">{p.caption}</p>}
       <ScrollArea className="h-[242px] max-md:h-[358px] w-full min-w-0 [&_[data-slot=scroll-area-viewport]>div]:!block rounded-md border border-border">
+        {/* biome-ignore lint/a11y/useFocusableInteractive: focus lives on the option rows (tabIndex 0), not the container */}
+        {/* biome-ignore lint/a11y/useSemanticElements: a native select cannot render the check mark, path and dirty badge per row */}
         <div role="listbox" aria-multiselectable="true" aria-labelledby={labelId} className="p-0.5">
           {!!repos.error && (
             <div
@@ -121,6 +123,7 @@ export function RepoPicker(p: {
               return (
                 <div
                   key={r.id}
+                  // biome-ignore lint/a11y/useSemanticElements: a native option cannot hold the check mark, path and dirty badge
                   role="option"
                   aria-selected={on}
                   data-name={r.name}

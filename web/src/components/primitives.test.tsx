@@ -160,7 +160,7 @@ describe("Sheet", () => {
   });
 
   it("wraps a long unbroken title before the Close target", () => {
-    const title = "TASK-" + "verylongidentifier".repeat(8);
+    const title = `TASK-${"verylongidentifier".repeat(8)}`;
     render(
       <Sheet title={title} onClose={vi.fn()}>
         body

@@ -63,6 +63,7 @@ describe("Toast (Sonner)", () => {
         live = useConnection().live;
         return (
           <button
+            type="button"
             onClick={() => {
               void held.then(() => (failure ? toast.error("Failed") : toast.success("Done")));
             }}
@@ -98,7 +99,11 @@ describe("Toast (Sonner)", () => {
     function OfflineToast() {
       const toast = useToast();
       live = useConnection().live;
-      return <button onClick={() => toast({ message: "Offline refusal" })}>Refuse</button>;
+      return (
+        <button type="button" onClick={() => toast({ message: "Offline refusal" })}>
+          Refuse
+        </button>
+      );
     }
     const user = userEvent.setup();
     render(
@@ -125,6 +130,7 @@ describe("Toast (Sonner)", () => {
       live = useConnection().live;
       return (
         <button
+          type="button"
           onClick={() => {
             void held.then(() => toast.success("Stale completion"));
           }}

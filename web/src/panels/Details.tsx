@@ -126,6 +126,7 @@ export function Details(p: DetailsProps) {
   );
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: p.itemKey re-runs the agents scroll when the panel moves to another item, the effect does not read it
   useEffect(() => {
     if (p.focus !== "agents") return;
     pendingAgentScroll.current = "";

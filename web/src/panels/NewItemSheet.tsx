@@ -170,6 +170,7 @@ export function NewItemSheet(p: {
         <fieldset className="space-y-1">
           <legend>{C.acceptance}</legend>
           {form.acceptance.map((a, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: acceptance lines are editable strings with no id; the index keeps focus on the row being typed in
             <div key={i} className="flex gap-1">
               <Input
                 aria-label={`${C.acceptance} ${i + 1}`}

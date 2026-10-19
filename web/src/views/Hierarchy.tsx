@@ -93,11 +93,11 @@ export function Hierarchy(p: HierarchyProps) {
         <span>STATUS</span>
         <span className="text-right">AGENTS</span>
       </div>
-      {/* biome-ignore lint/a11y/useSemanticElements: ARIA tree pattern */}
       <div
         ref={tree}
         role="tree"
         aria-label={C.hierarchy}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the tree container takes focus and moves the selection with the arrow keys
         tabIndex={0}
         onKeyDown={onKeyDown}
         className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -118,6 +118,7 @@ export function Hierarchy(p: HierarchyProps) {
                 else if (!open && menu?.key === it.key) closeMenu();
               }}
             >
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard selection is handled by onKeyDown on the tree container */}
               <div
                 role="treeitem"
                 aria-label={`${it.key} ${it.title}`}
