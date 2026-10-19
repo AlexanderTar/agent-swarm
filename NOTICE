@@ -1,0 +1,12 @@
+Agent Swarm
+Copyright 2026 Alexander Taraymovich
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes third-party material under its own licences:
+
+- Menu bar icons: assets/icons/LICENSES.md (CC0 1.0 and MIT).
+- Vendored agent skills: internal/install/skills/vendor/README.md, with each
+  skill's upstream LICENSE and VENDORED.md in its own directory (MIT and
+  Apache-2.0). The graphify skill carries its own NOTICE in
+  internal/install/skills/vendor/graphify/NOTICE.

@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in Swarm (daemon, board, menu bar app, CLI or skills) doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The fields match `swarm_report_bug`, so a report from `swarm bugs` can be pasted in field by field.
+        Leave out tokens, email addresses, private repository content and transcript excerpts.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead. Exact error text if it's short.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the bug.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Log lines (`~/.swarm/logs/`), item or request ids, timestamps, `swarm doctor` output.
+      render: text
+  - type: textarea
+    id: user_said
+    attributes:
+      label: What the user said
+      description: For reports filed by an agent, the user's own words that prompted it.
+  - type: textarea
+    id: cause
+    attributes:
+      label: Cause
+      description: Only if you verified it.
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      placeholder: e.g. workflow engine, menu bar usage, swarm install
+  - type: input
+    id: version
+    attributes:
+      label: Swarm version
+      description: "`git rev-parse --short HEAD` in your agent-swarm checkout"
+  - type: input
+    id: agents
+    attributes:
+      label: Agent kinds involved
+      placeholder: e.g. claude, codex

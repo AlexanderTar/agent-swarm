@@ -211,8 +211,12 @@ make e2e       # end-to-end run with the fake agent (no model calls)
 make dev       # daemon on :17777 with a scratch ~/.swarm-dev
 ```
 
+## Contributing
+
+Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test and coverage gate, commit style, and how to let your own Swarm agents file the Swarm bugs they hit as issues or pull requests here.
+
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Vendored skills under `skills/vendor/` keep their own licenses; see each `VENDORED.md` and `skills/vendor/README.md` for provenance. This includes UI and mobile design guidance and the ponytail simplicity/debt skills.
+Third-party material keeps its own licence: the vendored skills under `internal/install/skills/vendor/` (see `internal/install/skills/vendor/README.md` and each skill's `VENDORED.md`) and the menu bar icons (`assets/icons/LICENSES.md`).

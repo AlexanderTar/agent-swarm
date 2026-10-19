@@ -10,7 +10,7 @@ The menu bar uses these files as single-colour template images (spec §21.1).
 | `agy.svg` | LobeHub Icons, `@lobehub/icons-static-svg` `antigravity.svg` | MIT, Copyright (c) 2023 LobeHub |
 | `muse.svg` | LobeHub Icons, `@lobehub/icons-static-svg` `meta.svg` (https://github.com/lobehub/lobe-icons) | MIT, Copyright (c) 2023 LobeHub |
 | `grok.svg` | LobeHub Icons, `@lobehub/icons-static-svg` 1.95.1 `icons/grok.svg` (https://github.com/lobehub/lobe-icons) | MIT, Copyright (c) 2023 LobeHub |
-| `swarm.svg` | Drawn for Agent Swarm | MIT, same as this repository |
+| `swarm.svg` | Drawn for Agent Swarm | Apache-2.0, same as this repository |
 
 Product names and logos are trademarks of their owners. They identify which agent a value belongs to.
 
