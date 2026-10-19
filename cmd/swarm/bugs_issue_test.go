@@ -169,6 +169,9 @@ func TestRedactStripsEmailsAndTokens(t *testing.T) {
 		"key sk-ant-api03-abcdefghijklmnop",
 		"Authorization: Bearer abcdefghijklmnopqrstuv",
 		"TOKEN=abcd1234efgh5678",
+		"DB_PASSWORD=hunter2hunter2",
+		"API_TOKEN: abcd1234efgh5678",
+		"OPENAI_API_KEY=abcdefgh12345678",
 		"slack xoxb-1234567890-abcdefghij",
 		"aws AKIAABCDEFGHIJKLMNOP",
 		"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc-DEF_123",
@@ -177,10 +180,18 @@ func TestRedactStripsEmailsAndTokens(t *testing.T) {
 		if !strings.Contains(got, "[redacted") || got == in {
 			t.Errorf("redact(%q) = %q", in, got)
 		}
-		for _, secret := range []string{"me@example.com", "ghp_", "github_pat_11", "sk-ant", "abcdefghijklmnopqrstuv", "abcd1234efgh5678", "xoxb-", "AKIAABCD", "eyJhbGci"} {
+		for _, secret := range []string{"me@example.com", "ghp_", "github_pat_11", "sk-ant", "abcdefghijklmnopqrstuv", "abcd1234efgh5678", "xoxb-", "AKIAABCD", "eyJhbGci", "hunter2", "abcdefgh12345678", "jdoe"} {
 			if strings.Contains(got, secret) {
 				t.Errorf("redact(%q) = %q still has %q", in, got, secret)
 			}
+		}
+	}
+	for in, want := range map[string]string{
+		"log at /Users/jdoe/GitHub/acme/main.go": "log at ~/GitHub/acme/main.go",
+		"log at /home/jdoe/src/x.go":             "log at ~/src/x.go",
+	} {
+		if got := redact(in); got != want {
+			t.Errorf("redact(%q) = %q, want %q", in, got, want)
 		}
 	}
 	keep := "commit 0404ace7747d0a2d005b6946c4261f9821a77ef6 in msg_01M59KVZF9VN1HHJ5HCB8832SE at /a/b/c.go:12"
@@ -201,5 +212,30 @@ func TestBugsListShowsIssueURL(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ISSUE") || !strings.Contains(out.String(), filedURL) {
 		t.Errorf("list lacks the issue column:\n%s", out.String())
+	}
+}
+
+func TestBugsIssueSearchQuotesTheTitle(t *testing.T) {
+	url, home, _, closeSrv := bugDaemon(t, "")
+	defer closeSrv()
+	calls := fakeGH(t, `[]`)
+	var out bytes.Buffer
+	if code := run([]string{"bugs", "--home", home, "--url", url, "--issue", "bug_x", "--dry-run"}, &out, &out); code != 0 {
+		t.Fatalf("exit %d: %s", code, out.String())
+	}
+	if s := joined((*calls)[0]); !strings.Contains(s, `--search "Daemon drops events" in:title`) {
+		t.Fatalf("search not quoted: %s", s)
+	}
+}
+
+func TestBugsRejectsIssueFlagsWithoutIssue(t *testing.T) {
+	url, home, _, closeSrv := bugDaemon(t, "")
+	defer closeSrv()
+	for _, extra := range [][]string{{"--dry-run"}, {"--repo", "o/r"}} {
+		var out bytes.Buffer
+		args := append([]string{"bugs", "--home", home, "--url", url}, extra...)
+		if code := run(args, &out, &out); code != 2 || !strings.Contains(out.String(), "--issue") {
+			t.Errorf("%v: exit %d, %q", extra, code, out.String())
+		}
 	}
 }

@@ -28,7 +28,7 @@ type bugDetail struct {
 	Area         string `json:"area"`
 }
 
-// secretPatterns match emails and token-like strings. Order matters: the key=value
+// secretPatterns match emails, token-like strings and home directories (which name the user). Order matters: the key=value
 // form runs last so it doesn't re-wrap what a specific pattern already redacted.
 var secretPatterns = []struct {
 	re   *regexp.Regexp
@@ -42,7 +42,8 @@ var secretPatterns = []struct {
 	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), "[redacted-token]"},
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), "[redacted-token]"},
 	{regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}`), "Bearer [redacted-token]"},
-	{regexp.MustCompile(`(?i)\b(token|secret|password|passwd|api[_-]?key|authorization)(\s*[:=]\s*)[^\s"']{8,}`), "${1}${2}[redacted-token]"},
+	{regexp.MustCompile(`(?i)([A-Za-z0-9_]*(?:token|secret|password|passwd|api[_-]?key|authorization))(\s*[:=]\s*)[^\s"']{8,}`), "${1}${2}[redacted-token]"},
+	{regexp.MustCompile(`(?:/Users|/home)/[^/\s]+`), "~"},
 }
 
 // redact masks emails and token-like strings before a report leaves the machine.
@@ -81,7 +82,7 @@ func fileBugIssue(c *client, id, repo string, dry bool, stdout, stderr io.Writer
 	title, body := redact(strings.TrimSpace(b.Title)), issueBody(b)
 	ctx := context.Background()
 	found, err := ghRun(ctx, "gh", "issue", "list", "--repo", repo, "--state", "open",
-		"--search", title+" in:title", "--json", "number,title,url", "--limit", "30")
+		"--search", `"`+strings.ReplaceAll(title, `"`, "")+`" in:title`, "--json", "number,title,url", "--limit", "30")
 	if err != nil {
 		return fail(stderr, err)
 	}

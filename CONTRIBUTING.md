@@ -50,7 +50,7 @@ swarm bugs --issue <id> --dry-run    # print the title, body and target; post no
 swarm bugs --issue <id> --repo OWNER/NAME   # file somewhere else (default AlexanderTar/agent-swarm)
 ```
 
-It needs an authenticated [`gh`](https://cli.github.com). Swarm builds the issue (label `bug`) from the report's fields, masks emails and token-like strings, and leaves out the transcript. If an open issue already has the same title it comments there instead of opening a duplicate. The issue URL is stored on the report and shown in `swarm bugs`; a second `--issue` for the same report refuses. Read the `--dry-run` output first: the masking recognises common token formats, not every secret.
+It needs an authenticated [`gh`](https://cli.github.com). Swarm builds the issue (label `bug`) from the report's fields, masks emails and token-like strings, shortens home folders to `~`, and leaves out the transcript. If an open issue already has the same title it comments there instead of opening a duplicate. The issue URL is stored on the report and shown in `swarm bugs`; a second `--issue` for the same report refuses. Read the `--dry-run` output first: the masking recognises common token formats, not every secret, and private repository names are left as they are.
 
 If you want your agents to offer this, add a rule to your Swarm instructions (menu bar app, Settings → Instructions, or ask an agent to add it with `swarm_instructions`). Agents only act on it when it's in your instructions:
 

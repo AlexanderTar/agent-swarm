@@ -526,6 +526,10 @@ func cmdBugs(args []string, stdout, stderr io.Writer) int {
 	if issue != "" {
 		return fileBugIssue(c, issue, repo, dry, stdout, stderr)
 	}
+	if dry || repo != defaultBugRepo {
+		fmt.Fprint(stderr, "--repo and --dry-run need --issue ID\n")
+		return 2
+	}
 	var list []bugRow
 	if err := c.do("GET", "/api/bugs", nil, &list); err != nil {
 		return fail(stderr, err)
