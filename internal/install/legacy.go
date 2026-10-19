@@ -41,9 +41,11 @@ var legacyShellScripts = []string{"swarmd-start.sh", "swarm-update.sh"}
 func RemoveLegacyShared(ctx context.Context, c Config, run execx.Runner, confirm func(string) bool) ([]string, error) {
 	var changed []string
 
-	target := fmt.Sprintf("gui/%d/%s", c.UID, UpdaterLabel)
-	if _, err := run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
-		return changed, fmt.Errorf("launchctl bootout %s: %w", UpdaterLabel, err)
+	if !c.Isolated {
+		target := fmt.Sprintf("gui/%d/%s", c.UID, UpdaterLabel)
+		if _, err := run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
+			return changed, fmt.Errorf("launchctl bootout %s: %w", UpdaterLabel, err)
+		}
 	}
 
 	app := filepath.Join(c.Home, "app")

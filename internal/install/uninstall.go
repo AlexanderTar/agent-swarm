@@ -11,15 +11,17 @@ import (
 // configuration. It keeps ~/.swarm (data), the superpowers plugins (§12.4) and the
 // cursor attribution keys (L23).
 func Uninstall(ctx context.Context, o AgentsOpts) error {
-	target := fmt.Sprintf("gui/%d/%s", o.Cfg.UID, Label)
-	if _, err := o.Run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
-		return fmt.Errorf("launchctl bootout %s: %w", Label, err)
-	}
-	plist := PlistPath(o.Cfg)
-	if err := os.Remove(plist); err != nil && !os.IsNotExist(err) {
-		return err
-	} else if err == nil {
-		o.report("removed", []string{plist})
+	if !o.Cfg.Isolated {
+		target := fmt.Sprintf("gui/%d/%s", o.Cfg.UID, Label)
+		if _, err := o.Run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
+			return fmt.Errorf("launchctl bootout %s: %w", Label, err)
+		}
+		plist := PlistPath(o.Cfg)
+		if err := os.Remove(plist); err != nil && !os.IsNotExist(err) {
+			return err
+		} else if err == nil {
+			o.report("removed", []string{plist})
+		}
 	}
 
 	// Hook and MCP entries. EditJSON with create=false never creates a file.
