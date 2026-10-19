@@ -811,7 +811,7 @@ func TestInstallDryRun(t *testing.T) {
 	userHome := t.TempDir()
 	t.Setenv("HOME", userHome)
 	t.Setenv("USER", "tester")
-	code, out, _ := swarm("install", "--dry-run", "--home", home)
+	code, out, _ := swarm("install", "--dry-run", "--live", "--home", home)
 	if code != 0 || !strings.Contains(out, "Would write "+filepath.Join(userHome, "Library", "LaunchAgents")) ||
 		!strings.Contains(out, "<string>daemon</string>") ||
 		!strings.Contains(out, "<key>SWARM_HOME</key><string>"+home+"</string>") ||
@@ -1178,5 +1178,64 @@ func TestInstallWiresClaudeSessionsToTheDaemon(t *testing.T) {
 	}
 	if len(got.Finished) != 1 || got.Finished[0] != "/h/work/2" {
 		t.Fatalf("Finished = %q", got.Finished)
+	}
+}
+
+// BUG-100: a SWARM_HOME other than ~/.swarm must not reach the live launchd job or
+// the user's agent configuration unless --live says so.
+func TestInstallAndUninstallIsolateANonDefaultHome(t *testing.T) {
+	savedAgents, savedLaunchd, savedUninstall := installAgents, installLaunchd, installUninstall
+	t.Cleanup(func() { installAgents, installLaunchd, installUninstall = savedAgents, savedLaunchd, savedUninstall })
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	var got []bool
+	installLaunchd = func(_ context.Context, c install.Config, _ execx.Runner, _ bool, _ io.Writer) error {
+		got = append(got, c.Isolated)
+		return nil
+	}
+	installAgents = func(_ context.Context, o install.AgentsOpts) error { got = append(got, o.Cfg.Isolated); return nil }
+	installUninstall = func(_ context.Context, o install.AgentsOpts) error { got = append(got, o.Cfg.Isolated); return nil }
+	scratch := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"scratch home", []string{"--home", scratch}, true},
+		{"scratch home with --live", []string{"--live", "--home", scratch}, false},
+		{"default home", []string{"--home", filepath.Join(userHome, ".swarm")}, false},
+		{"default home, unclean path", []string{"--home", filepath.Join(userHome, ".swarm") + "/"}, false},
+	} {
+		for _, cmd := range []string{"install", "uninstall"} {
+			got = nil
+			if code := run(append([]string{cmd}, tc.args...), io.Discard, io.Discard); code != 0 {
+				t.Fatalf("%s %s: code %d", cmd, tc.name, code)
+			}
+			for _, isolated := range got {
+				if isolated != tc.want {
+					t.Errorf("%s %s: Isolated = %v, want %v", cmd, tc.name, isolated, tc.want)
+				}
+			}
+			if len(got) == 0 {
+				t.Errorf("%s %s: nothing was called", cmd, tc.name)
+			}
+		}
+	}
+}
+
+// An isolated uninstall must not claim it removed the launch agent.
+func TestIsolatedUninstallDoesNotClaimToRemoveAnything(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Never run the real Uninstall here: its launchctl bootout of the fixed
+	// dev.swarm.daemon label stops the live daemon whatever HOME is.
+	saved := installUninstall
+	t.Cleanup(func() { installUninstall = saved })
+	installUninstall = func(context.Context, install.AgentsOpts) error { return nil }
+	var out bytes.Buffer
+	if code := run([]string{"uninstall", "--home", t.TempDir()}, &out, io.Discard); code != 0 {
+		t.Fatalf("code %d", code)
+	}
+	if strings.Contains(out.String(), "Removed the launch agent") {
+		t.Errorf("output = %q", out.String())
 	}
 }

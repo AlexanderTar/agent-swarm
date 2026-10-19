@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end run with the fake adapter (spec §23.1, §23.2).
 # It never touches the live daemon, ~/.swarm, the real tmux server or a real agent.
+# It never runs `swarm install`/`uninstall`; to run those against a scratch home,
+# follow docs/isolated-runs.md (fake HOME, launchctl stub, no --live).
 set -euo pipefail
 # Explicit, not "/opt/homebrew/bin:$PATH": the daemon's catalog loop runs
 # `claude --version`/`codex --version`/etc. against whatever it finds on

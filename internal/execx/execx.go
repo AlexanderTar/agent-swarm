@@ -9,16 +9,32 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
+
+// refuseUnderTest stops the real runners from reaching launchd inside a test
+// binary. launchd labels (dev.swarm.daemon, dev.swarm.updater) are machine-wide,
+// so a fake HOME or SWARM_HOME doesn't protect the live daemon: one unstubbed
+// `launchctl bootout` from a test stopped it (BUG-100). Tests inject a Fake.
+func refuseUnderTest(name string) error {
+	if testing.Testing() && filepath.Base(name) == "launchctl" {
+		return fmt.Errorf("execx: refusing to run launchctl in a test; inject execx.Fake instead")
+	}
+	return nil
+}
 
 // Runner runs a command to completion and returns its stdout.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 // Run is the real Runner. Stdin is closed; commands get at most 30 s if no deadline is set.
 func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if err := refuseUnderTest(name); err != nil {
+		return nil, err
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
@@ -41,6 +57,9 @@ type RunnerEnv func(ctx context.Context, env map[string]string, name string, arg
 
 // RunEnv is the real RunnerEnv.
 func RunEnv(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+	if err := refuseUnderTest(name); err != nil {
+		return nil, err
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)

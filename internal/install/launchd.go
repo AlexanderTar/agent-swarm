@@ -30,6 +30,12 @@ type Config struct {
 	UID             int
 	User            string // USER for the daemon; omitted when empty
 	UserHome        string // HOME for the daemon; omitted when empty
+	// Isolated is set when Home is not the default ~/.swarm and the caller did
+	// not ask for --live. Install and Uninstall then leave the live launchd
+	// jobs (dev.swarm.daemon, dev.swarm.updater) and the user-level agent
+	// configuration alone: both are fixed, machine-wide names that a scratch
+	// home must not be able to stop or rewrite.
+	Isolated bool
 }
 
 func PlistPath(c Config) string { return filepath.Join(c.LaunchAgentsDir, Label+".plist") }
@@ -134,6 +140,10 @@ func HasLegacyData(dbPath string) bool {
 func Install(ctx context.Context, c Config, run execx.Runner, dryRun bool, w io.Writer) error {
 	if HasLegacyData(filepath.Join(c.Home, "swarm.db")) {
 		return db.ErrLegacy
+	}
+	if c.Isolated {
+		fmt.Fprintf(w, "%s is not the default swarm home, so the %s launch agent was left alone. Pass --live to install it anyway.\n", c.Home, Label)
+		return nil
 	}
 	path := PlistPath(c)
 	target := fmt.Sprintf("gui/%d", c.UID)

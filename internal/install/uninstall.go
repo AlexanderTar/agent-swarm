@@ -11,6 +11,12 @@ import (
 // configuration. It keeps ~/.swarm (data), the superpowers plugins (§12.4) and the
 // cursor attribution keys (L23).
 func Uninstall(ctx context.Context, o AgentsOpts) error {
+	if o.Cfg.Isolated {
+		if o.Out != nil {
+			fmt.Fprintf(o.Out, "%s is not the default swarm home, so the launch agent and the agents' own configuration under %s were left alone. Pass --live to remove them anyway.\n", o.Cfg.Home, o.Cfg.UserHome)
+		}
+		return nil
+	}
 	target := fmt.Sprintf("gui/%d/%s", o.Cfg.UID, Label)
 	if _, err := o.Run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
 		return fmt.Errorf("launchctl bootout %s: %w", Label, err)

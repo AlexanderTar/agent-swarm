@@ -797,7 +797,10 @@ func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action 
 			if err != nil {
 				return err
 			}
-			if n, _ := res.RowsAffected(); n > 0 {
+			// A Ready item only moves to in_progress once the step's agent has
+			// accepted (items.acceptedSince), which WriteCheckpoint does. Trying
+			// here is a guaranteed deny that tryTransition would log.
+			if n, _ := res.RowsAffected(); n > 0 && it.Status != items.Ready {
 				return s.tryTransition(ctx, tx, it.Key, items.InProgress)
 			}
 			return nil
