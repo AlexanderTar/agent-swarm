@@ -13,8 +13,8 @@ const (
 	GateTDD            Gate = "tdd"             // red (ok:false) before green (ok:true), same round
 	GateCommit         Gate = "commit"          // git present, clean, sha == worktree HEAD
 	GateVerify         Gate = "verify"          // every declared verify cmd recorded ok:true
-	GateArtifactDesign Gate = "artifact:design" // a design artifact path under ~/.swarm/designs
-	GateArtifactNotes  Gate = "artifact:notes"  // research notes under ~/.swarm/research
+	GateArtifactDesign Gate = "artifact:design" // a design artifact path under $SWARM_HOME/designs
+	GateArtifactNotes  Gate = "artifact:notes"  // research notes under $SWARM_HOME/research
 )
 
 // Loop describes the fix-and-retry cycle attached to a review step.

@@ -26,6 +26,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 	sqlite "modernc.org/sqlite"
+	"path/filepath"
 )
 
 var errLostRace = errors.New("workflow transition lost race")
@@ -1042,6 +1043,23 @@ func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *
 	return []string{"Previous round's review findings:\n" + renderFindings(findings)}, nil
 }
 
+// gateDirLines names the directory a step's artifact gate checks, resolved
+// from SWARM_HOME, so the agent never has to guess a ~/.swarm path.
+func (s *Store) gateDirLines(it items.Item, step workflow.Step) []string {
+	var out []string
+	for _, g := range step.Gates {
+		switch g {
+		case workflow.GateArtifactNotes:
+			out = append(out, fmt.Sprintf("Write your research notes under %s/ (e.g. %s.md) and list the file in artifacts; a path elsewhere, such as specs/, fails the notes gate.",
+				filepath.Join(s.Home, "research", it.RootKey), filepath.Join(s.Home, "research", it.RootKey, it.Key)))
+		case workflow.GateArtifactDesign:
+			out = append(out, fmt.Sprintf("Write your design file under %s/ and list the file in artifacts.",
+				filepath.Join(s.Home, "designs", it.RootKey)))
+		}
+	}
+	return out
+}
+
 // stepBrief builds the brief spawnRunAgent hands Spawn for run (identity
 // fields are Spawn's), plus the rw worktrees a build step shares. StartWorkflow's
 // preflight calls it too, so the two can't drift.
@@ -1059,6 +1077,7 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 		return BriefInput{}, nil, err
 	}
 	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
+	ctxLines = append(ctxLines, s.gateDirLines(it, step)...)
 	if step.Run != "" && run.Round > 1 {
 		findingLines, err := s.roundFindingLines(ctx, wf.ID, &spec, run.StepID, run.Round)
 		if err != nil {

@@ -1030,6 +1030,40 @@ func TestSyncToolReturnsAnUnackedListEvenWhenEmpty(t *testing.T) {
 	}
 }
 
+// artifacts takes plain path strings only; the schema says so upfront, so an
+// agent doesn't learn it from a JSON unmarshal error after sending {kind,path}.
+func TestSwarmCheckpointArtifactsSchemaIsPathStrings(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name != "swarm_checkpoint" {
+			continue
+		}
+		var schema struct {
+			Properties struct {
+				Artifacts struct {
+					Type        string `json:"type"`
+					Description string `json:"description"`
+					Items       struct {
+						Type string `json:"type"`
+					} `json:"items"`
+				} `json:"artifacts"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(d.Schema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		a := schema.Properties.Artifacts
+		if a.Type != "array" || a.Items.Type != "string" {
+			t.Fatalf("artifacts schema = %+v, want an array of strings", a)
+		}
+		if !strings.Contains(a.Description, "path strings") {
+			t.Fatalf("artifacts description = %q, want it to say path strings, not objects", a.Description)
+		}
+		return
+	}
+	t.Fatal("swarm_checkpoint tool not found")
+}
+
 func TestSwarmCheckpointVerdictSchema(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()

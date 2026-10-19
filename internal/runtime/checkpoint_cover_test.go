@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
@@ -80,6 +82,40 @@ func TestHasIntegrationVerifyPassedReadsCurrentAndPastEvidence(t *testing.T) {
 	seedCheckpointRow(t, s, w, wSes, "", `[]`, `[{"cmd":"make lint","ok":true},{"cmd":"make test","ok":true}]`)
 	if !check(nil, "make test") || check(nil, "make bench") {
 		t.Fatal("past evidence must match the exact command")
+	}
+}
+
+// The latest run of the command decides: an old pass can't hide a newer
+// failure, and a newer pass fixes an older failure. Red-phase runs are skipped.
+func TestHasIntegrationVerifyPassedLatestRunWins(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	check := func(current []Verify) bool {
+		t.Helper()
+		var ok bool
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			var err error
+			ok, err = s.hasIntegrationVerifyPassed(ctx, tx, w.ItemID, current, "make test")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	seedCheckpointRow(t, s, w, wSes, "", `[]`, `[{"cmd":"make test","ok":true}]`)
+	if check([]Verify{{Cmd: "make test", OK: false}}) {
+		t.Fatal("an older pass hid the failure in the checkpoint being written")
+	}
+	seedCheckpointRow(t, s, w, wSes, "", `[]`, `[{"cmd":"make test","ok":false}]`)
+	if check(nil) {
+		t.Fatal("an older pass hid a later failing checkpoint")
+	}
+	if !check([]Verify{{Cmd: "make test", OK: false}, {Cmd: "make test", OK: true}}) {
+		t.Fatal("a rerun that passed after a failure should count")
+	}
+	if !check([]Verify{{Cmd: "make test", OK: true}, {Cmd: "make test", Phase: "red", OK: false}}) {
+		t.Fatal("a red-phase failure should not count against the command")
 	}
 }
 
@@ -226,6 +262,99 @@ func TestResearchNotesGateRequiresAndRegistersNotes(t *testing.T) {
 	}
 	if err := wantCount(s, `SELECT COUNT(*) FROM artifacts WHERE kind = 'research' AND path = ?`, 1, notes); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The notes gate also accepts research/<origin spike key>/ for a root that
+// was materialized from a spike, and never specs/: the refusal names both
+// accepted directories.
+func TestResearchNotesGateAcceptsOriginSpikeDir(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+		{ID: "research", Run: "researcher", Gates: []workflow.Gate{workflow.GateArtifactNotes}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, st, _ := startedWorkflow(t, s, spec)
+	ses := agentSessionForStep(t, s, st.ID, "research")
+	spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Look into it", SpikeIntent: "feature"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET origin_spike_id = ? WHERE key = 'EPIC-1'`, spike.ID); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# Notes\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete := func(path string) error {
+		_, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done", Artifacts: []string{path}})
+		return err
+	}
+
+	specNotes := filepath.Join(s.Home, "specs", "2026-10-19-"+spike.Key+"-research-x.md")
+	write(specNotes)
+	rootDir := filepath.Join(s.Home, "research", "EPIC-1")
+	spikeDir := filepath.Join(s.Home, "research", spike.Key)
+	if err := complete(specNotes); !isBadRequest(err, "research notes in artifacts (under "+rootDir+"/ or "+spikeDir+"/)") {
+		t.Fatalf("specs/ file: err = %v, want a refusal naming %s/ and %s/", err, rootDir, spikeDir)
+	}
+
+	notes := filepath.Join(spikeDir, "TASK-1.md")
+	write(notes)
+	if err := complete(notes); err != nil {
+		t.Fatalf("notes under the origin spike's research dir: %v", err)
+	}
+	if err := wantCount(s, `SELECT COUNT(*) FROM artifacts WHERE kind = 'research' AND path = ?`, 1, notes); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A notes/design step's brief names the directory the gate checks, resolved
+// from SWARM_HOME rather than a hardcoded ~/.swarm.
+func TestStepBriefNamesGateDirUnderSwarmHome(t *testing.T) {
+	for _, c := range []struct {
+		gate     workflow.Gate
+		run, dir string
+	}{
+		{workflow.GateArtifactNotes, "researcher", "research"},
+		{workflow.GateArtifactDesign, "designer", "designs"},
+	} {
+		t.Run(c.dir, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+				{ID: "work", Run: c.run, Gates: []workflow.Gate{c.gate}},
+			}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, taskKey, _, st, _ := startedWorkflow(t, s, spec)
+			it, err := s.Items.Get(ctx, taskKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wf, _, err := s.workflowRowByID(ctx, st.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: "work", Role: c.run, Round: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(s.Home, c.dir, it.RootKey) + "/"
+			if !slices.ContainsFunc(brief.Context, func(l string) bool { return strings.Contains(l, want) }) {
+				t.Fatalf("brief context = %v, want a line naming %s", brief.Context, want)
+			}
+		})
 	}
 }
 

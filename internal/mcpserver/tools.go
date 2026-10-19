@@ -116,7 +116,7 @@ func checkpointTool(s *Server) ToolDef {
 				"cmd":{"type":"string"},"phase":{"type":"string"},"ok":{"type":"boolean"},"note":{"type":"string"},
 				"unit":{"type":"integer"}},
 				"required":["cmd","ok"]}},
-			"artifacts":{"type":"array"},"processed":{"type":"array"},
+			"artifacts":{"type":"array","items":{"type":"string"},"description":"File paths as plain path strings (not {kind,path} objects), e.g. the research notes or design file a gated step needs."},"processed":{"type":"array"},
 			"title":{"type":"string","description":"Only when your kickoff says the item has no name yet: a 3–6 word name for the work."},
 			"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"label":{"type":"string","description":"1–80 chars: names this step for the work at hand"}},"required":["id"]},"description":"Root orchestrators only. Spike: step statuses (and optional labels) by id; omitted ids keep their status. Epic, bug or chore: labels only for the fixed steps context, work, integrate and accept; statuses are derived."},
 			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},

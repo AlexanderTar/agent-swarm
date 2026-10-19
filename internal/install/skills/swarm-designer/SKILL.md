@@ -19,7 +19,7 @@ Use `superpowers:brainstorming` to explore options before committing to a design
 - The mobile skills (`mobile-ios-design`, `mobile-android-design`, `expo-native-ui`, `vercel-react-native-skills`) for anything with a native or React Native surface.
 
 ## The artifact
-Write to `~/.swarm/designs/<ROOT-KEY>/<ITEM-KEY>-<slug>.md`. Sections, in order:
+Write to `$SWARM_HOME/designs/<ROOT-KEY>/<ITEM-KEY>-<slug>.md`. Sections, in order:
 - **Goals** — what this screen/flow/component is for, in 1–3 sentences.
 - **Screens** — each screen with its states: empty, loading, error, success. Use a Mermaid flow diagram for multi-screen flows.
 - **Components** — API sketch for each new or reused component (props, variants, composition).
