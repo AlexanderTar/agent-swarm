@@ -413,6 +413,19 @@ describe("Details panel (§16.9)", () => {
     expect(within(screen.getByRole("tabpanel", { name: "Deps" })).getByRole("button", { name: "+ Add dependency" })).toBeInTheDocument();
   });
 
+  it("lets a long brief wrap and grow on phones instead of overflowing or overlapping", async () => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/TASK-102", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/TASK-102", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), brief: "Fix internal/workflow/templates.go:20 `\"debug\": reviewed(\"fix\", \"debugger\")`\nsecond line" },
+    } });
+    setup("TASK-102", {}, d);
+    const brief = await screen.findByRole("button", { name: "Brief" });
+    expect(brief).toHaveClass("max-md:h-auto", "[overflow-wrap:anywhere]");
+    expect(brief).not.toHaveClass("max-md:h-11");
+  });
+
   it("offers Start or View orchestrator on top-level items only", async () => {
     const a = setup("EPIC-20");
     await a.user.click(await screen.findByRole("button", { name: "Start orchestrator" }));

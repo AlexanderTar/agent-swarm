@@ -64,7 +64,7 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
         aria-label={p.multiline ? p.label : undefined}
         disabled={p.disabled}
         onClick={() => { setDraft(p.value); setEditing(true); }}
-        className={`h-auto w-full justify-start whitespace-pre-wrap p-1 text-left ${p.className ?? ""}`}
+        className={`h-auto max-md:h-auto min-h-8 max-md:min-h-11 w-full justify-start whitespace-pre-wrap [overflow-wrap:anywhere] p-1 text-left ${p.className ?? ""}`}
       >
         {p.value || <span className="text-muted-foreground">—</span>}
       </Button>
