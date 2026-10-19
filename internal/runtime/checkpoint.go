@@ -829,19 +829,41 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 }
 
 // verifyDeclaredState classifies want against entries, in order. An entry
-// matches when its whitespace-normalized cmd contains the normalized want.
-// Red-phase entries are skipped: a red run is meant to fail and says nothing
-// about the declared command. The latest matching entry decides, so an
-// earlier pass can't hide a later failure and a rerun can fix one.
+// matches when its whitespace-normalized cmd contains the normalized want as
+// whole words (see containsCmd). Red-phase entries are skipped: a red run is
+// meant to fail and says nothing about the declared command. The latest
+// matching entry decides, so an earlier pass can't hide a later failure and a
+// rerun can fix one.
 func verifyDeclaredState(entries []Verify, want string) (found, passed bool) {
 	w := normalizeWhitespace(want)
 	for _, v := range entries {
-		if v.Phase == "red" || !strings.Contains(normalizeWhitespace(v.Cmd), w) {
+		if v.Phase == "red" || !containsCmd(normalizeWhitespace(v.Cmd), w) {
 			continue
 		}
 		found, passed = true, v.OK
 	}
 	return found, passed
+}
+
+// containsCmd reports whether want occurs in cmd bounded on both sides by the
+// string's ends, whitespace or a shell separator, so "cd web && pnpm test -- x"
+// contains "pnpm test" but "pnpm test:e2e" does not.
+func containsCmd(cmd, want string) bool {
+	if want == "" {
+		return false
+	}
+	boundary := func(b byte) bool { return strings.IndexByte(" ;&|()", b) >= 0 }
+	for off := 0; ; {
+		i := strings.Index(cmd[off:], want)
+		if i < 0 {
+			return false
+		}
+		start, end := off+i, off+i+len(want)
+		if (start == 0 || boundary(cmd[start-1])) && (end == len(cmd) || boundary(cmd[end])) {
+			return true
+		}
+		off = start + 1
+	}
 }
 
 func normalizeWhitespace(s string) string {
@@ -1112,14 +1134,25 @@ func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID
 func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a Agent, in CheckpointInput, kind, dir string) error {
 	roots := []string{filepath.Join(s.Home, dir, it.RootKey)}
 	if kind == "research" {
-		var spikeKey sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id IN
-			(SELECT origin_spike_id FROM items WHERE id IN (?, ?)) LIMIT 1`, it.ID, it.RootID).Scan(&spikeKey)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// The task's and the root's origin spikes can differ; accept both.
+		rows, err := tx.QueryContext(ctx, `SELECT key FROM items WHERE id IN
+			(SELECT origin_spike_id FROM items WHERE id IN (?, ?)) ORDER BY key`, it.ID, it.RootID)
+		if err != nil {
 			return err
 		}
-		if spikeKey.Valid && spikeKey.String != it.RootKey {
-			roots = append(roots, filepath.Join(s.Home, dir, spikeKey.String))
+		for rows.Next() {
+			var spikeKey string
+			if err := rows.Scan(&spikeKey); err != nil {
+				rows.Close()
+				return err
+			}
+			if spikeKey != it.RootKey {
+				roots = append(roots, filepath.Join(s.Home, dir, spikeKey))
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
 		}
 	}
 	home, _ := os.UserHomeDir() // "" on failure: expandHome then leaves a leading ~ alone, matched by nothing

@@ -318,6 +318,49 @@ func TestResearchNotesGateAcceptsOriginSpikeDir(t *testing.T) {
 	}
 }
 
+// The task and its root can come from different spikes; notes under either
+// spike's research dir pass.
+func TestResearchNotesGateAcceptsTaskAndRootSpikeDirs(t *testing.T) {
+	for _, pick := range []string{"task", "root"} {
+		t.Run(pick, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+				{ID: "research", Run: "researcher", Gates: []workflow.Gate{workflow.GateArtifactNotes}},
+			}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, _, st, _ := startedWorkflow(t, s, spec)
+			ses := agentSessionForStep(t, s, st.ID, "research")
+			spikes := map[string]items.Item{}
+			for _, k := range []string{"task", "root"} {
+				sp, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike " + k, SpikeIntent: "feature"}, items.User("board"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				spikes[k] = sp
+			}
+			if _, err := s.DB.ExecContext(ctx, `UPDATE items SET origin_spike_id = ? WHERE key = 'TASK-1'`, spikes["task"].ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.DB.ExecContext(ctx, `UPDATE items SET origin_spike_id = ? WHERE key = 'EPIC-1'`, spikes["root"].ID); err != nil {
+				t.Fatal(err)
+			}
+			notes := filepath.Join(s.Home, "research", spikes[pick].Key, "TASK-1.md")
+			if err := os.MkdirAll(filepath.Dir(notes), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(notes, []byte("# Notes\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done", Artifacts: []string{notes}}); err != nil {
+				t.Fatalf("notes under the %s's origin spike dir: %v", pick, err)
+			}
+		})
+	}
+}
+
 // A notes/design step's brief names the directory the gate checks, resolved
 // from SWARM_HOME rather than a hardcoded ~/.swarm.
 func TestStepBriefNamesGateDirUnderSwarmHome(t *testing.T) {

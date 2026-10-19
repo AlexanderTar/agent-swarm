@@ -1735,6 +1735,17 @@ func TestVerifyGateRefusesFailedDeclaredCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("failing longer command is not the declared one", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+		setItemVerify(t, s, "TASK-1", "pnpm test")
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "cd web && pnpm test", OK: true}, {Cmd: "pnpm test:e2e", OK: false}}}); err != nil {
+			t.Fatalf("pnpm test:e2e failing must not count against declared pnpm test: %v", err)
+		}
+	})
+
 	t.Run("later red run does not count as a failure", func(t *testing.T) {
 		s, _, _ := newStore(t)
 		ctx := context.Background()

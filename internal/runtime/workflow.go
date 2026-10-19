@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -26,7 +27,6 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 	sqlite "modernc.org/sqlite"
-	"path/filepath"
 )
 
 var errLostRace = errors.New("workflow transition lost race")
