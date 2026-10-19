@@ -302,11 +302,20 @@ func TestAnOpenApprovalMovesTheSpikeToAwaitingApproval(t *testing.T) {
 // package source, so a future handler that tries is caught at test time.
 func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var files []*ast.File
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
 	}
 	// nativeAnswer is the one agent-reachable user_action origin (Task 13c,
 	// spec 1.6.2): it is allowed here only because it is guarded by the
@@ -319,26 +328,24 @@ func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	// never creates a decision.
 	allowed := map[string]bool{"Answer": true, "Approve": true, "RequestChanges": true,
 		"ConfirmRepos": true, "CloseSpike": true, "nativeAnswer": true, "deliverFinishApproval": true}
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				fn, ok := n.(*ast.FuncDecl)
-				if !ok {
-					return true
-				}
-				var uses bool
-				ast.Inspect(fn, func(m ast.Node) bool {
-					if lit, ok := m.(*ast.BasicLit); ok && lit.Value == `"user_action"` {
-						uses = true
-					}
-					return true
-				})
-				if uses && !allowed[fn.Name.Name] {
-					t.Errorf("%s writes origin user_action; only the UI and CLI paths may (L7)", fn.Name.Name)
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok {
+				return true
+			}
+			var uses bool
+			ast.Inspect(fn, func(m ast.Node) bool {
+				if lit, ok := m.(*ast.BasicLit); ok && lit.Value == `"user_action"` {
+					uses = true
 				}
 				return true
 			})
-		}
+			if uses && !allowed[fn.Name.Name] {
+				t.Errorf("%s writes origin user_action; only the UI and CLI paths may (L7)", fn.Name.Name)
+			}
+			return true
+		})
 	}
 }
 

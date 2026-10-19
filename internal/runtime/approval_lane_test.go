@@ -592,12 +592,11 @@ func TestChoreEndToEndAcceptFix(t *testing.T) {
 	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, reqID) }); err != nil {
 		t.Fatal(err)
 	}
-	p, n := relayFor(t, s, orch.ID, reqID)
-	if n != 1 {
+	if _, n := relayFor(t, s, orch.ID, reqID); n != 1 {
 		t.Fatalf("%d relays, want 1", n)
 	}
 	passPrint(t, s, ses)
-	p, _ = relayFor(t, s, orch.ID, reqID)
+	p, _ := relayFor(t, s, orch.ID, reqID)
 	np := decodeNP(t, p)
 	if np.Header != "Finish chore" || len(np.Options) != 3 {
 		t.Fatalf("native prompt = %+v", np)

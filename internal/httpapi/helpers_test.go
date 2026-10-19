@@ -255,19 +255,6 @@ func (e *runtimeEnv) post(t *testing.T, path, body string) *rec {
 	return &rec{Code: code, Body: bytes.NewBuffer(out)}
 }
 
-// getNoToken and postSession are the two variants the auth tests need.
-func (e *runtimeEnv) getNoToken(t *testing.T, path string) *rec {
-	t.Helper()
-	code, out := e.call(http.MethodGet, path, nil, "")
-	return &rec{Code: code, Body: bytes.NewBuffer(out)}
-}
-
-func (e *runtimeEnv) postSession(t *testing.T, path, token, body string) *rec {
-	t.Helper()
-	code, out := e.call(http.MethodPost, path, json.RawMessage(body), token)
-	return &rec{Code: code, Body: bytes.NewBuffer(out)}
-}
-
 // postToken is env.call with a session token instead of the daemon token (Task 34).
 func (e *runtimeEnv) postToken(t *testing.T, token, path, body string) *rec {
 	t.Helper()

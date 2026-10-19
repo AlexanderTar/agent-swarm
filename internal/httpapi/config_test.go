@@ -84,13 +84,13 @@ func TestExcludesChangeTriggersRescan(t *testing.T) {
 	go e.repos.Loop(ctx, func(context.Context) time.Duration { return time.Hour })
 	waitUntil(t, func() bool { return len(repoNames(t, e, "")) == 3 })
 
-	status, b := e.api("GET", "/api/settings", nil)
+	_, b := e.api("GET", "/api/settings", nil)
 	cur := decode[settings.Settings](t, b)
 	cur.ScanExcludes = append(cur.ScanExcludes, "~/GitHub/tools")
 	extra := filepath.Join(e.home, "Later/extra")
 	os.MkdirAll(extra, 0o755)
 	localGit(t, "init", "-q", extra)
-	if status, b = e.api("PUT", "/api/settings", cur); status != 200 {
+	if status, b := e.api("PUT", "/api/settings", cur); status != 200 {
 		t.Fatalf("PUT = %d %s", status, b)
 	}
 	waitUntil(t, func() bool { return slices.Contains(repoNames(t, e, ""), "extra") })

@@ -20,12 +20,6 @@ var (
 	agyFlatEvents    = []string{"PreInvocation", "PostInvocation", "Stop"}
 )
 
-type agyFlatHook struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"`
-}
-
 // AgyHooks is the swarm block of ~/.gemini/config/hooks.json.
 func AgyHooks(c Config) []byte {
 	body, err := json.MarshalIndent(map[string]any{agyHookName: agySwarmBlock(c)}, "", "  ")

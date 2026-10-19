@@ -524,20 +524,6 @@ func blockOn(t *testing.T, s *Server, key, blockedBy string) {
 	}
 }
 
-func confirmRepo(t *testing.T, s *Server, rootKey, repoID string) {
-	t.Helper()
-	ctx := context.Background()
-	it, err := s.RT.Items.Get(ctx, rootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next := append(append([]string{}, it.Repos...), repoID)
-	b, _ := json.Marshal(next)
-	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ? WHERE key = ?`, string(b), rootKey); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // seedOtherOrchestrator seeds a second epic with its own orchestrator session.
 func seedOtherOrchestrator(t *testing.T, s *Server) Caller {
 	t.Helper()

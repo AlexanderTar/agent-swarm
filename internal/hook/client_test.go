@@ -95,7 +95,7 @@ func TestRunIsSilentWhenTheDaemonIsDown(t *testing.T) {
 
 func TestRunIsSilentOnANonSuccessStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"code":"unauthorized","message":"Missing or invalid token."}}`, 401)
+		http.Error(w, `{"error":{"code":"unauthorized","message":"Missing or invalid token."}}`, http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 	var out bytes.Buffer

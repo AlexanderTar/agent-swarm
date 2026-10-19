@@ -31,7 +31,7 @@ func newDoctorEnv(t *testing.T) *doctorEnv {
 	}}
 	e.daemon = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !e.healthy || r.URL.Path != "/api/health" {
-			http.Error(w, "down", 503)
+			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
 		}
 		w.Write([]byte(`{"ok":true,"version":"dev","schema":1}`))

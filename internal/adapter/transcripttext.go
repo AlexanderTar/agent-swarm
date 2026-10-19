@@ -13,21 +13,6 @@ import (
 // 4 MiB comfortably covers several turns of ordinary tool output.
 const transcriptTailBytes = 4 << 20
 
-// readTranscriptLines reads path (a JSONL transcript) line by line, trimming
-// whitespace and dropping blank lines. A missing/unreadable file, or a
-// scanner error partway through (a line over the 16 MiB per-line cap, or an
-// I/O error), is reported as an error -- the caller then fails open. A
-// malformed individual line is left for the caller's own per-line
-// json.Unmarshal to skip.
-func readTranscriptLines(path string) ([][]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return scanTranscript(f)
-}
-
 // scanTranscript reads f (positioned wherever the caller left it) to EOF,
 // trimming and dropping blank lines, and checks sc.Err(): a scanner error
 // (a line over the 16 MiB per-line cap, or an I/O error partway through)

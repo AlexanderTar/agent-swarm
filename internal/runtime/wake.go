@@ -457,11 +457,6 @@ func (s *Store) markWoken(ctx context.Context, sessionID string, native bool) er
 	return nil
 }
 
-func (s *Store) recordPasteAttempt(ctx context.Context, sessionID string, n int, at time.Time) error {
-	s.recordPasteAttemptMem(sessionID, n, at)
-	return nil
-}
-
 // shouldLogQuotaSkip reports whether WakeOnQuotaReset should log a "pane not
 // idle" skip for sessionID at this cutoff -- true (and records it) only the
 // first time this exact (session, cutoff) pair is seen, so a session stuck

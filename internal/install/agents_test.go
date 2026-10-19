@@ -73,7 +73,7 @@ func TestAgentsRemovesTheV1IntegrationsBeforeWritingTheNewOnes(t *testing.T) {
 	// leftover-symlink cleanup papered over running out of order" (T6's WriteClaude
 	// already removes a stale v1 symlink itself), so this checks the report log
 	// Agents itself produces, not just the end state on disk.
-	if s := out.String(); strings.Index(s, "wrote ") >= 0 && strings.LastIndex(s, "removed ") > strings.Index(s, "wrote ") {
+	if s := out.String(); strings.Contains(s, "wrote ") && strings.LastIndex(s, "removed ") > strings.Index(s, "wrote ") {
 		t.Errorf("a writer ran before removal finished:\n%s", s)
 	}
 	// Removal happened. A1 (unit 1.2): Claude's own v2 skill exposure is
