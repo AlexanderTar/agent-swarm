@@ -1,6 +1,6 @@
 # Contributing to Agent Swarm
 
-Thanks for helping. Bug reports, fixes, new agent kinds and docs are all welcome.
+Thanks for helping. Bug reports, fixes, new agent kinds and docs are all welcome. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Licence
 
@@ -42,14 +42,22 @@ Open an issue with the **Bug report** template. Include the Swarm version (`git 
 
 ### Let your agents report Swarm bugs upstream
 
-When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_report_bug`. That report stays on your Mac (`swarm bugs` lists them). If you'd like those reports to reach this repository, add a rule to your Swarm instructions (menu bar app, Settings → Instructions, or ask an agent to add it with `swarm_instructions`). Agents only act on it when it's in your instructions, and they ask you before posting anything.
+When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_report_bug`. That report stays on your Mac (`swarm bugs` lists them). To send one to this repository, run:
 
-File an issue for each new bug:
+```bash
+swarm bugs --issue <id>              # the id is in swarm_report_bug's result and in `swarm bugs`
+swarm bugs --issue <id> --dry-run    # print the title, body and target; post nothing
+swarm bugs --issue <id> --repo OWNER/NAME   # file somewhere else (default AlexanderTar/agent-swarm)
+```
+
+It needs an authenticated [`gh`](https://cli.github.com). Swarm builds the issue (label `bug`) from the report's fields, masks emails and token-like strings, and leaves out the transcript. If an open issue already has the same title it comments there instead of opening a duplicate. The issue URL is stored on the report and shown in `swarm bugs`; a second `--issue` for the same report refuses. Read the `--dry-run` output first: the masking recognises common token formats, not every secret.
+
+If you want your agents to offer this, add a rule to your Swarm instructions (menu bar app, Settings → Instructions, or ask an agent to add it with `swarm_instructions`). Agents only act on it when it's in your instructions:
 
 ```markdown
 ## Reporting Swarm bugs upstream
 
-Whenever you report a Swarm bug with `swarm_report_bug`, also offer to file it as a GitHub issue on AlexanderTar/agent-swarm. Ask me first, then run `gh issue create -R AlexanderTar/agent-swarm --label bug` with the report's title and a body made of its fields (what happened, repro, evidence, what I said, cause, area). Remove tokens, emails, private repository names and transcript excerpts before posting. Search open issues first (`gh issue list -R AlexanderTar/agent-swarm --search "<title>"`) and comment on a matching issue instead of opening a duplicate.
+Whenever you report a Swarm bug with `swarm_report_bug`, also offer to file it on GitHub by running `swarm bugs --issue <id>` (the id is in the tool result). Ask me first.
 ```
 
 Or, if you work on Swarm yourself, turn fixes into pull requests:

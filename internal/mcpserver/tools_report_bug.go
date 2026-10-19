@@ -118,7 +118,8 @@ func reportBugTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			out := map[string]any{"id": res.ID, "transcript": res.Transcript}
+			out := map[string]any{"id": res.ID, "transcript": res.Transcript,
+				"hint": "To file this on GitHub, offer the user `swarm bugs --issue " + res.ID + "` (add --dry-run to preview); ask first."}
 			if res.ItemKey != "" {
 				out["item_key"] = res.ItemKey
 			}

@@ -178,7 +178,7 @@ Every agent can consult a stronger model before big decisions, when stuck, and b
 
 ## How agents talk to Swarm
 
-Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkpoint`, `swarm_ask`, `swarm_send`, `swarm_read`, `swarm_kb`, `swarm_report_bug` (records a bug in Swarm itself in the local store, with your transcript attached; list them with `swarm bugs`, `board: true` also files a Draft bug), `swarm_advise` (agents without Claude's built-in advisor), and for orchestrators `swarm_items`, `swarm_artifact`, `swarm_worktree`, `swarm_spawn`, `swarm_control`, `swarm_materialize`, `swarm_role_overrides`, `swarm_catalog`. Messages are stored in SQLite first; hooks and short notices only tell the agent to fetch them. Nothing an agent sends counts as your approval.
+Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkpoint`, `swarm_ask`, `swarm_send`, `swarm_read`, `swarm_kb`, `swarm_report_bug` (records a bug in Swarm itself in the local store, with your transcript attached; list them with `swarm bugs`, file one on GitHub with `swarm bugs --issue ID`, `board: true` also files a Draft bug), `swarm_advise` (agents without Claude's built-in advisor), and for orchestrators `swarm_items`, `swarm_artifact`, `swarm_worktree`, `swarm_spawn`, `swarm_control`, `swarm_materialize`, `swarm_role_overrides`, `swarm_catalog`. Messages are stored in SQLite first; hooks and short notices only tell the agent to fetch them. Nothing an agent sends counts as your approval.
 
 ## Files
 
@@ -213,7 +213,7 @@ make dev       # daemon on :17777 with a scratch ~/.swarm-dev
 
 ## Contributing
 
-Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test and coverage gate, commit style, and how to let your own Swarm agents file the Swarm bugs they hit as issues or pull requests here.
+Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test and coverage gate, commit style, and how to let your own Swarm agents file the Swarm bugs they hit as issues or pull requests here. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

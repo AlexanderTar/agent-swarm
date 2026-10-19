@@ -355,3 +355,20 @@ func TestReportBugCapsFreeTextFields(t *testing.T) {
 		})
 	}
 }
+
+func TestReportBugResultNamesTheIssueCommand(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	out, err := s.call(context.Background(), seed.Caller, "swarm_report_bug",
+		`{"title":"Sync drops acks","what_happened":"ack ignored"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		ID   string `json:"id"`
+		Hint string `json:"hint"`
+	}
+	json.Unmarshal(mustJSON(out), &got)
+	if want := "swarm bugs --issue " + got.ID; got.ID == "" || !strings.Contains(got.Hint, want) {
+		t.Fatalf("hint = %q, want it to contain %q", got.Hint, want)
+	}
+}
