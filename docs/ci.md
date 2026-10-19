@@ -7,7 +7,7 @@
 | Job (status check name) | Runner | Commands |
 |---|---|---|
 | Go format and vet | ubuntu | `make web-build`, `make fmt vet` |
-| Go tests and coverage | ubuntu | `make web-build`, `go test -race -timeout 30m ./...`, `scripts/cover.sh` |
+| Go tests and coverage | macOS | `make web-build`, `brew install tmux gnupg`, `go test -race -timeout 30m ./...`, `scripts/cover.sh` |
 | Web tests and typecheck | ubuntu | `pnpm typecheck`, `pnpm test` (vitest with coverage), in `web/` |
 | Web e2e (Playwright, mock daemon) | ubuntu | `pnpm exec playwright install --with-deps chromium`, `pnpm e2e`, in `web/` |
 | Skills mirror is in sync | ubuntu | `make skills-sync`, then `git diff --exit-code -- internal/install/skills` and no untracked files there |
@@ -28,7 +28,7 @@ Run the job's commands from the table at the repo root with `GO=go` (or your own
 
 - **Go packages embed `web/dist`.** `go vet ./...` and `go test` fail to compile until `make web-build` has run. `web/dist` is git-ignored, so a fresh checkout always needs the build first.
 - **`scripts/e2e.sh` pins `PATH`** (`/opt/homebrew/bin:/usr/bin:/bin`) so the daemon can never find a real agent CLI. A toolchain installed elsewhere (CI's `setup-go`) is not on that PATH; set `SWARM_E2E_PATH` to the full list, with the Go directory first: `SWARM_E2E_PATH="$(dirname "$(command -v go)"):/opt/homebrew/bin:/usr/bin:/bin" scripts/e2e.sh`.
-- **The e2e job runs on macOS because it needs tmux 3.6+.** Observed with Debian's tmux 3.3a (Docker, `golang:1.27-bookworm`): the pause and crash scenarios (`TestScenario08`, `09`, `10`) fail, with "tmux: server exited unexpectedly" in the daemon log. Ubuntu's apt tmux is older than 3.6 as well. The Go unit tests pass on Linux with older tmux.
-- **To check a Linux job on your Mac,** use Docker: `docker run --init --rm -v "$PWD":/src -w /src golang:1.27-bookworm bash -c 'apt-get update -qq && apt-get install -y -qq tmux gnupg curl procps && go test -race ./...'`. Git inside the mounted worktree prints "not a git repository" noise; it is harmless.
+- **The Go tests run on macOS, not Linux.** The daemon only targets macOS. In a Linux container (non-root user, no git identity) `TestSlowClientDoesNotBlockOthers` fails every time because it depends on macOS socket-buffer behaviour, and `TestRenameWindowSetsTheWindowName` fails unless `LANG` is a UTF-8 locale (tmux replaces emoji with `_` otherwise; the macOS jobs set `LANG=en_US.UTF-8`). Linux is fine for `gofmt` and `go vet` (`GOOS=linux go vet ./...` is clean). Running the suite as root also fails the permission tests (`TestTokenEmptyIsReplacedUnreadableFails`, `TestCreateSucceedsWhenTheExcludeIsUnwritable`, `TestReclaimCodexHomesLogsARemoveFailureAndKeepsSweeping`), because root ignores file modes.
+- **The e2e job runs on macOS because it needs tmux 3.6+.** Observed with Debian's tmux 3.3a (Docker, `golang:1.27-bookworm`): the pause and crash scenarios (`TestScenario08`, `09`, `10`) fail, with "tmux: server exited unexpectedly" in the daemon log. Ubuntu's apt tmux is older than 3.6 as well.
 - **e2e scenarios must follow the daemon's current contract.** They had drifted (print-then-ask approvals, finishing checkpoints, waiver text in gate errors) and failed on `main` before CI existed. When you change a daemon message or flow, run `scripts/e2e.sh` and update the scenarios in the same change. Scenarios that start several agents (`TestScenario08`) can time out on a heavily loaded machine; rerun them alone with `scripts/e2e.sh -run TestScenario08` before calling them broken.
 - **Registering fixture repos in e2e:** `h.finishRepo` renames the repo after the test, because the catalog is keyed by directory name and `t.TempDir()` leaves are all `001`.

@@ -37,8 +37,12 @@ jobs:
 
   go-test:
     name: Go tests and coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # macOS: the daemon only targets macOS, and the suite relies on its socket buffers
+    # (TestSlowClientDoesNotBlockOthers fails on Linux) and on tmux 3.6+ (Ubuntu's apt tmux is older).
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      LANG: en_US.UTF-8 # tmux window titles carry emoji; TestRenameWindowSetsTheWindowName needs UTF-8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -47,7 +51,7 @@ jobs:
       - uses: ./.github/actions/setup-web
       - run: make web-build
       - name: Install tmux and gpg for the tests that drive them
-        run: sudo apt-get update && sudo apt-get install -y tmux gnupg
+        run: brew install tmux gnupg
       - run: go test -race -timeout 30m ./...
       - run: scripts/cover.sh
 
@@ -106,6 +110,8 @@ jobs:
     # macOS: scripts/e2e.sh drives tmux, and the daemon needs tmux 3.6+, which Ubuntu's apt lacks.
     runs-on: macos-latest
     timeout-minutes: 45
+    env:
+      LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
