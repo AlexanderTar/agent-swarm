@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
@@ -257,6 +258,59 @@ func TestResearchNotesGateRequiresAndRegistersNotes(t *testing.T) {
 	}
 	if err := complete(notes); err != nil {
 		t.Fatal(err)
+	}
+	if err := wantCount(s, `SELECT COUNT(*) FROM artifacts WHERE kind = 'research' AND path = ?`, 1, notes); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The notes gate also accepts research/<origin spike key>/ for a root that
+// was materialized from a spike, and never specs/: the refusal names both
+// accepted directories.
+func TestResearchNotesGateAcceptsOriginSpikeDir(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+		{ID: "research", Run: "researcher", Gates: []workflow.Gate{workflow.GateArtifactNotes}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, st, _ := startedWorkflow(t, s, spec)
+	ses := agentSessionForStep(t, s, st.ID, "research")
+	spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Look into it", SpikeIntent: "feature"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET origin_spike_id = ? WHERE key = 'EPIC-1'`, spike.ID); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# Notes\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete := func(path string) error {
+		_, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done", Artifacts: []string{path}})
+		return err
+	}
+
+	specNotes := filepath.Join(s.Home, "specs", "2026-10-19-"+spike.Key+"-research-x.md")
+	write(specNotes)
+	rootDir := filepath.Join(s.Home, "research", "EPIC-1")
+	spikeDir := filepath.Join(s.Home, "research", spike.Key)
+	if err := complete(specNotes); !isBadRequest(err, "research notes in artifacts (under "+rootDir+"/ or "+spikeDir+"/)") {
+		t.Fatalf("specs/ file: err = %v, want a refusal naming %s/ and %s/", err, rootDir, spikeDir)
+	}
+
+	notes := filepath.Join(spikeDir, "TASK-1.md")
+	write(notes)
+	if err := complete(notes); err != nil {
+		t.Fatalf("notes under the origin spike's research dir: %v", err)
 	}
 	if err := wantCount(s, `SELECT COUNT(*) FROM artifacts WHERE kind = 'research' AND path = ?`, 1, notes); err != nil {
 		t.Fatal(err)

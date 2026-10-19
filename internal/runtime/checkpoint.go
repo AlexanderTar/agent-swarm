@@ -1105,14 +1105,27 @@ func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID
 
 // artifactGate is the workflow artifact:design / artifact:notes gate (spec
 // B5): artifacts must contain a readable file under
-// ~/.swarm/<dir>/<ROOT-KEY>/, which is then registered on the task.
+// <SWARM_HOME>/<dir>/<ROOT-KEY>/, which is then registered on the task. Research
+// notes are also accepted under <dir>/<origin spike key>/ when the task or its
+// root was materialized from a spike. specs/ never counts: it holds approved
+// specs and plans, not per-task notes.
 func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a Agent, in CheckpointInput, kind, dir string) error {
-	root := filepath.Join(s.Home, dir, it.RootKey)
-	prefix := root + string(filepath.Separator)
+	roots := []string{filepath.Join(s.Home, dir, it.RootKey)}
+	if kind == "research" {
+		var spikeKey sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id IN
+			(SELECT origin_spike_id FROM items WHERE id IN (?, ?)) LIMIT 1`, it.ID, it.RootID).Scan(&spikeKey)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if spikeKey.Valid && spikeKey.String != it.RootKey {
+			roots = append(roots, filepath.Join(s.Home, dir, spikeKey.String))
+		}
+	}
 	home, _ := os.UserHomeDir() // "" on failure: expandHome then leaves a leading ~ alone, matched by nothing
 	for _, raw := range in.Artifacts {
 		p := filepath.Clean(expandHome(raw, home))
-		if !strings.HasPrefix(p, prefix) {
+		if !slices.ContainsFunc(roots, func(r string) bool { return strings.HasPrefix(p, r+string(filepath.Separator)) }) {
 			continue
 		}
 		if fi, err := os.Stat(p); err != nil || fi.IsDir() {
@@ -1124,10 +1137,10 @@ func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a A
 	if kind == "research" {
 		noun = "research notes"
 	}
-	// The real, resolved directory (finding 8) -- not a hardcoded
+	// The real, resolved directories (finding 8) -- not a hardcoded
 	// "~/.swarm/..." that would mislead when SWARM_HOME differs.
 	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
-		"Completed needs your %s in artifacts (under %s/).", noun, root)}
+		"Completed needs your %s in artifacts (under %s/).", noun, strings.Join(roots, "/ or "))}
 }
 
 // expandHome resolves a leading "~" (or "~/...") in p against home, leaving
