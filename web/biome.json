@@ -12,6 +12,6 @@
     "lineWidth": 100
   },
   "files": {
-    "ignore": ["**/dist/**", "**/.next/**", "**/node_modules/**", "**/out/**", "**/src/components/ui/**"]
+    "ignore": ["**/dist/**", "**/.next/**", "**/node_modules/**", "**/out/**", "**/src/components/ui/**", "**/coverage/**", "**/playwright-report/**", "**/test-results/**"]
   }
 }

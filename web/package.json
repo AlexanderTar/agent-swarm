@@ -8,6 +8,7 @@
     "dev:mock": "SWARM_MOCK=1 vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "e2e": "playwright test --project=mock --project=mobile --project=tablet",
@@ -33,6 +34,7 @@
     "utif2": "4.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.2",
