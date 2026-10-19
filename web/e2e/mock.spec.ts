@@ -161,7 +161,8 @@ test("hierarchy, filters and view switching keep the selection", async ({ page }
     await expect(page).toHaveURL(/#\/kanban\?item=TASK-102$/);
   } else {
     // Below 1100 px the non-modal Details sheet is full width on purpose (Sheet.tsx), so it covers the
-    // view tabs: the user closes it first, which also drops the selection.
+    // view tabs: the user closes it first, which also drops the selection. So only the desktop project
+    // checks that a view switch keeps the selection; the tablet project checks the covering and the switch.
     const details = page.getByRole("dialog", { name: "TASK-102" });
     await settled(details);
     const covered = await kanban.evaluate((el) => {
