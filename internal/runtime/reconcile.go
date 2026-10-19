@@ -1675,17 +1675,23 @@ func (s *Store) ReclaimWorktreesLoop(ctx context.Context, every time.Duration) {
 	}
 }
 
-// ReconcileLoop runs Reconcile every `every` until ctx is cancelled.
+// ReconcileLoop runs Reconcile every `every` until ctx is cancelled. The period is measured from the
+// start of a tick, so a slow tick (many live panes, a loaded machine) does not stretch the gap between
+// ticks: pause and crash detection are promised within a bound that assumes `every`. A tick that overruns
+// still leaves every/5 before the next one, so a struggling daemon is not hammered back to back.
 func (s *Store) ReconcileLoop(ctx context.Context, every time.Duration) {
+	wait := every
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.after(every):
+		case <-s.after(wait):
 		}
+		start := s.now()
 		if err := s.Reconcile(ctx); err != nil {
 			s.logf("reconcile: %v", err)
 		}
+		wait = max(every-s.now().Sub(start), every/5)
 	}
 }
 

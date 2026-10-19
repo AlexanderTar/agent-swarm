@@ -227,10 +227,16 @@ func TestScenarioHandoffWorker(t *testing.T) {
 	// fake agent's boot sync consumes the one-shot recovery bundle, by
 	// design), so the durable assignment still resolves and the full
 	// recovery read replays the predecessor's evidence.
+	// The boot sync is the successor process's own, so it lands after the session row on a loaded machine.
 	var firstSyncAt int64
-	if err := h.db(t).QueryRow(`SELECT COALESCE(first_sync_at, 0) FROM sessions WHERE id = ?`,
-		succID).Scan(&firstSyncAt); err != nil {
-		t.Fatal(err)
+	for deadline := time.Now().Add(10 * time.Second); firstSyncAt == 0 && time.Now().Before(deadline); {
+		if err := h.db(t).QueryRow(`SELECT COALESCE(first_sync_at, 0) FROM sessions WHERE id = ?`,
+			succID).Scan(&firstSyncAt); err != nil {
+			t.Fatal(err)
+		}
+		if firstSyncAt == 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 	if firstSyncAt == 0 {
 		t.Fatal("successor never took its first sync")

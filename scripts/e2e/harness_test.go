@@ -56,7 +56,32 @@ func newHarness(t *testing.T) *harness {
 	}
 	h := &harness{url: url, token: token, home: home, http: &http.Client{Timeout: 30 * time.Second}}
 	h.enableFake(t)
+	// Registered first, so it runs after every cleanup a scenario added.
+	t.Cleanup(func() { h.endLeftoverAgents(t) })
 	return h
+}
+
+// endLeftoverAgents kills every agent process still running in the e2e tmux server. The fake agent sleeps
+// forever, so without this the panes of all earlier scenarios stay alive for the rest of the run (48 by
+// scenario 30). The daemon's reconcile tick does per-pane work, so a tick takes about 1 s on a loaded
+// 3-vCPU runner instead of 0.15 s, and the scenarios that wait for the next tick (pause and crash detection
+// within 6 s, spec 23.2) then miss their deadline. Dead panes are skipped: remain-on-exit keeps them listed,
+// and their pids may belong to someone else by now.
+func (h *harness) endLeftoverAgents(t *testing.T) {
+	t.Helper()
+	socket := os.Getenv("SWARM_TMUX_SOCKET")
+	if socket == "" {
+		t.Fatal("SWARM_TMUX_SOCKET is not set")
+	}
+	out, err := exec.Command("tmux", "-L", socket, "list-panes", "-a", "-F", "#{pane_dead} #{pane_pid}").Output()
+	if err != nil {
+		return // no tmux server yet: nothing was spawned
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if dead, pid, ok := strings.Cut(line, " "); ok && dead == "0" {
+			exec.Command("kill", "-9", pid).Run()
+		}
+	}
 }
 
 // enableFake writes the enabled_agents row directly: kinds.AgentKinds
@@ -77,9 +102,9 @@ func (h *harness) enableFake(t *testing.T) {
 	defer d.Close()
 	now := time.Now().UnixMilli()
 
-	// The whole suite shares one daemon and never tears an agent down between
-	// tests, so the production default (4 concurrent agents) runs out well
-	// before scenario 30 — raise it generously here, every time (idempotent,
+	// The whole suite shares one daemon and a test's agents are only killed when
+	// it ends (endLeftoverAgents), not as they finish, so the production default
+	// (4 concurrent agents) runs out well before scenario 30 — raise it generously here, every time (idempotent,
 	// cheap), not just on the first call: if scenario 11's own t.Cleanup that
 	// restores max_concurrent_agents were ever skipped (a panic, say), every
 	// later test still gets it raised back up here rather than staying stuck

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,6 +235,46 @@ func TestReconcileLoopStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ReconcileLoop did not stop on cancel")
+	}
+}
+
+// The period is measured from the start of a tick, not from its end: a slow Reconcile (dozens of live
+// panes on a loaded machine) must not stretch the gap between ticks, because pause and crash detection
+// are promised within a bound that assumes `every`.
+func TestReconcileLoopMeasuresThePeriodFromTheTickStart(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	panes(tm)
+	// A clock that moves 1s on every read: Reconcile reads it many times, so the tick "takes" several seconds.
+	var mu sync.Mutex
+	base := time.Now()
+	var reads int
+	s.Now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		reads++
+		return base.Add(time.Duration(reads) * time.Second)
+	}
+	waits := make(chan time.Duration, 8)
+	s.After = func(d time.Duration) <-chan time.Time {
+		waits <- d
+		tick := make(chan time.Time, 1)
+		tick <- time.Now()
+		return tick
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.ReconcileLoop(ctx, time.Minute)
+		close(done)
+	}()
+	first, second := <-waits, <-waits
+	cancel()
+	<-done
+	if first != time.Minute {
+		t.Fatalf("first wait = %s, want the full period", first)
+	}
+	if second >= time.Minute {
+		t.Fatalf("wait after a slow tick = %s, want less than the period: the gap between ticks grew by the tick's duration", second)
 	}
 }
 
