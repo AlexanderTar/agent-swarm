@@ -53,3 +53,14 @@ func TestUpdateLeavesLegacyOverlongBriefAlone(t *testing.T) {
 		t.Fatalf("title-only update of a legacy long brief: %v", err)
 	}
 }
+
+// The cap is in characters, as the message says, so a brief of multi-byte
+// characters at the cap is accepted and one over it is refused.
+func TestBriefCapCountsCharactersNotBytes(t *testing.T) {
+	if !items.BriefFits(strings.Repeat("é", items.MaxBrief)) {
+		t.Fatalf("%d two-byte characters must fit", items.MaxBrief)
+	}
+	if items.BriefFits(strings.Repeat("é", items.MaxBrief+1)) {
+		t.Fatalf("%d characters must not fit", items.MaxBrief+1)
+	}
+}
