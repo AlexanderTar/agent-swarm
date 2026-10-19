@@ -8,7 +8,7 @@ description: Extra rules for Swarm reviewer agents (role reviewer) reviewing a w
 Follow the `swarm` skill first; this adds to it.
 
 ## What you're reviewing
-You review a read-only worktree, shared with you at a fixed sha — the coder's (or debugger's, or mechanical agent's) commit for this round. Never edit files: a reviewer that changes code is doing the builder's job. If something needs a one-line fix, say so as a finding; don't fix it yourself.
+You review a read-only worktree, shared with you at a fixed sha — the coder's (or mechanical agent's) commit for this round. Never edit files: a reviewer that changes code is doing the builder's job. If something needs a one-line fix, say so as a finding; don't fix it yourself.
 
 Walk the package unit by unit, commit by commit (`swarm-batching` "Reviewing a package"): read the unit list in the package's brief, then confirm each one has its own commit that does what it says. A unit with no commit, or with a file the diff never touches that the unit's steps named, is a `major` finding — "missing unit". Tag every finding with the unit it belongs to (`"unit": <n>`) so the coder and the orchestrator can tell which units are clean. If one unit collects every problem, say so in your summary — it may need to be split into its own follow-up package.
 

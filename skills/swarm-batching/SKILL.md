@@ -77,14 +77,14 @@ Every package gets an explicit `workflow`. The workflow names the role for each 
 | Backend, library or CLI behaviour change | `tdd-reviewed`: coder, then reviewer |
 | Any UI code, web or native | `ui-tdd-reviewed`: coder, then reviewer and ui_reviewer |
 | Designing a new screen, flow or component before it is built | `design-reviewed`: designer, then ui_reviewer. It blocks the UI package that builds it. |
-| Fixing a reproducible bug | `debug`: debugger, then reviewer |
+| Fixing a reproducible bug | `debug`: debugger diagnoses, then coder fixes, then reviewer |
 | Renames, config, docs-only changes, generated files, vendoring | `mechanical` (mechanical, no review) — or steps `[{run: mechanical}, {review: [reviewer]}]` when a license or provenance check matters |
 | An open question that needs evidence | `research`: researcher |
 | Security-sensitive change | Its own package (`solo: "security"`), `tdd-reviewed` with `max_rounds: 4`. The context names the security focus. |
 
 If a package needs two rows (UI plus backend), use the stricter workflow. If the rows need different reviewers for unrelated work, split the package.
 
-## Executing a package (coders, debuggers, mechanical agents)
+## Executing a package (coders, mechanical agents)
 
 - Keep all units with the same coder agent in one task assignment. Work unit by unit, in order. Each unit gets its own red → green cycle. Record verification entries with `"unit": <n>`, and make one commit per unit. That lets a reviewer read the history as the unit list.
 - Run the package's `verify` commands once all units are done, then write `completed`.

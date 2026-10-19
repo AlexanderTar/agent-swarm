@@ -22,7 +22,7 @@ Gates on run steps are `tdd`, `commit`, `verify`, `artifact:design` and `artifac
 | Backend, library or CLI behavior | `tdd-reviewed`: coder → reviewer |
 | Any web or native UI code | `ui-tdd-reviewed`: coder → reviewer + ui_reviewer |
 | New screen, flow or component design | `design-reviewed`: designer → ui_reviewer; block the build package on it |
-| Reproducible defect | `debug`: debugger → reviewer |
+| Reproducible defect (the debugger diagnoses and reports; the coder fixes with TDD) | `debug`: debugger → coder → reviewer |
 | Rename, config, docs, generated files or vendoring | `mechanical`: mechanical; use explicit review steps for license or provenance checks |
 | Open question or evidence gathering | `research`: researcher |
 | Security-sensitive change | Own package with `solo: "security"`, `tdd-reviewed` and `max_rounds: 4`; name the security focus in context |

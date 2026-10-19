@@ -1274,7 +1274,7 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			// the orchestrator to weigh with ITS advisor, not to consult
 			// swarm-advisor directly.
 			`"cmd"`,
-			"## Units",
+			"artifacts",
 		}},
 		{"swarm-mechanical", []string{
 			"Follow the `swarm` skill first",
@@ -1679,6 +1679,48 @@ func TestSkillsNameGrokAndAntigravity(t *testing.T) {
 			if bareAgy.MatchString(codeSpan.ReplaceAllString(line, "")) {
 				t.Errorf("skills/%s/SKILL.md:%d names agy in prose; write Antigravity", file, i+1)
 			}
+		}
+	}
+}
+
+// The debug workflow is diagnose (debugger) -> fix (coder) -> review: a
+// debugger reports the cause and never commits a fix, and every skill that
+// names the workflow says so.
+func TestDebugWorkflowSplitsDiagnosisFromFix(t *testing.T) {
+	debugger := string(install.SkillBody("swarm-debugger"))
+	for _, want := range []string{
+		"diagnose",
+		"~/.swarm/research/",
+		"`artifacts`",
+		"Never edit tracked files",
+		"never commit",
+		"regression test the coder should write",
+	} {
+		if !strings.Contains(debugger, want) {
+			t.Errorf("swarm-debugger lacks %q", want)
+		}
+	}
+	for _, banned := range []string{
+		"## The fix starts with a regression test",
+		"Write the minimal fix",
+		"Commit — small, signed",
+		"follow `swarm-coder`'s rules",
+	} {
+		if strings.Contains(debugger, banned) {
+			t.Errorf("swarm-debugger still says %q", banned)
+		}
+	}
+
+	for _, c := range []struct{ skill, want string }{
+		{"swarm-workflows", "`debug`: debugger → coder → reviewer"},
+		{"swarm-batching", "`debug`: debugger diagnoses, then coder fixes, then reviewer"},
+		{"swarm-batching", "## Executing a package (coders, mechanical agents)"},
+		{"swarm-coder", "debug report"},
+		{"swarm-reviewer", "the coder's (or mechanical agent's) commit"},
+		{"swarm-orchestrator", "a `debugger` only diagnoses and reports; spawn a `coder` to fix it"},
+	} {
+		if body := string(install.SkillBody(c.skill)); !strings.Contains(body, c.want) {
+			t.Errorf("%s lacks %q", c.skill, c.want)
 		}
 	}
 }

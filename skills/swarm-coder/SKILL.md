@@ -24,6 +24,9 @@ A red `progress` checkpoint is never a stopping point. After recording it, conti
 
 This is `superpowers:test-driven-development` applied per unit: every behaviour change gets its own recorded red before its green, and a batched task's red/green pair is required **per unit**, not once for the whole package.
 
+## Starting from a debug report
+In the `debug` workflow a debugger has already diagnosed the bug. When your brief's Context carries a debug report (a path under `~/.swarm/research/`), read it first: its repro and "regression test" section are your unit's red test, and its "where the fix belongs" section names the shared function and callers to cover. Confirm the test fails for the reported reason before you fix; if the report is wrong, say so in a `progress` checkpoint and follow the evidence rather than the report.
+
 ## Ponytail: how to write the code
 Once a unit's test is red, write the minimal code with the vendored `ponytail` ladder: reuse what's already in the codebase → stdlib → a native platform feature → an already-installed dependency → the minimum new code. No speculative abstractions, no unrequested config, no scaffolding "for later." Mark a deliberate shortcut that leaves a known ceiling with a `ponytail:` comment naming the ceiling and the upgrade path.
 
