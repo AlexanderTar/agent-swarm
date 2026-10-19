@@ -304,7 +304,7 @@ func TestScenario08bPauseAllFreezesAQueuedSpawn(t *testing.T) {
 
 	// Pause-all runs while first still holds the slot, so the freeze is already live when the slot
 	// frees. Freeing it first would race the daemon's own 5s reconcile tick, which could admit the
-	// queued sibling before pause-all ran; here a broken freeze admits it right after the cancel.
+	// queued sibling before pause-all ran; here a broken freeze admits it as soon as first hands off.
 	n := h.pauseAll(t)
 	if h.agentState(t, second) != "queued" {
 		t.Fatalf("%s agent state = %s before the slot freed, want queued", second, h.agentState(t, second))
