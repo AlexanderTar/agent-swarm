@@ -6,9 +6,11 @@ import { noHorizontalOverflow, settled } from "./helpers";
 const desktopOnly = (testInfo: TestInfo, why: string) => test.skip(testInfo.project.name !== "mock", why);
 
 // Below sm the header has no New orchestrator button; it lives in the New item menu.
+// Decided by the viewport, not by isVisible(): isVisible() does not wait, so on a slow runner it ran before the
+// header rendered and wrongly took the phone path (no such menu item at tablet and desktop widths).
 async function openNewOrchestrator(page: Page) {
   const button = page.getByRole("button", { name: "New orchestrator", exact: true });
-  if (await button.isVisible()) return button.click();
+  if ((page.viewportSize()?.width ?? 0) >= 640) return button.click();
   await page.getByRole("button", { name: "New item" }).click();
   await page.getByRole("menuitem", { name: "New orchestrator" }).click();
 }
