@@ -48,6 +48,7 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	dry := fs.Bool("dry-run", false, "print the plan and change nothing")
 	resume := fs.Bool("resume", false, "continue an unfinished migration")
 	rollback := fs.Bool("rollback", false, "undo an unfinished migration")
+	live := fs.Bool("live", false, liveUsage)
 	if code, done := parse(fs, args); done {
 		return code
 	}
@@ -66,6 +67,13 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	cfg, err := newConfig(*home)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	// Migrate bootstraps and boots out the fixed launchd labels and rewrites the
+	// agents' configuration, so a scratch home may only run it with --live.
+	if isolate(&cfg, *live); cfg.Isolated {
+		fmt.Fprintln(stderr, "swarm: migrate acts on the live launchd job and the agents' own configuration; "+
+			"refusing --home "+cfg.Home+" (not ~/.swarm). Pass --live to migrate anyway.")
+		return 2
 	}
 	r := &migrate.Runner{
 		Cfg: cfg, Run: execx.Run, Now: time.Now, Out: stdout,
