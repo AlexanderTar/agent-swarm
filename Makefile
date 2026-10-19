@@ -1,10 +1,12 @@
 GO ?= /opt/homebrew/bin/go
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 PREFIX ?= $(HOME)/.swarm
+# Pinned: the newest staticcheck that reads Go 1.27 export data. CI runs the same version through `make lint`.
+STATICCHECK ?= honnef.co/go/tools/cmd/staticcheck@v0.8.2
 DEFAULT_SIGN_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | grep -q '"Swarm Dev"' && echo "Swarm Dev" || echo "-")
 SWARM_SIGN_IDENTITY ?= $(DEFAULT_SIGN_IDENTITY)
 
-.PHONY: build web-build vet fmt test test-go test-web test-menubar e2e dev dev-seed install install-daemon install-app app skills-sync
+.PHONY: build web-build vet fmt staticcheck web-lint lint test test-go test-web test-menubar e2e dev dev-seed install install-daemon install-app app skills-sync
 
 APP_DIR ?= /Applications
 
@@ -20,6 +22,15 @@ vet:
 
 fmt:
 	@out=$$($(GOFMT) -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+
+staticcheck:
+	$(GO) run $(STATICCHECK) ./...
+
+web-lint:
+	cd web && pnpm install --frozen-lockfile && pnpm lint
+
+# Everything CI's lint jobs run: gofmt, go vet, staticcheck and Biome. Run it before committing.
+lint: fmt vet staticcheck web-lint
 
 # §23.1's order, minus `swarm doctor`, which only runs on a real machine (Task 23).
 test: test-go test-web test-menubar
