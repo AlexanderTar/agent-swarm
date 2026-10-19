@@ -1,5 +1,5 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import { noHorizontalOverflow } from "./helpers";
+import { noHorizontalOverflow, settled } from "./helpers";
 
 // Desktop-only checks (32px density, mouse drag, side-by-side inbox) skip on the touch projects, which
 // cover the same flows through Move to…, the Filters popover and the no-overflow checks below.
@@ -153,8 +153,24 @@ test("hierarchy, filters and view switching keep the selection", async ({ page }
   await page.goto("/#/hierarchy?item=TASK-102");
   await expect(page.getByRole("treeitem", { name: /^EPIC-12 / })).toBeVisible();
   await expect(page.getByTestId("details-panel")).toContainText("Persist session");
-  await page.getByRole("tab", { name: "Kanban" }).click();
-  await expect(page).toHaveURL(/#\/kanban\?item=TASK-102$/);
+  const kanban = page.getByRole("tab", { name: "Kanban" });
+  if ((page.viewportSize()?.width ?? 0) >= 1100) {
+    await kanban.click();
+    await expect(page).toHaveURL(/#\/kanban\?item=TASK-102$/);
+  } else {
+    // Below 1100 px the non-modal Details sheet is full width on purpose (Sheet.tsx), so it covers the
+    // view tabs: the user closes it first, which also drops the selection.
+    const details = page.getByRole("dialog", { name: "TASK-102" });
+    await settled(details);
+    const covered = await kanban.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return !!document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest("[role=dialog]");
+    });
+    expect(covered, "Details covers the Kanban tab below 1100 px").toBe(true);
+    await details.getByRole("button", { name: "Close" }).first().click();
+    await kanban.click();
+    await expect(page).toHaveURL(/#\/kanban$/);
+  }
   await page.getByRole("searchbox", { name: "Search name or key…" }).fill("session");
   await expect(page.getByText("1 matches")).toBeVisible();
 });
@@ -571,6 +587,8 @@ test("artifact wraps long text in a bounded scroller and keeps close keyboard fo
   expect(await dialog.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(page.viewportSize()!.height);
   const scroller = dialog.locator('[data-artifact-content]');
   await expect(scroller).toBeVisible();
+  // The scroller is visible while the body still loads; measure only once the last line is in the DOM.
+  await expect(dialog.getByText("END OF ARTIFACT")).toBeAttached();
   const dimensions = await scroller.evaluate(el => ({ width: el.clientWidth, scrollWidth: el.scrollWidth, height: el.clientHeight, scrollHeight: el.scrollHeight }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
   expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.height);
@@ -805,6 +823,8 @@ test("touch targets are at least 44x44 below md", async ({ page }, testInfo) => 
   test.skip(testInfo.project.name === "mock", "touch layout");
   if (testInfo.project.name === "tablet") await page.setViewportSize({ width: 700, height: 900 });
   const expect44 = async (locator: ReturnType<Page["locator"]>, what: string) => {
+    // evaluateAll does not auto-wait, so wait for the first match: a slow runner has not rendered the list yet.
+    await expect(locator.first()).toBeVisible();
     // Layout size, not getBoundingClientRect: menus and listboxes scale in while they open.
     const boxes = await locator.evaluateAll((els) => els.map((e) => ({ w: (e as HTMLElement).offsetWidth, h: (e as HTMLElement).offsetHeight })));
     expect(boxes.length, `${what} present`).toBeGreaterThan(0);
@@ -926,6 +946,7 @@ for (const width of [375, 430, 768]) {
     const sheet = page.getByRole("dialog", { name: "New orchestrator" });
     await sheet.locator('input[type="file"]').setInputFiles(shots(10));
     await expect(sheet.getByText("10 of 10")).toBeVisible();
+    await settled(sheet);
     await noHorizontalOverflow(page);
     const sheetBox = await sheet.boundingBox();
     expect(sheetBox?.width).toBeLessThanOrEqual(width);
