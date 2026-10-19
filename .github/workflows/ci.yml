@@ -35,7 +35,8 @@ jobs:
       - uses: ./.github/actions/setup-web
       # web/dist is embedded into the Go packages, so vet needs it.
       - run: make web-build
-      - run: make fmt vet
+      # staticcheck is pinned in the Makefile (STATICCHECK); the job name stays because it is a required check.
+      - run: make fmt vet staticcheck
 
   go-test:
     name: Go tests and coverage
@@ -64,6 +65,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-web
+      # Biome; the job name stays because it is a required check.
+      - run: pnpm lint
+        working-directory: web
       - run: pnpm typecheck
         working-directory: web
       - run: pnpm test

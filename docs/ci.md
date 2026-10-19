@@ -6,9 +6,9 @@
 
 | Job (status check name) | Runner | Commands |
 |---|---|---|
-| Go format and vet | ubuntu | `make web-build`, `make fmt vet` |
+| Go format and vet | ubuntu | `make web-build`, `make fmt vet staticcheck` |
 | Go tests and coverage | macOS | `make web-build`, `brew install tmux gnupg`, `go test -race -timeout 30m ./...`, `scripts/cover.sh` |
-| Web tests and typecheck | ubuntu | `pnpm typecheck`, `pnpm test` (vitest with coverage), in `web/` |
+| Web tests and typecheck | ubuntu | `pnpm lint` (Biome), `pnpm typecheck`, `pnpm test` (vitest with coverage), in `web/` |
 | Web e2e (Playwright, mock daemon) | ubuntu | `pnpm exec playwright install --with-deps chromium`, `pnpm e2e`, in `web/` |
 | Skills mirror is in sync | ubuntu | `make skills-sync`, then `git diff --exit-code -- internal/install/skills` and no untracked files there |
 | Menu bar app tests and coverage | macOS | `make test-menubar` (`swift build -c release`, `swift test`, `apps/menubar/scripts/cover.sh`) |
@@ -22,7 +22,12 @@ Run the job's commands from the table at the repo root with `GO=go` (or your own
 
 `make test-go` is the local superset of the two Go jobs: it runs vet, the gofmt check, the race tests and the coverage gate in one go. CI splits it into two jobs so they run in parallel; if you change `test-go` in the Makefile, change the workflow with it.
 
-`web/biome.json` exists, but `@biomejs/biome` is not a dependency and the code is not biome-clean, so CI does not run biome.
+## Lint
+
+Lint must pass before you commit, and CI fails a pull request or a push to `main` that breaks it. Run `make lint` at the repo root: it runs the gofmt check, `go vet`, staticcheck and Biome (`pnpm lint` in `web/`). The Go half needs `web/dist` (see Traps), so run `make web-build` once first on a fresh checkout.
+
+- **staticcheck** is pinned in the Makefile (`STATICCHECK`, `honnef.co/go/tools/cmd/staticcheck@v0.8.2`), the newest release that reads Go 1.27 export data; the older ones crash on it. Bump the version there when you move Go, and nowhere else. `staticcheck.conf` turns off ST1005 (error-string capitalization and punctuation) because the error strings are user-facing sentences that tests assert on. Fix a finding in the code; a `//lint:ignore Check reason` needs a specific reason.
+- **Biome** is `@biomejs/biome` 1.9.4, pinned exactly in `web/package.json`; config in `web/biome.json`. `coverage/`, `playwright-report/` and `test-results/` are ignored (generated), and `noNonNullAssertion` is off only for test and e2e files. Use `pnpm exec biome check --write .` in `web/` for the formatting and import-order fixes. A `biome-ignore` comment needs a reason after the colon; do not turn recommended rules off globally.
 
 ## Traps
 

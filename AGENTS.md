@@ -6,6 +6,8 @@ The thresholds in `scripts/cover.sh` are 85% for `items`, `runtime`, `hook`, `mc
 
 When a package falls below its threshold, add real behaviour tests that assert outcomes and error paths until it is back above it. Tests that only execute code without checking results do not count.
 
+`make lint` must pass before you commit (gofmt, go vet, pinned staticcheck and Biome; see docs/ci.md, Lint). CI runs the same checks.
+
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
 Running the `swarm` binary against a scratch `SWARM_HOME`, or writing a test near `install`, `uninstall`, `migrate` or `launchctl`: follow docs/isolated-runs.md. A scratch `SWARM_HOME` alone does not protect the live daemon (the launchd labels are fixed); use a fake `HOME`, a `launchctl` stub on `PATH`, and never `--live` without both. Tests inject `execx.Fake`; the real runners refuse `launchctl` under `go test`.
