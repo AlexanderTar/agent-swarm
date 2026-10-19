@@ -266,7 +266,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// by hand from a worktree, by a test, or by `make dev` can never reach the
 	// live server.
 	spawner := &spawn.Spawner{Socket: spawn.SocketFromEnv(os.Getenv), Conf: confPath,
-		Tmux: lookTmux(), Run: execx.Run, Log: cfg.Log}
+		Tmux: lookTmux(), Run: execx.Run, Log: cfg.Log, LaunchDir: filepath.Join(cfg.Home, "run", "launch")}
 	wt := &worktree.Service{DB: d, Run: execx.Run, Now: now, Log: cfg.Log, Home: cfg.Home}
 	nt := &notify.Service{DB: d, Events: ev, Now: now, Log: cfg.Log}
 	adDeps := adapter.Deps{Home: cfg.Home, UserHome: userHome, Bin: selfPath(), Run: execx.Run,

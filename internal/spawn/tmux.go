@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +26,9 @@ type Spawner struct {
 	Tmux   string // absolute tmux path
 	Run    execx.Runner
 	Log    func(format string, args ...any)
+
+	// LaunchDir is <home>/run/launch, the parent of each session's launch dir.
+	LaunchDir string
 
 	// Kill's descendant sweep. Nil/zero mean the real thing: a `ps` process
 	// table, syscall.Kill and a 2 s grace between SIGTERM and SIGKILL.
@@ -103,9 +107,22 @@ func (s *Spawner) run(ctx context.Context, rest ...string) ([]byte, error) {
 	return s.Run(ctx, s.Tmux, s.args(rest...)...)
 }
 
+// longArg is the size from which an argv element rides in a file instead of
+// the tmux command line. tmux refuses a command over ~16 KB, argv and -e env
+// together ("command too long", BUG-105). A kickoff is always over it, so it
+// never travels on the command line; correctness doesn't depend on the value.
+const longArg = 256
+
 // Start creates the detached session. The token never appears in argv (§6.4), so
-// callers pass it through env as SWARM_TOKEN_FILE.
+// callers pass it through env as SWARM_TOKEN_FILE. An argv element of longArg
+// bytes or more (the kickoff, grok's --rules) is written to the session's
+// launch dir and read back by a launcher script, so the tmux command stays short
+// however long the kickoff or the instructions get.
 func (s *Spawner) Start(ctx context.Context, name, cwd string, env map[string]string, argv []string) error {
+	argv, err := s.launcher(env["SWARM_SESSION"], argv)
+	if err != nil {
+		return fmt.Errorf("tmux new-session %s: %w", name, err)
+	}
 	a := []string{"new-session", "-d", "-s", name, "-c", cwd, "-x", "220", "-y", "60"}
 	for _, k := range sortedKeys(env) {
 		a = append(a, "-e", k+"="+env[k])
@@ -117,6 +134,57 @@ func (s *Spawner) Start(ctx context.Context, name, cwd string, env map[string]st
 	}
 	return nil
 }
+
+// launcher returns argv unchanged when every element is short. Otherwise it
+// writes each long element to <LaunchDir>/<session>/arg-<i> and a launch.sh
+// that exec's the same command with those elements read back from their
+// files, and returns the command that runs launch.sh. The file read keeps
+// every byte, trailing newlines included ("x" is appended before the shell
+// strips them).
+func (s *Spawner) launcher(session string, argv []string) ([]string, error) {
+	if !slices.ContainsFunc(argv, func(a string) bool { return len(a) >= longArg }) {
+		return argv, nil
+	}
+	if s.LaunchDir == "" || session == "" {
+		return nil, fmt.Errorf("argument of %d bytes needs a launch dir and SWARM_SESSION", longest(argv))
+	}
+	dir := filepath.Join(s.LaunchDir, session)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\n# Written by swarm: the agent's arguments are too long for tmux's command line.\n")
+	cmd := make([]string, len(argv))
+	for i, a := range argv {
+		if len(a) < longArg {
+			cmd[i] = shQuote(a)
+			continue
+		}
+		p := filepath.Join(dir, fmt.Sprintf("arg-%d", i))
+		if err := os.WriteFile(p, []byte(a), 0o600); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&script, "a%d=$(cat %s; printf x); a%d=${a%d%%x}\n", i, shQuote(p), i, i)
+		cmd[i] = fmt.Sprintf("\"$a%d\"", i)
+	}
+	script.WriteString("exec " + strings.Join(cmd, " ") + "\n")
+	sh := filepath.Join(dir, "launch.sh")
+	if err := os.WriteFile(sh, []byte(script.String()), 0o700); err != nil {
+		return nil, err
+	}
+	return []string{"/bin/sh", sh}, nil
+}
+
+func longest(argv []string) int {
+	n := 0
+	for _, a := range argv {
+		n = max(n, len(a))
+	}
+	return n
+}
+
+// shQuote single-quotes s for /bin/sh.
+func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // paneFormat's fields are "|"-delimited, not tab-delimited: confirmed live
 // (P0-crash-4, 2026-09-19) that tmux 3.7c replaces literal tab bytes in a

@@ -576,3 +576,53 @@ func TestPasteLineCancelsCopyModeSoTheLineIsSubmitted(t *testing.T) {
 		return err == nil && string(b) == "swarm: inbox (call swarm_sync)"
 	})
 }
+
+// TASK-1206 (BUG-105): tmux refuses a new-session whose argv plus env passes
+// ~16 KB ("command too long"), so a long kickoff must reach the agent through
+// a file in the session's launch dir, byte for byte.
+func TestStartDeliversAKickoffFarBeyondTmuxsCommandLimit(t *testing.T) {
+	s := newSpawner(t)
+	s.LaunchDir = t.TempDir()
+	ctx := context.Background()
+	kickoff := strings.Repeat("Do the work: it's \"quoted\", $HOME `id` \\n ünïcode ✓\n\n", 1000) + "\n\n"
+	if len(kickoff) < 50_000 {
+		t.Fatalf("kickoff is %d bytes, want 50 KB or more", len(kickoff))
+	}
+	out := filepath.Join(t.TempDir(), "got")
+	env := map[string]string{"SWARM_SESSION": "ses_big"}
+	argv := []string{"sh", "-c", `printf %s "$1" > "$2"; while :; do sleep 1; done`, "sh", kickoff, out}
+	if err := s.Start(ctx, "bigkickoff", t.TempDir(), env, argv); err != nil {
+		t.Fatalf("Start with a %d-byte kickoff: %v", len(kickoff), err)
+	}
+	waitFor(t, "the agent to receive the kickoff", func() bool {
+		b, err := os.ReadFile(out)
+		return err == nil && len(b) == len(kickoff)
+	})
+	got, _ := os.ReadFile(out)
+	if string(got) != kickoff {
+		t.Fatalf("the agent received a different kickoff (%d bytes, want %d)", len(got), len(kickoff))
+	}
+	if _, err := os.Stat(filepath.Join(s.LaunchDir, "ses_big")); err != nil {
+		t.Fatalf("launch dir for the session: %v", err)
+	}
+}
+
+func TestLauncherKeepsShortArgsAndQuotesThem(t *testing.T) {
+	s := &Spawner{LaunchDir: t.TempDir()}
+	short := []string{"codex", "--model", "it's"}
+	if got, err := s.launcher("ses_1", short); err != nil || !slices.Equal(got, short) {
+		t.Fatalf("launcher(short) = %v, %v; want argv unchanged", got, err)
+	}
+	long := strings.Repeat("y", longArg)
+	got, err := s.launcher("ses_1", []string{"printf", "%s|%s", "it's a 'test'", long})
+	if err != nil || len(got) != 2 || got[0] != "/bin/sh" {
+		t.Fatalf("launcher(long) = %v, %v", got, err)
+	}
+	out, err := exec.Command(got[0], got[1]).Output()
+	if err != nil || string(out) != "it's a 'test'|"+long {
+		t.Fatalf("launch.sh printed %q (%v)", out, err)
+	}
+	if _, err := (&Spawner{}).launcher("ses_1", []string{long}); err == nil {
+		t.Fatal("a long arg with no launch dir must fail, not silently overflow tmux's line")
+	}
+}
