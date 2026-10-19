@@ -8,6 +8,10 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
+# Continuous integration
+
+GitHub Actions runs every check on pull requests and pushes to `main` (`.github/workflows/ci.yml`); `main` requires a PR for everyone but the owner. What runs where, how to reproduce a job locally and the CI traps (tmux 3.6+, `SWARM_E2E_PATH`, embedded `web/dist`): docs/ci.md. When you add a check, add it to the workflow and to that doc in the same change.
+
 # Contributing
 
 Agent Swarm is open source under Apache-2.0 (`LICENSE`, `NOTICE`). Follow CONTRIBUTING.md for every change: signed conventional commits with a scope (`fix(usage): …`), no agent attribution lines, one logical change per commit, and pull requests against `main` that are squash-merged. Vendored third-party files keep their upstream licence and record their source and changes (`internal/install/skills/vendor/README.md`, `assets/icons/LICENSES.md`).
