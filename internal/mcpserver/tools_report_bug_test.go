@@ -12,6 +12,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -370,5 +371,41 @@ func TestReportBugResultNamesTheIssueCommand(t *testing.T) {
 	json.Unmarshal(mustJSON(out), &got)
 	if want := "swarm bugs --issue " + got.ID; got.ID == "" || !strings.Contains(got.Hint, want) {
 		t.Fatalf("hint = %q, want it to contain %q", got.Hint, want)
+	}
+}
+
+// TASK-1206: a board:true report whose fields add up past the item brief cap
+// must still be stored and filed, with the board brief shortened and pointing
+// at `swarm bugs <id>` for the full text.
+func TestReportBugBoardTrueFitsALongReportUnderTheBriefCap(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	long := strings.Repeat("a", 3500)
+	args, _ := json.Marshal(map[string]any{"title": "Long report", "what_happened": long, "repro": long,
+		"evidence": long, "user_said": long, "cause": long, "board": true})
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug", string(args))
+	if err != nil {
+		t.Fatalf("long board report refused: %v", err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	if got.ItemKey == "" {
+		t.Fatalf("no board item: %+v", got)
+	}
+	it, err := s.RT.Items.Get(ctx, got.ItemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !items.BriefFits(it.Brief) {
+		t.Fatalf("board brief is %d characters, over the cap", len(it.Brief))
+	}
+	for _, want := range []string{"swarm bugs " + got.ID, "- Transcript: "} {
+		if !strings.Contains(it.Brief, want) {
+			t.Fatalf("brief missing %q", want)
+		}
+	}
+	var what string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT what_happened FROM bug_reports WHERE id = ?`, got.ID).Scan(&what); err != nil || what != long {
+		t.Fatalf("stored what_happened intact = %v (err %v)", what == long, err)
 	}
 }

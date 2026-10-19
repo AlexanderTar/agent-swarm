@@ -110,3 +110,41 @@ func TestStartWorkflowRefusesBriefOnlyTheReviewerOverflows(t *testing.T) {
 		t.Fatalf("workflows rows = %d, want 0", count)
 	}
 }
+
+// TASK-1206 (BUG-106): one cap for item writes and kickoff builders, and a task
+// whose brief is already over it (written before the write-time check) is
+// refused at Start, before any step spawns.
+func TestBriefLimitIsSharedWithItems(t *testing.T) {
+	if ErrBriefTooLong != items.ErrBriefTooLong {
+		t.Fatalf("runtime and items disagree on the brief-too-long message")
+	}
+	if items.BriefFits(strings.Repeat("x", items.MaxBrief+1)) || !items.BriefFits(strings.Repeat("x", items.MaxBrief)) {
+		t.Fatalf("BriefFits must accept exactly MaxBrief bytes")
+	}
+}
+
+func TestStartWorkflowRefusesLegacyOverlongBriefBeforeSpawning(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET brief = ? WHERE key = ?`,
+		strings.Repeat("x", items.MaxBrief+1), taskKey); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeBadRequest || ie.Message != taskKey+": "+ErrBriefTooLong {
+		t.Fatalf("err = %v, want %q bad_request", err, taskKey+": "+ErrBriefTooLong)
+	}
+	for _, table := range []string{"workflows", "workflow_runs"} {
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("%s rows = %d, want 0 (no step may spawn)", table, n)
+		}
+	}
+}

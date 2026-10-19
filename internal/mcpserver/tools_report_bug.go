@@ -105,7 +105,7 @@ func reportBugTool(s *Server) ToolDef {
 						return err
 					}
 					res.ItemKey, err = s.createBoardBug(ctx, tx, a, rootKey, in.Title,
-						bugBrief(in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area)+"\n- Transcript: "+res.Transcript)
+						boardBugBrief(id, res.Transcript, in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area))
 					if err != nil {
 						return err
 					}
@@ -147,6 +147,34 @@ func (s *Server) createBoardBug(ctx context.Context, tx *sql.Tx, a runtime.Agent
 		return "", err
 	}
 	return it.Key, s.RT.NotifyItemCreated(ctx, tx, rootKey, it.Key, it.Title, it.Type)
+}
+
+// boardBugBrief is the board item's brief: bugBrief plus the transcript path,
+// kept within items.MaxBrief. Fields are only shortened (each to the same
+// limit, halved until the brief fits) when the report is too long, and then
+// the brief points at `swarm bugs <id>` for the full text. The report row
+// always keeps the untruncated fields.
+func boardBugBrief(id, transcript string, fields ...string) string {
+	build := func(limit int) string {
+		cut := make([]string, len(fields))
+		short := false
+		for i, f := range fields {
+			cut[i] = f
+			if r := []rune(strings.TrimSpace(f)); len(r) > limit {
+				cut[i], short = string(r[:limit])+"…", true
+			}
+		}
+		b := bugBrief(cut[0], cut[1], cut[2], cut[3], cut[4], cut[5])
+		if short {
+			b += "\n- Full report: `swarm bugs " + id + "`"
+		}
+		return b + "\n- Transcript: " + transcript
+	}
+	for limit := 8000; ; limit /= 2 {
+		if b := build(limit); items.BriefFits(b) || limit == 0 {
+			return b
+		}
+	}
 }
 
 // bugBrief composes the report's fields as labeled bullets, omitting empty ones.

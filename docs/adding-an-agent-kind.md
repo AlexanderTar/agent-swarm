@@ -1,6 +1,6 @@
 # Adding an agent kind
 
-Follow this when you add a CLI (a new "kind", like `muse`, `cursor` or `grok`) to Swarm, or change how an existing kind is launched, hooked or measured. A kind touches about 45 production files in 12 areas plus a DB migration, and most of the seam is not enforced by the compiler. Muse shipped with a dozen same-day fix rounds because of that; section 8 lists them.
+Follow this when you add a CLI (a new "kind", like `muse`, `cursor` or `grok`) to Swarm, or change how an existing kind is launched, hooked or measured. A kind touches about 45 production files in 12 areas plus a DB migration, and most of the seam is not enforced by the compiler. Muse shipped with a dozen same-day fix rounds because of that; section 9 lists them.
 
 Worked examples: `internal/adapter/muse.go` (unhooked, isolated HOME), `internal/adapter/cursor.go` (hooked via `hooks.json`), `internal/adapter/claude.go` (fully hooked). Muse's delivery spec and plan are in `docs/specs/2026-09-23-muse-first-class-agent.md` and the menubar follow-up in `docs/specs/2026-09-23-menubar-muse-support.md`.
 
@@ -189,7 +189,17 @@ Gate live probes behind an env var (`MUSE_LIVE_PROBE=1` is the pattern) and `t.S
 
 Finally, spawn every role on the new kind in a real Swarm and watch it: an orchestrator that passes Preflight with superpowers, a child that asks a native question, pause and resume (does the kickoff survive?), a wake while idle and while busy, an interrupt, the usage row, the advisor, and an uninstall that leaves no trace. Muse's DB CHECK bug and env bug both passed unit tests and failed only here.
 
-## 8. Lessons learned
+## 8. Size limits: brief and launch command
+
+Two limits bit long briefs (BUG-106, BUG-105). Both are tooling limits, so the rule is a guard, not a reminder.
+
+**The brief cap (6000 characters).** `items.MaxBrief`, `items.ErrBriefTooLong` and `items.BriefFits` (`internal/items/brief_limit.go`) are the only definition. `items.Create` and `items.Update` refuse a brief over it (an update that doesn't write a brief never re-measures an old one), `runtime.RenderBrief` measures every kickoff brief with the same call, and `Store.preflightBriefs` renders every workflow step's brief at `swarm_workflow start` and refuses before anything spawns. Cause of BUG-106: the cap was only checked at render time, so a brief grown by an update let the build step spawn and failed the review step. Never add a second constant or a `len(brief) > N` of your own; call `items.BriefFits` / `items.ValidateBrief`. Guards: `go test ./internal/items/ -run 'OverlongBrief|LegacyOverlong' -count=1`, `go test ./internal/runtime/ -run 'BriefLimitIsShared|LegacyOverlongBrief|RefusesOverlongBrief' -count=1`.
+
+**The tmux command line (~16 KB).** tmux refuses `new-session` with `command too long` once argv plus every `-e K=V` passes about 16 KB (tmux 3.7c: 16300 bytes passed, 17000 failed; probe with `tmux -L probe new-session -d -- sleep 5 "$(head -c 17000 /dev/zero | tr '\0' x)"`). The assignment brief never rides argv (the agent reads it with `swarm_sync`). What does is the kickoff and, for grok, `--rules <instructions>`. `spawn.Spawner.Start` therefore writes any argv element of 256 bytes or more to `<home>/run/launch/<session>/arg-N` and starts the agent through `launch.sh` in that dir, which `exec`s the same command with each element read back byte for byte. What to do: pass the kickoff as one whole argv element (a kind that splices it into a longer string, e.g. `--prompt=<kickoff>`, escapes the launcher); keep env values small (they are not moved); keep `Spawner.LaunchDir` set where a Spawner is built (`cmd/swarm/daemon.go`), because `Start` fails loudly rather than overflow without it. Never put the kickoff, instructions or a brief in `-e` or argv by another route.
+
+Traps when diagnosing: "command too long" surfaces as `tmux new-session <name>: ... exit status 1: command too long` on the run, which looks like a brief problem but isn't; `fakeTmux` in `internal/runtime` records argv before the launcher rewrites it, so runtime tests can't see this limit (only the real-tmux test in `internal/spawn` can, and it skips when tmux isn't installed). Guards: `go test ./internal/spawn/ -run 'Beyond|Launcher' -count=1` (57 KB kickoff through real tmux, byte for byte) and `go test ./internal/adapter/ -run KickoffAsOneArgv -count=1` (every kind hands the kickoff over as one element).
+
+## 9. Lessons learned
 
 From muse (2026-09-23 to 2026-10-09):
 

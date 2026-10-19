@@ -183,10 +183,9 @@ func KindKickoffNote(k AgentKind) string {
 // what SessionStart would say (the graphify hint) rides the kickoff.
 func StartContextDropped(k AgentKind) bool { return k == Grok }
 
-// ErrBriefTooLong is the §17.3 copy for an over-long brief.
-const ErrBriefTooLong = "Brief too long (max 6000 characters). Move detail into an artifact and reference it."
-
-const maxBrief = 6000
+// ErrBriefTooLong is the §17.3 copy for an over-long brief; items owns it so
+// the write paths and the kickoff builders share one message and one limit.
+const ErrBriefTooLong = items.ErrBriefTooLong
 
 // BriefWorktree is one worktree line in the brief's header (§9.4).
 type BriefWorktree struct {
@@ -410,15 +409,15 @@ const contextTruncated = "(context truncated to fit the brief; the full text arr
 // legacy (non-workflow) spawn never cascades: it just refuses, unchanged
 // (Review Focus 1).
 func RenderBrief(in BriefInput) (string, error) {
-	if out := renderBriefOnce(in, false, false); len(out) <= maxBrief {
+	if out := renderBriefOnce(in, false, false); items.BriefFits(out) {
 		return out, nil
 	} else if in.Workflow == "" {
 		return "", errors.New(ErrBriefTooLong)
 	}
-	if out := renderBriefOnce(in, false, true); len(out) <= maxBrief {
+	if out := renderBriefOnce(in, false, true); items.BriefFits(out) {
 		return out, nil
 	}
-	if out := renderBriefOnce(in, true, true); len(out) <= maxBrief {
+	if out := renderBriefOnce(in, true, true); items.BriefFits(out) {
 		return out, nil
 	}
 	return "", errors.New(ErrBriefTooLong)
