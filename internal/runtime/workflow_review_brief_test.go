@@ -235,3 +235,90 @@ func TestGateDirLineSurvivesContextTruncation(t *testing.T) {
 		t.Fatalf("notes-dir line (at %d) should follow the ## Workflow heading (at %d)", i, j)
 	}
 }
+
+// TASK-1221 (BUG-106): an escalated workflow is still live (ResumeWorkflow
+// "retry" flips it back to running and spawns the build and then the review
+// without a preflight), so a brief update during escalation is measured too.
+func TestEscalatedWorkflowRefusesBriefUpdateThatOverflowsAStep(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	if _, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'escalated' WHERE item_id = (SELECT id FROM items WHERE key = ?)`, taskKey); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := strings.Repeat("x", items.MaxBrief-200)
+	_, err = s.Items.Update(ctx, taskKey, items.Patch{Revision: cur.Revision, Brief: &brief},
+		items.Orchestrator(orch.ID, orch.RootItemID))
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeBadRequest || ie.Message != taskKey+": "+ErrBriefTooLong {
+		t.Fatalf("err = %v, want %q bad_request", err, taskKey+": "+ErrBriefTooLong)
+	}
+}
+
+// TASK-1221 (BUG-106): the hook covers the acceptance and verify fields too,
+// and the largest update it accepts leaves every step's kickoff renderable,
+// the reviewer's included.
+func TestLiveWorkflowAcceptedUpdateStillFitsTheReviewKickoff(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, repoID, dir, head := seedOwnedRepoWorktree(t, s, orch)
+	rev, err := s.Worktree.Review(ctx, worktree.CreateInput{RepoID: repoID, RepoPath: dir,
+		OwnerAgentID: orch.ID, RootItemID: orch.RootItemID}, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}}); err != nil {
+		t.Fatal(err)
+	}
+	update := func(p items.Patch) error {
+		t.Helper()
+		cur, err := s.Items.Get(ctx, taskKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Revision = cur.Revision
+		_, err = s.Items.Update(ctx, taskKey, p, items.Orchestrator(orch.ID, orch.RootItemID))
+		return err
+	}
+
+	// A verify list and an acceptance list, each under the raw cap, overflow a kickoff.
+	long := []string{strings.Repeat("v", items.MaxBrief-200)}
+	if err := update(items.Patch{Verify: &long}); err == nil {
+		t.Fatalf("an over-long verify list was accepted")
+	}
+	if err := update(items.Patch{Acceptance: &long}); err == nil {
+		t.Fatalf("an over-long acceptance list was accepted")
+	}
+
+	// Find the largest brief the hook accepts; both steps' kickoffs must fit.
+	best := 0
+	for n := 1000; n < items.MaxBrief; n += 100 {
+		b := strings.Repeat("x", n)
+		if update(items.Patch{Brief: &b}) != nil {
+			break
+		}
+		best = n
+	}
+	if best == 0 {
+		t.Fatalf("no near-limit brief was accepted")
+	}
+	b := strings.Repeat("x", best)
+	if err := update(items.Patch{Brief: &b}); err != nil {
+		t.Fatal(err)
+	}
+	if !reviewBriefFits(t, s, orch, taskKey, "build", "coder", wtID, "") ||
+		!reviewBriefFits(t, s, orch, taskKey, "review", "reviewer", wtID, rev.ID) {
+		t.Fatalf("an accepted %d-char brief overflows a step kickoff", best)
+	}
+}

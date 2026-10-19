@@ -289,15 +289,17 @@ func (s *Store) preflightBriefs(ctx context.Context, orch Agent, it items.Item, 
 
 // CheckLiveWorkflowBriefs is the items.Store.CheckWorkflowBriefs hook: an update
 // to the text a kickoff renders (brief, acceptance, units, verify) on an item
-// whose workflow is running is refused when any step's kickoff would no longer
-// fit, so a late step (the review after a long build) can't fail to spawn
-// (BUG-106). It is preflightBriefs on the patched item.
+// whose workflow is live (running, or escalated: a "retry" resume spawns the
+// steps again without a preflight) is refused when any step's kickoff, completed
+// ones included since a fix round re-runs build, would no longer fit, so a late
+// step (the review after a long build) can't fail to spawn (BUG-106). It is
+// preflightBriefs on the patched item.
 func (s *Store) CheckLiveWorkflowBriefs(ctx context.Context, tx *sql.Tx, it items.Item) error {
 	if it.Workflow == nil {
 		return nil
 	}
 	var wfID string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE item_id = ? AND state = 'running'
+	err := tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE item_id = ? AND state IN ('running','escalated')
 		ORDER BY created_at DESC LIMIT 1`, it.ID).Scan(&wfID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
