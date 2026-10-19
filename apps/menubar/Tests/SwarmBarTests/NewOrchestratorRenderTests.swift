@@ -31,14 +31,8 @@ final class NewOrchestratorRenderTests: XCTestCase {
         form.picker.setAdvisorAgent("codex")
 
         for width: CGFloat in [760, 820] {
-            let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 790)
-            host.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: 790,
-                                                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                                                        isPlanar: false, colorSpaceName: .deviceRGB,
-                                                        bytesPerRow: 0, bitsPerPixel: 0))
-            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let (host, bitmap) = try ocrCapture(NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}),
+                                                size: CGSize(width: width, height: 790))
             let request = VNRecognizeTextRequest()
             try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage), options: [:]).perform([request])
             let visibleText = (request.results ?? []).compactMap { result -> (String, CGRect)? in
@@ -268,14 +262,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
     }
 
     func testEmptyChooserExplainsHowToAddRepositories() throws {
-        let host = NSHostingView(rootView: RepoChooser(rows: [], selection: .constant([])))
-        host.frame = NSRect(x: 0, y: 0, width: 500, height: 240)
-        host.layoutSubtreeIfNeeded()
-        let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 500, pixelsHigh: 240,
-                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                                     isPlanar: false, colorSpaceName: .deviceRGB,
-                                     bytesPerRow: 0, bitsPerPixel: 0)!
-        host.cacheDisplay(in: host.bounds, to: image)
+        let (_, image) = try ocrCapture(RepoChooser(rows: [], selection: .constant([])), size: CGSize(width: 500, height: 240))
         let request = VNRecognizeTextRequest()
         try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage), options: [:]).perform([request])
         let visibleText = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
