@@ -202,13 +202,22 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	if paths["spec"] != specPath || paths["plan"] != planPath {
 		t.Fatalf("plan review paths = %v", paths)
 	}
-	if next, _ := planAsk["next"].(string); !strings.Contains(next, "review_paths.spec and review_paths.plan immediately before asking") {
-		t.Fatalf("plan next step does not require full paths before native prompt: %q", next)
+	// Print-then-ask: the plan approval's chat_block carries both full review paths, and the
+	// agent is told to reply with it verbatim before Swarm sends the native question.
+	if block, _ := planAsk["chat_block"].(string); !strings.Contains(block, specPath) || !strings.Contains(block, planPath) {
+		t.Fatalf("plan chat_block does not carry the full review paths: %q", block)
 	}
-	native, _ := planAsk["native_prompt"].(map[string]any)
-	question, _ := native["question"].(string)
-	if !strings.Contains(question, planAsk["request_id"].(string)) {
-		t.Fatalf("plan native prompt has no request ref: %v", native)
+	if next, _ := planAsk["next"].(string); !strings.Contains(next, "Your whole reply is chat_block, verbatim") {
+		t.Fatalf("plan next step does not tell the agent to reply with chat_block: %q", next)
+	}
+	// The native question follows the printed block; the agent reads it back with for_msg.
+	nativeAsk := h.mustTool(t, orch, "swarm_ask", map[string]any{"kind": "native_prompt", "for_msg": planAsk["request_id"]})
+	native, _ := nativeAsk["native_prompt"].(map[string]any)
+	if question, _ := native["question"].(string); question == "" {
+		t.Fatalf("plan native prompt has no question: %v", native)
+	}
+	if next, _ := nativeAsk["next"].(string); !strings.Contains(next, planAsk["request_id"].(string)) {
+		t.Fatalf("plan native prompt next step has no request ref: %q", next)
 	}
 	planReq := h.requestByKind(t, spikeKey, "approve_plan")
 	h.doT(t, http.MethodPost, "/api/requests/"+planReq["id"].(string)+"/approve", map[string]any{

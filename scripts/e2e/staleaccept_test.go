@@ -55,14 +55,16 @@ func TestScenario29StaleAcceptance(t *testing.T) {
 		t.Fatalf("task status = %s, want done", got)
 	}
 
+	repo, commit := h.finishRepo(t, orch)
 	integrated := func(sha string) {
 		h.mustTool(t, orch, "swarm_checkpoint", map[string]any{
 			"kind": "integrated", "summary": "integrated",
-			"git":          []map[string]any{{"repo": "chat", "branch": "main", "sha": sha}},
+			"git":          []map[string]any{{"repo": repo, "branch": "main", "sha": sha}},
 			"verification": []map[string]any{{"cmd": "go test ./...", "phase": "green", "ok": true}},
 		})
 	}
-	integrated(h.headSHA(t))
+	head := commit()
+	integrated(head)
 
 	oldReq := h.waitForRequestFull(t, epic, "accept_epic", 20*time.Second)
 	if got := h.itemStatus(t, epic); got != "in_review" {
@@ -71,7 +73,8 @@ func TestScenario29StaleAcceptance(t *testing.T) {
 
 	// more work landed: a second integrated checkpoint stales the open
 	// request and opens a fresh one bound to the new integration.
-	integrated(h.headSHA(t))
+	head = commit()
+	integrated(head)
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -100,7 +103,8 @@ func TestScenario29StaleAcceptance(t *testing.T) {
 	}
 
 	h.doT(t, http.MethodPost, "/api/requests/"+newReq["id"].(string)+"/approve",
-		map[string]any{"binding": newReq["binding"], "via": "board"}, nil)
+		map[string]any{"binding": newReq["binding"], "via": "board", "merge": "local"}, nil)
+	h.finishLocal(t, orch, repo, head)
 
 	if got := h.itemStatus(t, epic); got != "done" {
 		t.Fatalf("epic status = %s, want done", got)

@@ -38,10 +38,12 @@ func TestScenarioEpicApprovalLane(t *testing.T) {
 	h.mustTool(t, orch, "swarm_items", map[string]any{
 		"op": "update", "key": task, "status": "done", "revision": h.itemRevision(t, task),
 	})
+	repo, commit := h.finishRepo(t, orch)
+	head := commit()
 	integrated := func() {
 		h.mustTool(t, orch, "swarm_checkpoint", map[string]any{
 			"kind": "integrated", "summary": "integrated",
-			"git":          []map[string]any{{"repo": "chat", "branch": "main", "sha": h.headSHA(t)}},
+			"git":          []map[string]any{{"repo": repo, "branch": "main", "sha": head}},
 			"verification": []map[string]any{{"cmd": "go test ./...", "phase": "green", "ok": true}},
 		})
 	}
@@ -74,6 +76,7 @@ func TestScenarioEpicApprovalLane(t *testing.T) {
 	}
 
 	// Re-integration re-opens a fresh row and re-relays it.
+	head = commit()
 	integrated()
 	deadline := time.Now().Add(20 * time.Second)
 	var second map[string]any
@@ -93,10 +96,12 @@ func TestScenarioEpicApprovalLane(t *testing.T) {
 	}
 
 	h.doT(t, http.MethodPost, "/api/requests/"+secondID+"/approve",
-		map[string]any{"binding": second["binding"], "via": "board"}, nil)
+		map[string]any{"binding": second["binding"], "via": "board", "merge": "local"}, nil)
 	if count("approval_result", secondID) != 1 {
 		t.Fatalf("no approval_result for the approval")
 	}
+	// The approval only chooses the merge; the epic is done once the orchestrator reports it.
+	h.finishLocal(t, orch, repo, head)
 	if got := h.itemStatus(t, epic); got != "done" {
 		t.Fatalf("epic status = %s, want done", got)
 	}

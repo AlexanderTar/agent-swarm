@@ -302,18 +302,16 @@ func TestScenario08bPauseAllFreezesAQueuedSpawn(t *testing.T) {
 		t.Fatalf("swarm_spawn returned no agent name: %+v", out)
 	}
 
-	// Free first's slot before pause-all runs, so the queued sibling is the
-	// orchestrator's only descendant left at that moment. Cancel's HTTP
-	// response only comes back after RT.Cancel has already committed
-	// state='finished', so there is nothing to wait for here -- waiting would
-	// only widen the window in which the shared daemon's own 5s reconcile
-	// tick could drain the now-free slot on its own, before pause-all runs.
-	h.cancel(t, first)
-
+	// Pause-all runs while first still holds the slot, so the freeze is already live when the slot
+	// frees. Freeing it first would race the daemon's own 5s reconcile tick, which could admit the
+	// queued sibling before pause-all ran; here a broken freeze admits it right after the cancel.
 	n := h.pauseAll(t)
 	if h.agentState(t, second) != "queued" {
-		t.Fatalf("%s was admitted before pause-all ran (a reconcile tick raced the cancel); rerun", second)
+		t.Fatalf("%s agent state = %s before the slot freed, want queued", second, h.agentState(t, second))
 	}
+	// first hands off and its pane exits, which frees its slot; the frozen queue must keep the
+	// sibling out of it.
+	handOffAndKill(t, h, first)
 	if n < 1 {
 		t.Fatalf("pause-all requested = %d, want at least 1 (the orchestrator)", n)
 	}

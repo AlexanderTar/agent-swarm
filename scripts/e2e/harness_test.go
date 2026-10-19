@@ -895,6 +895,39 @@ func throwawayGPGKey(t *testing.T) (gnupgHome, keyID string) {
 	return dir, keyID
 }
 
+// finishRepo registers a throwaway git repo with the catalog, as an integrated repo that finishing
+// can verify: a catalog name, a real commit and a no-GitHub-remote repo that is merged locally.
+// commit adds an empty commit and returns the new HEAD, for a scenario that needs a second integration.
+func (h *harness) finishRepo(t *testing.T, orch string) (name string, commit func() string) {
+	t.Helper()
+	// gitRepo names every repo "001" (t.TempDir's leaf), and the catalog is keyed by name, so
+	// rename it after the test: two scenarios in one daemon would otherwise share a catalog entry.
+	dir := gitRepo(t, false, "")
+	named := filepath.Join(filepath.Dir(dir), strings.ToLower(t.Name()))
+	if err := os.Rename(dir, named); err != nil {
+		t.Fatal(err)
+	}
+	dir = named
+	reg := h.mustTool(t, orch, "swarm_repo_register", map[string]any{"path": dir})
+	name, _ = reg["name"].(string)
+	if name == "" {
+		t.Fatalf("repository registration = %v", reg)
+	}
+	return name, func() string {
+		gitOut(t, dir, "commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", "more work")
+		return strings.TrimSpace(gitOut(t, dir, "rev-parse", "HEAD"))
+	}
+}
+
+// finishLocal is the orchestrator's finishing checkpoint after the user approved a local merge.
+func (h *harness) finishLocal(t *testing.T, orch, repo, sha string) {
+	t.Helper()
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{
+		"kind": "finishing", "summary": "merged locally",
+		"merged": []map[string]any{{"repo": repo, "sha": sha}},
+	})
+}
+
 // confirmRepo adds repoID to rootKey's confirmed_repos_json so worktrees can be created against it.
 func (h *harness) confirmRepo(t *testing.T, rootKey, repoID string) {
 	t.Helper()
