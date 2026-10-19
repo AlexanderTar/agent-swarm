@@ -386,7 +386,10 @@ func ValidateTitle(title string) error {
 }
 
 func validateText(title, brief string) error {
-	return ValidateTitle(title)
+	if err := ValidateTitle(title); err != nil {
+		return err
+	}
+	return ValidateBrief(brief)
 }
 
 // ValidateTddExempt checks a tdd_exempt value for an item of type t: it must be
@@ -717,8 +720,15 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		if p.Verify != nil {
 			it.Verify = *p.Verify
 		}
-		if err := validateText(it.Title, it.Brief); err != nil {
+		// Only a brief this patch writes is measured: an item whose brief
+		// predates the cap can still be retitled or re-prioritised.
+		if err := ValidateTitle(it.Title); err != nil {
 			return Item{}, err
+		}
+		if p.Brief != nil {
+			if err := ValidateBrief(it.Brief); err != nil {
+				return Item{}, err
+			}
 		}
 		if err := validPriority(it.Priority); err != nil {
 			return Item{}, err
