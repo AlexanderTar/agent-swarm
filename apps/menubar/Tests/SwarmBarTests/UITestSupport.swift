@@ -121,12 +121,12 @@ private final class OpaqueBackdrop: NSView {
 func ocrBitmap(_ host: NSView) throws -> NSBitmapImageRep {
     host.layoutSubtreeIfNeeded()
     let size = host.bounds.size
-    let (origin, appearance) = (host.frame.origin, host.appearance)
+    let origin = host.frame.origin
     let backdrop = OpaqueBackdrop(frame: NSRect(origin: .zero, size: size))
     backdrop.appearance = NSAppearance(named: .darkAqua)
     host.frame.origin = .zero
     backdrop.addSubview(host)
-    defer { host.removeFromSuperview(); host.frame.origin = origin; host.appearance = appearance }
+    defer { host.removeFromSuperview(); host.frame.origin = origin }
     backdrop.layoutSubtreeIfNeeded()
     let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width) * 2, pixelsHigh: Int(size.height) * 2,
                                                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,

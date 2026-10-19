@@ -440,15 +440,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
     /// Plain `Text`/`Button` draw directly in this codebase (no backing `NSView`), so visible
     /// copy is read back with OCR, the same technique `testEmptyChooserExplainsHowToAddRepositories`
     /// and `testAgentAndAdvisorSelectorsShareAlignedSixColumnRows` already use.
-    private func visibleText(_ host: NSView, width: CGFloat = 820, height: CGFloat = 790) throws -> String {
-        let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: Int(height),
-                                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                                                   isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        host.cacheDisplay(in: host.bounds, to: image)
-        let request = VNRecognizeTextRequest()
-        try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage), options: [:]).perform([request])
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-    }
+    private func visibleText(_ host: NSView) throws -> String { try ocrText(host) }
 
     /// A valid 1×1 PNG, same bytes used by NewOrchestratorFormTests.
     private var pngData: Data {
