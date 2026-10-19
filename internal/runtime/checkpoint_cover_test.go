@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
@@ -225,5 +226,58 @@ func TestResearchNotesGateRequiresAndRegistersNotes(t *testing.T) {
 	}
 	if err := wantCount(s, `SELECT COUNT(*) FROM artifacts WHERE kind = 'research' AND path = ?`, 1, notes); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestDebugWorkflowReportReachesCoder: the debug template's diagnose step is
+// refused without a report under research/<ROOT>/, and once the debugger
+// completes with one, the coder's fix step brief carries that path.
+func TestDebugWorkflowReportReachesCoder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	spec, err := workflow.Resolve(workflow.Spec{Template: "debug"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, taskKey, _, st, _ := startedWorkflow(t, s, spec)
+	ses := agentSessionForStep(t, s, st.ID, "diagnose")
+	dir := filepath.Join(s.Home, "research", "EPIC-1")
+	report := filepath.Join(dir, "crash-report.md")
+	complete := func(artifacts ...string) error {
+		_, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "diagnosed", Artifacts: artifacts})
+		return err
+	}
+
+	if err := complete(); !isBadRequest(err, "research notes in artifacts (under "+dir) {
+		t.Fatalf("debugger completed without a report: err = %v, want the research-notes refusal", err)
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(report, []byte("# Root cause\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete(report); err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf, _, err := s.workflowRowByID(ctx, st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: "fix", Role: "coder", Round: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(brief.Context, report) {
+		t.Fatalf("fix brief context = %v, want the debugger's report %s", brief.Context, report)
+	}
+	if got := agentIDForStep(t, s, st.ID, "fix"); got == "" {
+		t.Fatal("engine did not spawn the coder's fix step after diagnose completed")
 	}
 }
