@@ -3,17 +3,28 @@ import { C } from "../copy";
 import { useQuery } from "../data/hooks";
 import { qk, useCheckpoints } from "../data/queries";
 import { formatTime } from "../logic/format";
-import { adviceTitle, adviceTotals, gitLine, kindLabel, mergeTimeline, verifyLine } from "../logic/timeline";
+import {
+  adviceTitle,
+  adviceTotals,
+  gitLine,
+  kindLabel,
+  mergeTimeline,
+  verifyLine,
+} from "../logic/timeline";
 import type { Checkpoint } from "../types";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { Button } from "./ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
 function Lines({ title, lines }: { title: string; lines: string[] }) {
   if (lines.length === 0) return null;
   return (
     <div>
       <p className="text-muted-foreground">{title}</p>
-      <ul className="list-disc pl-5">{lines.map((l) => <li key={l}>{l}</li>)}</ul>
+      <ul className="list-disc pl-5">
+        {lines.map((l) => (
+          <li key={l}>{l}</li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -21,13 +32,19 @@ function Lines({ title, lines }: { title: string; lines: string[] }) {
 function CheckpointRow({ c }: { c: Checkpoint }) {
   return (
     <Collapsible role="group" className="rounded border border-border p-2">
-      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left max-md:h-auto max-md:min-h-11 max-sm:flex-col max-sm:items-start max-sm:gap-0.5">
-        <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
-        <span>{c.agent_name ?? ""}</span>{" "}
-        <span className="rounded bg-muted px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
-        {c.daemon_written && <span className="text-[12px] text-warning">{C.writtenBySwarm}</span>}{" "}
-        <span>{c.summary}</span>
-      </Button></CollapsibleTrigger>
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-auto w-full justify-start whitespace-normal text-left max-md:h-auto max-md:min-h-11 max-sm:flex-col max-sm:items-start max-sm:gap-0.5"
+        >
+          <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
+          <span>{c.agent_name ?? ""}</span>{" "}
+          <span className="rounded bg-muted px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
+          {c.daemon_written && <span className="text-[12px] text-warning">{C.writtenBySwarm}</span>}{" "}
+          <span>{c.summary}</span>
+        </Button>
+      </CollapsibleTrigger>
       <CollapsibleContent className="mt-2 space-y-1">
         <Lines title="Next" lines={c.next} />
         <Lines title="Blockers" lines={c.blockers} />
@@ -79,10 +96,18 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
           <CheckpointRow key={e.checkpoint.id} c={e.checkpoint} />
         ) : (
           <Collapsible key={e.advice.id} role="group" className="rounded border border-border p-2">
-            <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="max-md:h-auto max-md:min-h-11 max-md:justify-start max-md:whitespace-normal max-md:text-left">{adviceTitle(e.advice)}</Button></CollapsibleTrigger>
+            <CollapsibleTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="max-md:h-auto max-md:min-h-11 max-md:justify-start max-md:whitespace-normal max-md:text-left"
+              >
+                {adviceTitle(e.advice)}
+              </Button>
+            </CollapsibleTrigger>
             <CollapsibleContent>
-            <p className="mt-2 font-medium">{e.advice.question}</p>
-            <p>{e.advice.answer ?? e.advice.error ?? ""}</p>
+              <p className="mt-2 font-medium">{e.advice.question}</p>
+              <p>{e.advice.answer ?? e.advice.error ?? ""}</p>
             </CollapsibleContent>
           </Collapsible>
         ),

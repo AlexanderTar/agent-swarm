@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { ageAgo, ageCompact, ageLine, formatCost, formatDuration, formatTime, formatTokens, sha7, truncate } from "./format";
+import {
+  ageAgo,
+  ageCompact,
+  ageLine,
+  formatCost,
+  formatDuration,
+  formatTime,
+  formatTokens,
+  sha7,
+  truncate,
+} from "./format";
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -20,7 +30,14 @@ describe("format", () => {
     const scanned = (age: string) => `Scanned ${age} ago`;
     expect(ageLine(NOW - 125 * MIN, "Never scanned", scanned, NOW)).toBe("Scanned 2h ago");
     // Trust boundary: the wire can send 0, a negative, or junk that decodes to NaN.
-    for (const ms of [0, -1, -NOW, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    for (const ms of [
+      0,
+      -1,
+      -NOW,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
       expect(ageLine(ms, "Never scanned", scanned, NOW)).toBe("Never scanned");
     }
     // 1 ms past the epoch is still a real (absurd) age, not a missing timestamp.

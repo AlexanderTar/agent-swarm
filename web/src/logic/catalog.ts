@@ -1,11 +1,30 @@
 import { AGENT_LABEL, AGENT_LOGIN_CMD, C, T } from "../copy";
-import type { AdvisorPayload, AgentCatalogEntry, AgentKind, CatalogModel, Settings, SettingsRole } from "../types";
+import type {
+  AdvisorPayload,
+  AgentCatalogEntry,
+  AgentKind,
+  CatalogModel,
+  Settings,
+  SettingsRole,
+} from "../types";
 import { ageLine } from "./format";
 
-export interface Option { value: string; label: string; disabled?: boolean }
-export interface AgentChoice { agent: AgentKind | ""; model: string; effort: string }
+export interface Option {
+  value: string;
+  label: string;
+  disabled?: boolean;
+}
+export interface AgentChoice {
+  agent: AgentKind | "";
+  model: string;
+  effort: string;
+}
 export type AdvisorChoice = { agent: AgentKind; model: string } | "none";
-export interface FieldErrors { agent?: string; model?: string; advisor?: string }
+export interface FieldErrors {
+  agent?: string;
+  model?: string;
+  advisor?: string;
+}
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -15,17 +34,25 @@ const DEFAULT_LEVEL = "default";
 // The levels a user can actually pick. When "default" is also the model's default_effort, the
 // daemon resolves it and "" to the same launch id, so offering both would be two identical rows.
 const offeredEfforts = (model: CatalogModel): string[] =>
-  model.default_effort === DEFAULT_LEVEL ? model.efforts.filter((e) => e !== DEFAULT_LEVEL) : model.efforts;
+  model.default_effort === DEFAULT_LEVEL
+    ? model.efforts.filter((e) => e !== DEFAULT_LEVEL)
+    : model.efforts;
 
 // The bare slug has no level name of its own, so it is named after the agent wherever it is shown.
 const levelLabel = (kind: AgentKind, level: string) =>
   level === DEFAULT_LEVEL ? T.defaultLevel(AGENT_LABEL[kind]) : level;
 
-export const entryFor = (catalog: AgentCatalogEntry[], kind: AgentKind | "") => catalog.find((e) => e.kind === kind);
+export const entryFor = (catalog: AgentCatalogEntry[], kind: AgentKind | "") =>
+  catalog.find((e) => e.kind === kind);
 
-export function resolveModel(entry: AgentCatalogEntry | undefined, value: string): CatalogModel | undefined {
+export function resolveModel(
+  entry: AgentCatalogEntry | undefined,
+  value: string,
+): CatalogModel | undefined {
   if (!entry || value === "") return undefined;
-  return entry.models.find((m) => m.id === value) ?? entry.models.find((m) => m.aliases?.includes(value));
+  return (
+    entry.models.find((m) => m.id === value) ?? entry.models.find((m) => m.aliases?.includes(value))
+  );
 }
 
 export function modelLabel(entry: AgentCatalogEntry | undefined, value: string): string {
@@ -34,12 +61,17 @@ export function modelLabel(entry: AgentCatalogEntry | undefined, value: string):
   return m.id === value ? m.label : `${capitalize(value)} (latest)`;
 }
 
-export const agentOptions = (enabled: AgentKind[]): Option[] => enabled.map((k) => ({ value: k, label: AGENT_LABEL[k] }));
+export const agentOptions = (enabled: AgentKind[]): Option[] =>
+  enabled.map((k) => ({ value: k, label: AGENT_LABEL[k] }));
 
 // An agent whose catalog entry says advisor_enabled is false (muse, until its write block is proven) can't advise.
-const canAdvise = (catalog: AgentCatalogEntry[], kind: AgentKind) => entryFor(catalog, kind)?.advisor_enabled !== false;
+const canAdvise = (catalog: AgentCatalogEntry[], kind: AgentKind) =>
+  entryFor(catalog, kind)?.advisor_enabled !== false;
 
-export const advisorAgentOptions = (enabled: AgentKind[], catalog: AgentCatalogEntry[]): Option[] => [
+export const advisorAgentOptions = (
+  enabled: AgentKind[],
+  catalog: AgentCatalogEntry[],
+): Option[] => [
   ...agentOptions(enabled.filter((k) => canAdvise(catalog, k))),
   { value: "none", label: C.noAdvisor },
 ];
@@ -47,7 +79,9 @@ export const advisorAgentOptions = (enabled: AgentKind[], catalog: AgentCatalogE
 export function modelOptions(entry: AgentCatalogEntry | undefined, advisorOnly = false): Option[] {
   if (!entry) return [];
   const visible = entry.models.filter((m) => !m.hidden && (!advisorOnly || m.advisor_capable));
-  const aliases = visible.flatMap((m) => (m.aliases ?? []).map((a) => ({ value: a, label: `${capitalize(a)} (latest)` })));
+  const aliases = visible.flatMap((m) =>
+    (m.aliases ?? []).map((a) => ({ value: a, label: `${capitalize(a)} (latest)` })),
+  );
   // The offline alias fallback (§6.7) ships models whose id is their own alias, so the alias pass
   // and the full-name pass collide. One row per launch id, first occurrence wins, order preserved.
   const seen = new Set<string>();
@@ -63,11 +97,16 @@ export function modelOptions(entry: AgentCatalogEntry | undefined, advisorOnly =
 export const advisorModelOptions = (catalog: AgentCatalogEntry[], agent: AgentKind): Option[] =>
   modelOptions(entryFor(catalog, agent), agent === "claude");
 
-export function changeAdvisorAgent(value: AgentKind | "none", settings: Settings, catalog: AgentCatalogEntry[]): AdvisorChoice {
+export function changeAdvisorAgent(
+  value: AgentKind | "none",
+  settings: Settings,
+  catalog: AgentCatalogEntry[],
+): AdvisorChoice {
   if (value === "none") return "none";
   const models = advisorModelOptions(catalog, value).filter((o) => !o.disabled);
   const saved = settings.roles.advisor;
-  if (saved?.agent === value && models.some((o) => o.value === saved.model)) return { agent: value, model: saved.model };
+  if (saved?.agent === value && models.some((o) => o.value === saved.model))
+    return { agent: value, model: saved.model };
   const first = models[0];
   return first ? { agent: value, model: first.value } : "none";
 }
@@ -82,7 +121,10 @@ export function defaultEffortLabel(kind: AgentKind, model: CatalogModel): string
 // §16.4: the model's own levels in the order the daemon ranked them, plus "Default ({level})" on top.
 // Slug agents (§6.7) list a literal "default" level for the bare slug; it keeps the daemon's position
 // and is named after the agent, and it drops out when "" already resolves to it.
-export function effortOptions(kind: AgentKind | "", model: CatalogModel | undefined): Option[] | null {
+export function effortOptions(
+  kind: AgentKind | "",
+  model: CatalogModel | undefined,
+): Option[] | null {
   if (kind === "" || !model || model.efforts.length === 0) return null;
   return [
     { value: "", label: defaultEffortLabel(kind, model) },
@@ -93,8 +135,11 @@ export function effortOptions(kind: AgentKind | "", model: CatalogModel | undefi
 // The one seam for "is this level still offered?". A stored level the model's menu doesn't show
 // means the agent default (L27): either the model dropped it, or it is a bare level that merged
 // into the "" row. Consumers must reuse this rather than re-deriving the rule.
-export const normalizeEffort = (kind: AgentKind | "", model: CatalogModel | undefined, effort: string): string =>
-  effortOptions(kind, model)?.some((o) => o.value === effort) ? effort : "";
+export const normalizeEffort = (
+  kind: AgentKind | "",
+  model: CatalogModel | undefined,
+  effort: string,
+): string => (effortOptions(kind, model)?.some((o) => o.value === effort) ? effort : "");
 
 export function prefill(
   settings: Settings,
@@ -123,17 +168,27 @@ export function changeAgent(choice: AgentChoice, agent: AgentKind, catalog: Agen
     const effort = normalizeEffort(agent, model, choice.effort);
     return { choice: { agent, model: choice.model, effort }, errors: {} as FieldErrors };
   }
-  return { choice: { agent, model: "", effort: "" }, errors: { model: C.modelUnavailable } as FieldErrors };
+  return {
+    choice: { agent, model: "", effort: "" },
+    errors: { model: C.modelUnavailable } as FieldErrors,
+  };
 }
 
-export function changeModel(choice: AgentChoice, model: string, catalog: AgentCatalogEntry[]): { choice: AgentChoice; note?: string } {
+export function changeModel(
+  choice: AgentChoice,
+  model: string,
+  catalog: AgentCatalogEntry[],
+): { choice: AgentChoice; note?: string } {
   const m = resolveModel(entryFor(catalog, choice.agent), model);
   const next = { ...choice, model, effort: normalizeEffort(choice.agent, m, choice.effort) };
   // Silent only when the bare level merged into the NEW model's "" row: it launches the same way.
   // A target with no bare level at all really did lose the choice, so it gets the note.
   const merged = choice.effort === DEFAULT_LEVEL && m?.default_effort === DEFAULT_LEVEL;
   if (next.effort === "" && choice.effort !== "" && !merged && m && choice.agent !== "") {
-    return { choice: next, note: T.effortUnavailable(levelLabel(choice.agent, choice.effort), m.label) };
+    return {
+      choice: next,
+      note: T.effortUnavailable(levelLabel(choice.agent, choice.effort), m.label),
+    };
   }
   return { choice: next };
 }
@@ -162,10 +217,18 @@ export function validateChoice(
 
 export const isValid = (e: FieldErrors) => Object.keys(e).length === 0;
 
-export function catalogNote(entry: AgentCatalogEntry | undefined, now = Date.now()): string | undefined {
+export function catalogNote(
+  entry: AgentCatalogEntry | undefined,
+  now = Date.now(),
+): string | undefined {
   if (!entry?.catalog_stale) return undefined;
   const never = entry.catalog_error ? T.catalogNeverFetched(entry.catalog_error) : C.neverFetched;
-  return ageLine(entry.catalog_fetched_at, never, (age) => T.catalogStale(age, entry.catalog_error), now);
+  return ageLine(
+    entry.catalog_fetched_at,
+    never,
+    (age) => T.catalogStale(age, entry.catalog_error),
+    now,
+  );
 }
 
 export function advisorOptions(catalog: AgentCatalogEntry[], enabled: AgentKind[]): Option[] {
@@ -178,7 +241,8 @@ export function advisorOptions(catalog: AgentCatalogEntry[], enabled: AgentKind[
   return [...out, { value: "none", label: C.noAdvisor }];
 }
 
-export const encodeAdvisor = (a: AdvisorChoice) => (a === "none" ? "none" : `${a.agent}:${a.model}`);
+export const encodeAdvisor = (a: AdvisorChoice) =>
+  a === "none" ? "none" : `${a.agent}:${a.model}`;
 
 export function decodeAdvisor(v: string): AdvisorChoice {
   if (v === "none") return "none";
@@ -186,7 +250,11 @@ export function decodeAdvisor(v: string): AdvisorChoice {
   return { agent: v.slice(0, i) as AgentKind, model: v.slice(i + 1) };
 }
 
-export function choicePayload(c: AgentChoice): { agent: AgentKind; model: string; effort?: string } {
+export function choicePayload(c: AgentChoice): {
+  agent: AgentKind;
+  model: string;
+  effort?: string;
+} {
   const base = { agent: c.agent as AgentKind, model: c.model };
   return c.effort ? { ...base, effort: c.effort } : base;
 }
@@ -195,7 +263,11 @@ export function choicePayload(c: AgentChoice): { agent: AgentKind; model: string
 // the Settings advisor model, so re-check it against the model the user actually picked (the
 // daemon's SupportsEffort rule). A level that model doesn't offer is left out entirely: the daemon
 // substitutes its own default before the launch-id lookup, so the launch id is the same either way.
-export function advisorPayload(a: AdvisorChoice, settings: Settings, catalog: AgentCatalogEntry[]): AdvisorPayload {
+export function advisorPayload(
+  a: AdvisorChoice,
+  settings: Settings,
+  catalog: AgentCatalogEntry[],
+): AdvisorPayload {
   if (a === "none") return "none";
   const model = resolveModel(entryFor(catalog, a.agent), a.model);
   const effort = normalizeEffort(a.agent, model, settings.roles.advisor?.effort ?? "");

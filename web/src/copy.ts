@@ -12,9 +12,23 @@ export const STATUS_LABEL: Record<ItemStatus, string> = {
   cancelled: "Cancelled",
 };
 
-export const TYPE_LABEL: Record<ItemType, string> = { epic: "Epic", story: "Story", task: "Task", bug: "Bug", spike: "Spike", chore: "Chore" };
+export const TYPE_LABEL: Record<ItemType, string> = {
+  epic: "Epic",
+  story: "Story",
+  task: "Task",
+  bug: "Bug",
+  spike: "Spike",
+  chore: "Chore",
+};
 export const ITEM_TYPE_LABEL = TYPE_LABEL;
-export const TYPE_PLURAL: Record<ItemType, string> = { epic: "Epics", story: "Stories", task: "Tasks", bug: "Bugs", spike: "Spikes", chore: "Chores" };
+export const TYPE_PLURAL: Record<ItemType, string> = {
+  epic: "Epics",
+  story: "Stories",
+  task: "Tasks",
+  bug: "Bugs",
+  spike: "Spikes",
+  chore: "Chores",
+};
 
 export const ROLE_LABEL: Record<Role | "advisor", string> = {
   orchestrator: "Orchestrator",
@@ -29,17 +43,46 @@ export const ROLE_LABEL: Record<Role | "advisor", string> = {
 };
 
 export const ROLE_EMOJI: Record<Role, string> = {
-  orchestrator: "🧭", coder: "💻", reviewer: "🔍", ui_reviewer: "🎨",
-  designer: "✏️", researcher: "📚", debugger: "🐛", mechanical: "🔧",
+  orchestrator: "🧭",
+  coder: "💻",
+  reviewer: "🔍",
+  ui_reviewer: "🎨",
+  designer: "✏️",
+  researcher: "📚",
+  debugger: "🐛",
+  mechanical: "🔧",
 };
 
-export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", cursor: "Cursor", muse: "Muse", grok: "Grok", fake: "Fake" };
+export const AGENT_LABEL: Record<AgentKind, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  agy: "Antigravity",
+  cursor: "Cursor",
+  muse: "Muse",
+  grok: "Grok",
+  fake: "Fake",
+};
 // README §19 troubleshooting: how each agent signs in.
 export const AGENT_LOGIN_CMD: Record<AgentKind, string> = {
-  claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", muse: "muse login", grok: "grok login", fake: "true",
+  claude: "claude",
+  codex: "codex login",
+  agy: "agy",
+  cursor: "cursor-agent login",
+  muse: "muse login",
+  grok: "grok login",
+  fake: "true",
 };
 
-export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale" | "preflight_failed" | "capacity_paused" | "resume_queued", string> = {
+export const SESSION_LABEL: Record<
+  | SessionState
+  | "queued"
+  | "waiting"
+  | "stale"
+  | "preflight_failed"
+  | "capacity_paused"
+  | "resume_queued",
+  string
+> = {
   spawning: "Starting",
   running: "Running",
   pause_requested: "Pause requested",
@@ -199,7 +242,8 @@ export const C = {
   debugSpike: "Debug spike",
   featureCaption: "Creates a spike to explore this request and turn it into an epic.",
   debugCaption: "Creates a spike to find the root cause and turn it into a bug with a fix plan.",
-  choreCaption: "Creates a top-level chore orchestrator for maintenance, refactoring, or general work.",
+  choreCaption:
+    "Creates a top-level chore orchestrator for maintenance, refactoring, or general work.",
   repositories: "Repositories",
   repositoriesOptional: "Repositories (optional)",
   reposCaption: "The spike suggests repositories and asks you to confirm them.",
@@ -221,7 +265,8 @@ export const C = {
   nameOptionalPlaceholder: "Optional if you write a request",
   nameOrRequestRequired: "Give a name or a request.",
   addImages: "Add files…",
-  imagesNotSaved: "Started, but the attachments could not be saved. Share them with the orchestrator another way.",
+  imagesNotSaved:
+    "Started, but the attachments could not be saved. Share them with the orchestrator another way.",
   done: "Done",
   pastedImageName: "Pasted image.png",
   droppedImageName: "Dropped image.png",
@@ -258,7 +303,8 @@ export const C = {
   neverFetched: "Never fetched",
   launchFailure: "Couldn't start orchestrator. Your entries are saved.",
   imageTooMany: "Up to 10 attachments.",
-  imagesTooLargeToSend: "The attachments are too large to send over remote access. Remove some and try again.",
+  imagesTooLargeToSend:
+    "The attachments are too large to send over remote access. Remove some and try again.",
   queuedCaption: "Starts when an agent slot becomes available.",
   orchestratorExists: "This item already has an orchestrator.",
   epicDone: "Accept this epic to mark it Done.",
@@ -323,31 +369,43 @@ export const T = {
   selected: (names: string) => `Selected: ${names}`,
   scannedAgo: (age: string) => `Scanned ${age} ago`,
   defaultLevel: (level: string) => `Default (${level})`,
-  storyDoneDenied: (key: string) => `Couldn't move ${key} to Done. Complete all child tasks and their checkpoints first.`,
-  taskDoneDenied: (key: string) => `Couldn't move ${key} to Done. No agent has reported it complete.`,
+  storyDoneDenied: (key: string) =>
+    `Couldn't move ${key} to Done. Complete all child tasks and their checkpoints first.`,
+  taskDoneDenied: (key: string) =>
+    `Couldn't move ${key} to Done. No agent has reported it complete.`,
   genericStatus: (status: string) => `Couldn't update status. The item remains ${status}.`,
   agentNotInstalled: (agent: string) => `${agent} isn't installed on this Mac.`,
-  agentNotSignedIn: (agent: string, cmd: string) => `${agent} isn't signed in. Run \`${cmd}\` in a terminal.`,
-  superpowersMissing: (agent: string) => `Install the superpowers plugin for ${agent} to run orchestrators.`,
-  catalogStale: (age: string, error: string) => `Model list from ${age} ago. Couldn't refresh: ${error}`,
+  agentNotSignedIn: (agent: string, cmd: string) =>
+    `${agent} isn't signed in. Run \`${cmd}\` in a terminal.`,
+  superpowersMissing: (agent: string) =>
+    `Install the superpowers plugin for ${agent} to run orchestrators.`,
+  catalogStale: (age: string, error: string) =>
+    `Model list from ${age} ago. Couldn't refresh: ${error}`,
   catalogNeverFetched: (error: string) => `Never fetched. Couldn't refresh: ${error}`,
   modelGone: (model: string, agent: string) => `${model} is no longer offered by ${agent}.`,
-  effortUnavailable: (level: string, model: string) => `${level} isn't available for ${model}; using the default.`,
+  effortUnavailable: (level: string, model: string) =>
+    `${level} isn't available for ${model}; using the default.`,
   cancelOrchestrator: (name: string, n: number) => `Cancel ${name} and its ${n} agents?`,
   finished: (n: number) => `Finished (${n})`,
   colHeader: (label: string, n: number) => `${label} · ${n}`,
   colTooltip: (shown: number, total: number) => `${shown} of ${total} items`,
   agentsTooltip: (n: number) => `${n} agents working in this item and its children.`,
-  typeHint: (typePlural: string) => `${typePlural} have no task cards yet. Switch Card level to Top-level items to see them.`,
+  typeHint: (typePlural: string) =>
+    `${typePlural} have no task cards yet. Switch Card level to Top-level items to see them.`,
   laneFinished: (n: number, done: number, cancelled: number, unit: string) =>
     `All ${n} ${unit} finished · ${done} done, ${cancelled} cancelled.`,
   laneDone: (n: number, unit: string) => `All ${n} ${unit} done.`,
   progress: (done: number, total: number, unit: string) => `${done} of ${total} ${unit} done`,
-  blockedBy: (first: string, extra: number) => `Blocked by ${first}${extra > 0 ? ` +${extra}` : ""}`,
+  blockedBy: (first: string, extra: number) =>
+    `Blocked by ${first}${extra > 0 ? ` +${extra}` : ""}`,
   needs: (n: number) => `Needs ${n}`,
   needsYouButton: (n: number) => `Needs you ${n}`,
   laneHeader: (n: number, unit: string, needYou: number, blocked: number) =>
-    joinParts([`${n} ${unit}`, needYou > 0 ? `${needYou} need you` : "", blocked > 0 ? `${blocked} blocked` : ""]),
+    joinParts([
+      `${n} ${unit}`,
+      needYou > 0 ? `${needYou} need you` : "",
+      blocked > 0 ? `${blocked} blocked` : "",
+    ]),
   confirmNRepos: (n: number) => `Confirm ${n} repositories`,
   approveSectionRow: (title: string) => `Approve "${title}"`,
   duplicateOf: (key: string) => `Duplicate of ${key}`,

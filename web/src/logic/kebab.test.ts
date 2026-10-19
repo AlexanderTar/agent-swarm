@@ -20,7 +20,9 @@ describe("kebab (§4 ids.Kebab)", () => {
   });
 
   it("builds default orchestrator names", () => {
-    expect(defaultOrchestratorName("Authentication and authorisation overhaul")).toBe("authentication-and-orchestrator");
+    expect(defaultOrchestratorName("Authentication and authorisation overhaul")).toBe(
+      "authentication-and-orchestrator",
+    );
     expect(defaultOrchestratorName("Authentication")).toBe("authentication-orchestrator");
     expect(defaultOrchestratorName("???")).toBe("orchestrator");
   });
@@ -28,10 +30,9 @@ describe("kebab (§4 ids.Kebab)", () => {
   // Shared golden cases (spec §4, testdata/kebab_cases.json): keeps this port in
   // step with internal/ids.KebabMax (P2) and apps/menubar's Kebab.make (P4). An
   // "error" case is where Go/Swift fail; this port has no error path and returns "".
-  it.each((golden as { cases: { input: string; max: number; output?: string; error?: boolean }[] }).cases)(
-    "golden %o",
-    (c) => {
-      expect(kebab(c.input, c.max)).toBe(c.error ? "" : c.output);
-    },
-  );
+  it.each(
+    (golden as { cases: { input: string; max: number; output?: string; error?: boolean }[] }).cases,
+  )("golden %o", (c) => {
+    expect(kebab(c.input, c.max)).toBe(c.error ? "" : c.output);
+  });
 });

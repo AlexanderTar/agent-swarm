@@ -9,7 +9,11 @@ import { NewSpikeSheet } from "./NewSpikeSheet";
 vi.mock("../logic/requestImages", async (orig) => ({
   ...(await orig<typeof import("../logic/requestImages")>()),
   addImages: vi.fn(async (_n: number, files: { blob: Blob; name: string }[]) => ({
-    added: files.map((f) => ({ name: f.name, blob: f.blob, image: f.blob.type.startsWith("image/") })),
+    added: files.map((f) => ({
+      name: f.name,
+      blob: f.blob,
+      image: f.blob.type.startsWith("image/"),
+    })),
   })),
 }));
 
@@ -349,9 +353,7 @@ describe("NewSpikeSheet request images: submit", () => {
     const { sheet, request, user } = await open();
     await user.type(request, "Look");
     paste(request, "folder");
-    expect(
-      await within(sheet).findByText("Swarm couldn't read folder."),
-    ).toBeInTheDocument();
+    expect(await within(sheet).findByText("Swarm couldn't read folder.")).toBeInTheDocument();
     expect(sheet.querySelector('li[aria-hidden="true"]')).toBeNull();
     expect(start(sheet)).toBeEnabled();
     paste(request, "ok.png");

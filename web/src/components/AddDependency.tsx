@@ -15,7 +15,10 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
   const items = useItems();
-  const add = useMutation((api, blockedBy: string) => api.addDep(itemKey, blockedBy), ["items", "item:", "graph:"]);
+  const add = useMutation(
+    (api, blockedBy: string) => api.addDep(itemKey, blockedBy),
+    ["items", "item:", "graph:"],
+  );
   const trigger = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
   // Standing rule: this search box is transient UI — take focus on open, restore it to the trigger
@@ -28,7 +31,9 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
     trigger.current?.focus();
   };
   const hits = q.trim()
-    ? (items.data?.items ?? []).filter((i) => i.key !== itemKey && matches(i, { q, type: "", status: "" })).slice(0, 8)
+    ? (items.data?.items ?? [])
+        .filter((i) => i.key !== itemKey && matches(i, { q, type: "", status: "" }))
+        .slice(0, 8)
     : [];
   const pick = async (key: string) => {
     if (!live.connected) return;
@@ -44,7 +49,14 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
   };
   return (
     <div>
-      <Button ref={trigger} variant="link" size="sm" type="button" disabled={disabled} onClick={() => setOpen((o) => !o)}>
+      <Button
+        ref={trigger}
+        variant="link"
+        size="sm"
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+      >
         {`+ ${C.addDependency}`}
       </Button>
       {open && (
@@ -59,7 +71,15 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
             className="w-full"
           />
           {hits.map((i) => (
-            <Button key={i.key} variant="ghost" size="sm" type="button" disabled={!connected || add.pending} onClick={() => void pick(i.key)} className="block w-full truncate text-left">
+            <Button
+              key={i.key}
+              variant="ghost"
+              size="sm"
+              type="button"
+              disabled={!connected || add.pending}
+              onClick={() => void pick(i.key)}
+              className="block w-full truncate text-left"
+            >
               {`${i.key} · ${i.title}`}
             </Button>
           ))}

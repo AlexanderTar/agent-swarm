@@ -1,4 +1,4 @@
-import { fireEvent, type RenderResult, render } from "@testing-library/react";
+import { type RenderResult, fireEvent, render } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { vi } from "vitest";

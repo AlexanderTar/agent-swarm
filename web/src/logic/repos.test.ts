@@ -1,10 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { Repo, ReposResponse } from "../types";
-import { chooserRows, knownRepos, reconcileSelection, scanLine, selectedLine, shortPath, toggleRepo } from "./repos";
+import {
+  chooserRows,
+  knownRepos,
+  reconcileSelection,
+  scanLine,
+  selectedLine,
+  shortPath,
+  toggleRepo,
+} from "./repos";
 
 const repo = (id: string, name: string, p: Partial<Repo> = {}): Repo => ({
-  id, name, path: `/Users/alex/GitHub/${name}`, remote_url: null, remote_owner: null, default_branch: "main",
-  source: "scan", groups: [], missing: false, dirty: false, last_used_at: null, ...p,
+  id,
+  name,
+  path: `/Users/alex/GitHub/${name}`,
+  remote_url: null,
+  remote_owner: null,
+  default_branch: "main",
+  source: "scan",
+  groups: [],
+  missing: false,
+  dirty: false,
+  last_used_at: null,
+  ...p,
 });
 const chat = repo("r1", "endurio-chat", { remote_owner: "EndurioApp" });
 const app = repo("r2", "endurio-app", { remote_owner: "EndurioApp" });
@@ -33,7 +51,9 @@ describe("repo picker rules (§16.3)", () => {
   it("selects, toggles and summarises", () => {
     expect(toggleRepo([], "r1")).toEqual(["r1"]);
     expect(toggleRepo(["r1", "r2"], "r1")).toEqual(["r2"]);
-    expect(selectedLine(["r1", "r3"], knownRepos(resp))).toBe("Selected: endurio-chat, endurio-landing");
+    expect(selectedLine(["r1", "r3"], knownRepos(resp))).toBe(
+      "Selected: endurio-chat, endurio-landing",
+    );
     expect(selectedLine([], knownRepos(resp))).toBe("");
     expect(knownRepos(resp).map((r) => r.id)).toEqual(["r1", "r2", "r3", "r4"]);
   });

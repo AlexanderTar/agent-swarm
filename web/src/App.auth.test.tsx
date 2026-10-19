@@ -15,19 +15,40 @@ function remoteDaemon(o: { authenticated?: boolean; login?: () => Response } = {
   const fn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     calls.push(`${init?.method ?? "GET"} ${path}`);
-    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
-    if (path === "/api/auth/me") return json({ origin: "tunnel", authenticated: authed, ...(authed ? { email: "me@example.com" } : {}) });
+    const json = (b: unknown, status = 200) =>
+      new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+    if (path === "/api/auth/me")
+      return json({
+        origin: "tunnel",
+        authenticated: authed,
+        ...(authed ? { email: "me@example.com" } : {}),
+      });
     if (path === "/api/auth/login") {
       const r = o.login?.() ?? new Response(null, { status: 204 });
       if (r.ok) authed = true;
       return r;
     }
-    if (path === "/api/auth/logout") { authed = false; return new Response(null, { status: 204 }); }
+    if (path === "/api/auth/logout") {
+      authed = false;
+      return new Response(null, { status: 204 });
+    }
     if (!authed) return json({ error: { code: "unauthorized", message: "no" } }, 401);
-    return board(input, { ...init, headers: { ...(init?.headers as Record<string, string>), Authorization: `Bearer ${daemon.db.token}` } });
+    return board(input, {
+      ...init,
+      headers: {
+        ...(init?.headers as Record<string, string>),
+        Authorization: `Bearer ${daemon.db.token}`,
+      },
+    });
   }) as typeof fetch;
   vi.stubGlobal("fetch", fn);
-  return { daemon, calls, expire: () => { authed = false; } };
+  return {
+    daemon,
+    calls,
+    expire: () => {
+      authed = false;
+    },
+  };
 }
 
 afterEach(() => vi.unstubAllGlobals());

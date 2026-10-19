@@ -1,9 +1,13 @@
 import type { MockDaemon, MockEvent, StreamSignal } from "./daemon";
 
 const enc = new TextEncoder();
-const frame = (e: MockEvent) => enc.encode(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
+const frame = (e: MockEvent) =>
+  enc.encode(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
 
-export function eventStream(d: MockDaemon, lastEventId: string | undefined): ReadableStream<Uint8Array> {
+export function eventStream(
+  d: MockDaemon,
+  lastEventId: string | undefined,
+): ReadableStream<Uint8Array> {
   let unsubscribe = () => {};
   return new ReadableStream<Uint8Array>({
     start(ctrl) {
@@ -33,8 +37,12 @@ export function mockFetch(d: MockDaemon): typeof fetch {
     const url = new URL(String(input), "http://mock.test");
     const headers = Object.fromEntries(new Headers(init?.headers).entries());
     if (url.pathname === "/api/events") {
-      if (headers.authorization !== `Bearer ${d.db.token}`) return new Response(null, { status: 401 });
-      return new Response(eventStream(d, headers["last-event-id"]), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      if (headers.authorization !== `Bearer ${d.db.token}`)
+        return new Response(null, { status: 401 });
+      return new Response(eventStream(d, headers["last-event-id"]), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
     }
     const method = init?.method ?? "GET";
     // F12: a held route (see MockDaemon.hold) delays the response; `handle()` itself is synchronous.
@@ -42,6 +50,9 @@ export function mockFetch(d: MockDaemon): typeof fetch {
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     const r = d.handle({ method, url: url.pathname + url.search, headers, body });
     const payload = r.body === undefined || r.status === 204 ? null : JSON.stringify(r.body);
-    return new Response(payload, { status: r.status, headers: { "Content-Type": "application/json" } });
+    return new Response(payload, {
+      status: r.status,
+      headers: { "Content-Type": "application/json" },
+    });
   }) as typeof fetch;
 }

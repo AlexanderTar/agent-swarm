@@ -13,33 +13,62 @@ import { useConnection, useMutation } from "../data/hooks";
 import { useAgents, useCatalog, useItemDetail, useSettings } from "../data/queries";
 import { isValid, prefill, validateChoice } from "../logic/catalog";
 import { defaultOrchestratorName } from "../logic/kebab";
-import { startedToast } from "../logic/toasts";
 import {
-  type SubmitFailure, mapSubmitError, nameError, newRequestId, orchestratorPayload, orchestratorsBusy, submitLabel,
+  type SubmitFailure,
+  mapSubmitError,
+  nameError,
+  newRequestId,
+  orchestratorPayload,
+  orchestratorsBusy,
+  submitLabel,
 } from "../logic/spawnForm";
+import { startedToast } from "../logic/toasts";
 import type { AgentCatalogEntry, AgentNode, Item, Settings } from "../types";
 
-function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[]; agents: AgentNode[]; onClose(): void }) {
+function Form(p: {
+  item: Item;
+  settings: Settings;
+  catalog: AgentCatalogEntry[];
+  agents: AgentNode[];
+  onClose(): void;
+}) {
   const { connected } = useConnection();
   const toast = useToast();
   const nameId = useId();
   const submitting = useRef(false);
   const [repos, setRepos] = useState(p.item.repos);
-  const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
+  const [fields, setFields] = useState<AgentFieldsValue>(() =>
+    prefill(p.settings, "orchestrator", p.catalog),
+  );
   const [name, setName] = useState(() => defaultOrchestratorName(p.item.title));
   const [requestId, setRequestId] = useState(newRequestId);
   const [failure, setFailure] = useState<SubmitFailure>({});
-  const start = useMutation((api, body: ReturnType<typeof orchestratorPayload>) => api.startOrchestrator(p.item.key, body), ["agents", "item:", "items"]);
+  const start = useMutation(
+    (api, body: ReturnType<typeof orchestratorPayload>) => api.startOrchestrator(p.item.key, body),
+    ["agents", "item:", "items"],
+  );
   const busy = orchestratorsBusy(p.agents, p.settings);
   const nameErr = failure.name ?? nameError(name);
-  const valid = !nameError(name) && isValid(validateChoice(fields.choice, fields.advisor, p.catalog, p.settings.enabled_agents, "orchestrator"));
+  const valid =
+    !nameError(name) &&
+    isValid(
+      validateChoice(
+        fields.choice,
+        fields.advisor,
+        p.catalog,
+        p.settings.enabled_agents,
+        "orchestrator",
+      ),
+    );
 
   const submit = async () => {
     if (submitting.current) return;
     submitting.current = true;
     setFailure({});
     try {
-      const agent = await start.run(orchestratorPayload({ name, repos, fields }, p.item, p.settings, p.catalog, requestId));
+      const agent = await start.run(
+        orchestratorPayload({ name, repos, fields }, p.item, p.settings, p.catalog, requestId),
+      );
       toast.success(startedToast(agent, p.item.key));
       p.onClose();
     } catch (e) {
@@ -57,8 +86,14 @@ function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[];
       onClose={p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
-          <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
+          {busy && (
+            <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">
+              {C.queuedCaption}
+            </span>
+          )}
+          <Button variant="secondary" onClick={p.onClose}>
+            {C.cancel}
+          </Button>
           <Button disabled={!valid || !connected || start.pending} onClick={() => void submit()}>
             {failure.banner ? C.tryAgain : submitLabel(busy)}
           </Button>
@@ -75,9 +110,13 @@ function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[];
       <AgentFields value={fields} onChange={setFields} settings={p.settings} catalog={p.catalog} />
       <div className="space-y-1.5">
         <Label htmlFor={nameId}>{C.name}</Label>
-        <Input id={nameId}
+        <Input
+          id={nameId}
           value={name}
-          onChange={(e) => { setName(e.target.value); setFailure((f) => ({ ...f, name: undefined })); }}
+          onChange={(e) => {
+            setName(e.target.value);
+            setFailure((f) => ({ ...f, name: undefined }));
+          }}
           className="key"
         />
         {name !== "" && nameErr && <p className="text-xs text-destructive">{nameErr}</p>}
@@ -99,7 +138,8 @@ export function SpawnSheet(p: { itemKey: string; onClose(): void }) {
       <Sheet title={C.startOrchestrator} width={900} onClose={p.onClose}>
         <Alert variant="destructive">
           {errorText(err)}{" "}
-          <Button variant="link"
+          <Button
+            variant="link"
             onClick={() => {
               detail.reload();
               settings.reload();
@@ -114,5 +154,13 @@ export function SpawnSheet(p: { itemKey: string; onClose(): void }) {
     );
   }
   if (!detail.data || !settings.data || !catalog.data || !agents.data) return null;
-  return <Form item={detail.data.item} settings={settings.data} catalog={catalog.data} agents={agents.data} onClose={p.onClose} />;
+  return (
+    <Form
+      item={detail.data.item}
+      settings={settings.data}
+      catalog={catalog.data}
+      agents={agents.data}
+      onClose={p.onClose}
+    />
+  );
 }

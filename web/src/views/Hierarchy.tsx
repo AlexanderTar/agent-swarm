@@ -1,9 +1,14 @@
 import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
-import { Key, TypeIcon } from "../components/icons";
 import { StatusPill } from "../components/StatusLabel";
+import { Key, TypeIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
 import { C, T } from "../copy";
 import { PARENT_TYPES, hierarchyRows, isFilterActive } from "../logic/tree";
 import { useLocalSet } from "../state/local";
@@ -39,7 +44,9 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.noItems}</p>
-        <Button type="button" variant="link" onClick={p.onNewItem} className="mt-2">{C.newItem}</Button>
+        <Button type="button" variant="link" onClick={p.onNewItem} className="mt-2">
+          {C.newItem}
+        </Button>
       </div>
     );
   }
@@ -47,7 +54,9 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.filteredNone}</p>
-        <Button type="button" variant="link" onClick={p.onClearFilters} className="mt-2">{C.clearFilters}</Button>
+        <Button type="button" variant="link" onClick={p.onClearFilters} className="mt-2">
+          {C.clearFilters}
+        </Button>
       </div>
     );
   }
@@ -61,13 +70,17 @@ export function Hierarchy(p: HierarchyProps) {
       if (r) p.onSelect(r.item.key);
     };
     if ((e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) && cur) {
-      const type = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(cur.item.type));
+      const type = (["story", "task"] as const).find((c) =>
+        PARENT_TYPES[c]?.includes(cur.item.type),
+      );
       if (type) setMenu({ key: cur.item.key, type });
       else return;
     } else if (e.key === "ArrowDown") go(idx + 1);
     else if (e.key === "ArrowUp") go(idx < 0 ? 0 : idx - 1);
-    else if (e.key === "ArrowLeft" && cur?.hasChildren && cur.expanded && !cur.context) toggle(cur.item.key, false);
-    else if (e.key === "ArrowRight" && cur?.hasChildren && !cur.expanded) toggle(cur.item.key, true);
+    else if (e.key === "ArrowLeft" && cur?.hasChildren && cur.expanded && !cur.context)
+      toggle(cur.item.key, false);
+    else if (e.key === "ArrowRight" && cur?.hasChildren && !cur.expanded)
+      toggle(cur.item.key, true);
     else if (e.key === "Enter" && cur) p.onSelect(cur.item.key);
     else return;
     e.preventDefault();
@@ -81,84 +94,155 @@ export function Hierarchy(p: HierarchyProps) {
         <span className="text-right">AGENTS</span>
       </div>
       {/* biome-ignore lint/a11y/useSemanticElements: ARIA tree pattern */}
-      <div ref={tree} role="tree" aria-label={C.hierarchy} tabIndex={0} onKeyDown={onKeyDown} className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <div
+        ref={tree}
+        role="tree"
+        aria-label={C.hierarchy}
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
         {rows.map((r) => {
           const it = r.item;
           const top = r.depth === 0;
           // F20 ruling: reuse the parent/child table exported from logic/tree.ts instead of
           // re-deriving it, so this can't drift from PARENT_TYPES (and the daemon rules it mirrors).
-          const childType = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(it.type)) ?? null;
+          const childType =
+            (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(it.type)) ?? null;
           return (
-            <DropdownMenu key={it.key} open={menu?.key === it.key} onOpenChange={(open) => { if (open && childType) setMenu({ key: it.key, type: childType }); else if (!open && menu?.key === it.key) closeMenu(); }}>
-            <div
-              role="treeitem"
-              aria-label={`${it.key} ${it.title}`}
-              aria-level={r.depth + 1}
-              aria-expanded={r.hasChildren ? r.expanded : undefined}
-              aria-selected={it.key === p.selected}
-              data-key={it.key}
-              data-context={r.context}
-              onClick={() => p.onSelect(it.key)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setMenu(childType ? { key: it.key, type: childType } : null);
+            <DropdownMenu
+              key={it.key}
+              open={menu?.key === it.key}
+              onOpenChange={(open) => {
+                if (open && childType) setMenu({ key: it.key, type: childType });
+                else if (!open && menu?.key === it.key) closeMenu();
               }}
-              style={{ "--indent": `${r.depth * 20 + 8}px` } as React.CSSProperties}
-              className={`relative grid h-[30px] cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 hover:bg-accent/60 max-md:h-auto max-md:min-h-11 max-sm:grid-cols-[1fr_auto] max-sm:py-1 ${
-                top ? "mt-3 font-semibold" : ""
-              } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-accent" : ""}`}
             >
-              <span className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: r.depth * 20 }}>
-                {r.depth > 0 && <span aria-hidden className="absolute top-0 bottom-0 w-px bg-border" style={{ left: 8 + (r.depth - 1) * 20 + 10 }} />}
-                {r.hasChildren ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`${r.expanded ? "Collapse" : "Expand"} ${it.key}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggle(it.key, !r.expanded);
-                    }}
-                  >
-                    {r.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                  </Button>
-                ) : (
-                  <span className="w-3.5 shrink-0 max-md:w-11" />
-                )}
-                <TypeIcon type={it.type} />
-                <span className="max-sm:shrink-0 max-sm:whitespace-nowrap"><Key>{it.key}</Key></span>
-                <span className="truncate">{it.title}</span>
-                {r.context && <span className="rounded bg-muted px-1 text-[11px] font-normal">{C.context}</span>}
-              </span>
-              <span className="max-sm:col-start-1 max-sm:row-start-2 max-sm:pl-[calc(var(--indent)+42px)]"><StatusPill status={it.status} /></span>
-              <span className="flex items-center justify-end gap-1.5 max-sm:col-start-2 max-sm:row-span-2 max-sm:row-start-1">
-                <span className={SLOT}>
-                {it.active_agents > 0 && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    className="max-md:min-w-11"
-                    title={T.agentsTooltip(it.active_agents)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      p.onSelect(it.key, "agents");
-                    }}
-                  >
-                    {it.active_agents}
-                  </Button>
-                )}
+              <div
+                role="treeitem"
+                aria-label={`${it.key} ${it.title}`}
+                aria-level={r.depth + 1}
+                aria-expanded={r.hasChildren ? r.expanded : undefined}
+                aria-selected={it.key === p.selected}
+                data-key={it.key}
+                data-context={r.context}
+                onClick={() => p.onSelect(it.key)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenu(childType ? { key: it.key, type: childType } : null);
+                }}
+                style={{ "--indent": `${r.depth * 20 + 8}px` } as React.CSSProperties}
+                className={`relative grid h-[30px] cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 hover:bg-accent/60 max-md:h-auto max-md:min-h-11 max-sm:grid-cols-[1fr_auto] max-sm:py-1 ${
+                  top ? "mt-3 font-semibold" : ""
+                } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-accent" : ""}`}
+              >
+                <span
+                  className="flex min-w-0 items-center gap-1.5"
+                  style={{ paddingLeft: r.depth * 20 }}
+                >
+                  {r.depth > 0 && (
+                    <span
+                      aria-hidden
+                      className="absolute top-0 bottom-0 w-px bg-border"
+                      style={{ left: 8 + (r.depth - 1) * 20 + 10 }}
+                    />
+                  )}
+                  {r.hasChildren ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`${r.expanded ? "Collapse" : "Expand"} ${it.key}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggle(it.key, !r.expanded);
+                      }}
+                    >
+                      {r.expanded ? (
+                        <ChevronDown className="size-3.5" />
+                      ) : (
+                        <ChevronRight className="size-3.5" />
+                      )}
+                    </Button>
+                  ) : (
+                    <span className="w-3.5 shrink-0 max-md:w-11" />
+                  )}
+                  <TypeIcon type={it.type} />
+                  <span className="max-sm:shrink-0 max-sm:whitespace-nowrap">
+                    <Key>{it.key}</Key>
+                  </span>
+                  <span className="truncate">{it.title}</span>
+                  {r.context && (
+                    <span className="rounded bg-muted px-1 text-[11px] font-normal">
+                      {C.context}
+                    </span>
+                  )}
                 </span>
-                <span className={DOT_SLOT}>{it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}</span>
-                <span className={SLOT}>{childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}</span>
-              </span>
-            </div>
-            {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>
-              <DropdownMenuItem onSelect={() => { closeMenu(); p.onAddChild(it.key, menu.type); }}>
-                {menu.type === "story" ? C.addStory : C.addTask}
-              </DropdownMenuItem>
-            </DropdownMenuContent>}
+                <span className="max-sm:col-start-1 max-sm:row-start-2 max-sm:pl-[calc(var(--indent)+42px)]">
+                  <StatusPill status={it.status} />
+                </span>
+                <span className="flex items-center justify-end gap-1.5 max-sm:col-start-2 max-sm:row-span-2 max-sm:row-start-1">
+                  <span className={SLOT}>
+                    {it.active_agents > 0 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        className="max-md:min-w-11"
+                        title={T.agentsTooltip(it.active_agents)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          p.onSelect(it.key, "agents");
+                        }}
+                      >
+                        {it.active_agents}
+                      </Button>
+                    )}
+                  </span>
+                  <span className={DOT_SLOT}>
+                    {it.open_requests > 0 && (
+                      <span
+                        role="img"
+                        aria-label={C.needsYou}
+                        className="size-2 rounded-full bg-warning"
+                      />
+                    )}
+                  </span>
+                  <span className={SLOT}>
+                    {childType && (
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Add child to ${it.key}`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Plus aria-hidden className="size-3.5" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                    )}
+                  </span>
+                </span>
+              </div>
+              {menu?.key === it.key && (
+                <DropdownMenuContent
+                  align="start"
+                  onCloseAutoFocus={(e) => {
+                    e.preventDefault();
+                    tree.current?.focus();
+                  }}
+                >
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      closeMenu();
+                      p.onAddChild(it.key, menu.type);
+                    }}
+                  >
+                    {menu.type === "story" ? C.addStory : C.addTask}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              )}
             </DropdownMenu>
           );
         })}

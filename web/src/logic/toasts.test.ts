@@ -13,7 +13,9 @@ describe("toast builders", () => {
   });
 
   it("distinguishes queued from started", () => {
-    expect(startedToast({ name: "o", state: "queued" }, "EPIC-3")).toBe("Queued o. It starts when an agent slot becomes available.");
+    expect(startedToast({ name: "o", state: "queued" }, "EPIC-3")).toBe(
+      "Queued o. It starts when an agent slot becomes available.",
+    );
     expect(startedToast({ name: "o", state: "active" }, "EPIC-3")).toBe("Started o on EPIC-3");
   });
 });

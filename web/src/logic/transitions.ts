@@ -5,7 +5,11 @@ import type { Item, ItemStatus } from "../types";
 
 export type Movable = Pick<Item, "key" | "type" | "status" | "status_before_block">;
 export type MoveCheck = { ok: true } | { ok: false; reason: string; special?: "accept" | "spike" };
-export interface MoveOption { status: ItemStatus; label: string; check: MoveCheck }
+export interface MoveOption {
+  status: ItemStatus;
+  label: string;
+  check: MoveCheck;
+}
 
 const OK: MoveCheck = { ok: true };
 const isClosed = (s: ItemStatus) => s === "done" || s === "cancelled";
@@ -14,7 +18,8 @@ const isClosed = (s: ItemStatus) => s === "done" || s === "cancelled";
 export function checkMove(item: Movable, to: ItemStatus): MoveCheck {
   const from = item.status;
   const generic: MoveCheck = { ok: false, reason: T.genericStatus(STATUS_LABEL[from]) };
-  if (to === "awaiting_approval" && item.type !== "spike") return { ok: false, reason: C.awaitingNonSpike };
+  if (to === "awaiting_approval" && item.type !== "spike")
+    return { ok: false, reason: C.awaitingNonSpike };
   if (to === from) return generic;
   if (to === "cancelled") return from === "done" ? generic : OK;
   if (to === "blocked") return isClosed(from) ? generic : OK;

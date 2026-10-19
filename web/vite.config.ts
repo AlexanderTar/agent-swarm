@@ -36,7 +36,13 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/mock/**", "src/test/**", "src/types.ts", "src/views/props.ts"],
+      exclude: [
+        "src/**/*.test.ts",
+        "src/mock/**",
+        "src/test/**",
+        "src/types.ts",
+        "src/views/props.ts",
+      ],
       thresholds: { lines: 80 },
       reporter: ["text-summary", "text", "html"],
     },

@@ -20,7 +20,9 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 const localMe = { "GET /api/auth/me": () => json({ origin: "local", authenticated: true }) };
-const remoteMe = (authenticated = true) => ({ "GET /api/auth/me": () => json({ origin: "tunnel", authenticated, email: "me@example.com" }) });
+const remoteMe = (authenticated = true) => ({
+  "GET /api/auth/me": () => json({ origin: "tunnel", authenticated, email: "me@example.com" }),
+});
 
 describe("createApi", () => {
   it("bootstraps the token once and sends it as a Bearer header", async () => {
@@ -45,7 +47,10 @@ describe("createApi", () => {
       "GET /api/bootstrap": () => json({ token: `t${++tokens}` }),
       "GET /api/settings": (init) => {
         const auth = (init?.headers as Record<string, string>).Authorization;
-        if (first) { first = false; return json({ error: { code: "unauthorized", message: "no" } }, 401); }
+        if (first) {
+          first = false;
+          return json({ error: { code: "unauthorized", message: "no" } }, 401);
+        }
         return json({ ok: auth });
       },
     });
@@ -59,7 +64,10 @@ describe("createApi", () => {
       "GET /api/bootstrap": () => json({ token: "t" }),
       "GET /api/settings": () => json({ error: { code: "unauthorized", message: "no" } }, 401),
     });
-    await expect(createApi({ fetchFn: f.fn }).settings()).rejects.toMatchObject({ status: 401, code: "unauthorized" });
+    await expect(createApi({ fetchFn: f.fn }).settings()).rejects.toMatchObject({
+      status: 401,
+      code: "unauthorized",
+    });
   });
 
   it("parses the error envelope including the transition reason", async () => {
@@ -67,14 +75,27 @@ describe("createApi", () => {
       ...localMe,
       "GET /api/bootstrap": () => json({ token: "t" }),
       "PATCH /api/items/STORY-40": () =>
-        json({ error: { code: "transition_denied", message: "denied", reason: "Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first." } }, 422),
+        json(
+          {
+            error: {
+              code: "transition_denied",
+              message: "denied",
+              reason:
+                "Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first.",
+            },
+          },
+          422,
+        ),
     });
-    const err = await createApi({ fetchFn: f.fn }).patchItem("STORY-40", { status: "done", revision: 3 }).catch((e) => e);
+    const err = await createApi({ fetchFn: f.fn })
+      .patchItem("STORY-40", { status: "done", revision: 3 })
+      .catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({
       status: 422,
       code: "transition_denied",
-      reason: "Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first.",
+      reason:
+        "Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first.",
     });
   });
 
@@ -84,7 +105,11 @@ describe("createApi", () => {
       "GET /api/bootstrap": () => json({ token: "t" }),
       "GET /api/catalog": () => new Response("boom", { status: 502, statusText: "Bad Gateway" }),
     });
-    await expect(createApi({ fetchFn: f.fn }).catalog()).rejects.toMatchObject({ status: 502, code: "internal", message: "Bad Gateway" });
+    await expect(createApi({ fetchFn: f.fn }).catalog()).rejects.toMatchObject({
+      status: 502,
+      code: "internal",
+      message: "Bad Gateway",
+    });
   });
 
   it("returns undefined for 204 and sends JSON bodies", async () => {
@@ -96,7 +121,9 @@ describe("createApi", () => {
     await expect(createApi({ fetchFn: f.fn }).addDep("TASK-2", "TASK-1")).resolves.toBeUndefined();
     const call = f.calls.at(-1);
     expect(call?.init?.body).toBe(JSON.stringify({ blocked_by: "TASK-1" }));
-    expect((call?.init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    expect((call?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
   });
 
   it("builds query strings and adds via=board", async () => {
@@ -104,10 +131,14 @@ describe("createApi", () => {
       ...localMe,
       "GET /api/bootstrap": () => json({ token: "t" }),
       "GET /api/items/EPIC-1/graph?scope=root": () => json({ nodes: [], edges: [] }),
-      "GET /api/items/EPIC-1/graph?scope=neighbourhood&hops=2": () => json({ nodes: [], edges: [] }),
-      "GET /api/repos?q=endurio": () => json({ recent: [], groups: [], all: [], scanned_at: 0, scanning: false }),
-      "GET /api/repos": () => json({ recent: [], groups: [], all: [], scanned_at: 0, scanning: false }),
-      "GET /api/artifacts/art_1?revision=3&section=data-model": () => json({ artifact: {}, markdown: "" }),
+      "GET /api/items/EPIC-1/graph?scope=neighbourhood&hops=2": () =>
+        json({ nodes: [], edges: [] }),
+      "GET /api/repos?q=endurio": () =>
+        json({ recent: [], groups: [], all: [], scanned_at: 0, scanning: false }),
+      "GET /api/repos": () =>
+        json({ recent: [], groups: [], all: [], scanned_at: 0, scanning: false }),
+      "GET /api/artifacts/art_1?revision=3&section=data-model": () =>
+        json({ artifact: {}, markdown: "" }),
       "GET /api/agents?state=active": () => json([]),
       "POST /api/requests/req_1/approve": () => json({}),
       "POST /api/requests/req_1/close-spike": () => json({}),
@@ -121,7 +152,9 @@ describe("createApi", () => {
     await api.agents();
     await api.approve("req_1", { section_sha256: "abc", artifact_revision: 3 });
     await api.closeSpike("req_1");
-    const bodies = f.calls.filter((c) => c.init?.method === "POST").map((c) => JSON.parse(String(c.init?.body)));
+    const bodies = f.calls
+      .filter((c) => c.init?.method === "POST")
+      .map((c) => JSON.parse(String(c.init?.body)));
     expect(bodies).toEqual([
       { section_sha256: "abc", artifact_revision: 3, via: "board" },
       { via: "board" },
@@ -134,7 +167,9 @@ describe("createApi", () => {
       "GET /api/bootstrap": () => json({ token: "t" }),
       "POST /api/agents/login-form-coder/pause": () => json({}),
     });
-    await createApi({ fetchFn: f.fn }).agentAction("login-form-coder", "pause", { scope: "subtree" });
+    await createApi({ fetchFn: f.fn }).agentAction("login-form-coder", "pause", {
+      scope: "subtree",
+    });
     expect(JSON.parse(String(f.calls.at(-1)?.init?.body))).toEqual({ scope: "subtree" });
   });
 
@@ -142,7 +177,8 @@ describe("createApi", () => {
     let n = 0;
     const f = fakeFetch({
       ...localMe,
-      "GET /api/bootstrap": () => (++n === 1 ? new Response("down", { status: 503 }) : json({ token: "t" })),
+      "GET /api/bootstrap": () =>
+        ++n === 1 ? new Response("down", { status: 503 }) : json({ token: "t" }),
       "GET /api/settings": () => json({ ok: true }),
     });
     const api = createApi({ fetchFn: f.fn });
@@ -179,7 +215,11 @@ describe("createApi auth modes", () => {
 
   it("reports the session and the origin it came from", async () => {
     const f = fakeFetch(remoteMe(false));
-    await expect(createApi({ fetchFn: f.fn }).session()).resolves.toEqual({ origin: "tunnel", authenticated: false, email: "me@example.com" });
+    await expect(createApi({ fetchFn: f.fn }).session()).resolves.toEqual({
+      origin: "tunnel",
+      authenticated: false,
+      email: "me@example.com",
+    });
   });
 
   it("routes a 401 in cookie mode to onUnauthenticated without retrying", async () => {
@@ -214,13 +254,19 @@ describe("createApi auth modes", () => {
     let authed = false;
     const f = fakeFetch({
       "GET /api/auth/me": () => json({ origin: "tunnel", authenticated: authed }),
-      "POST /api/auth/login": () => { authed = true; return new Response(null, { status: 204 }); },
+      "POST /api/auth/login": () => {
+        authed = true;
+        return new Response(null, { status: 204 });
+      },
     });
     const api = createApi({ fetchFn: f.fn });
     expect((await api.session()).authenticated).toBe(false);
     await api.login("me@example.com", "pw");
     const login = f.calls.find((c) => c.url === "/api/auth/login");
-    expect(JSON.parse(String(login?.init?.body))).toEqual({ email: "me@example.com", password: "pw" });
+    expect(JSON.parse(String(login?.init?.body))).toEqual({
+      email: "me@example.com",
+      password: "pw",
+    });
     expect(login?.init?.credentials).toBe("same-origin");
     expect((await api.session()).authenticated).toBe(true);
   });
@@ -229,30 +275,60 @@ describe("createApi auth modes", () => {
     let n = 0;
     const f = fakeFetch({
       ...remoteMe(false),
-      "POST /api/auth/login": () => (++n === 1
-        ? json({ error: { code: "unauthorized", message: "Wrong email or password." } }, 401)
-        : new Response(JSON.stringify({ error: { code: "rate_limited", message: "Too many login attempts. Try again later." } }), { status: 429, headers: { "Retry-After": "540" } })),
+      "POST /api/auth/login": () =>
+        ++n === 1
+          ? json({ error: { code: "unauthorized", message: "Wrong email or password." } }, 401)
+          : new Response(
+              JSON.stringify({
+                error: {
+                  code: "rate_limited",
+                  message: "Too many login attempts. Try again later.",
+                },
+              }),
+              { status: 429, headers: { "Retry-After": "540" } },
+            ),
     });
     const api = createApi({ fetchFn: f.fn });
-    await expect(api.login("a@b.c", "x")).rejects.toMatchObject({ status: 401, code: "unauthorized" });
-    await expect(api.login("a@b.c", "x")).rejects.toMatchObject({ status: 429, code: "rate_limited", retryAfter: 540 });
+    await expect(api.login("a@b.c", "x")).rejects.toMatchObject({
+      status: 401,
+      code: "unauthorized",
+    });
+    await expect(api.login("a@b.c", "x")).rejects.toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      retryAfter: 540,
+    });
   });
 
   it("posts logout", async () => {
-    const f = fakeFetch({ ...remoteMe(), "POST /api/auth/logout": () => new Response(null, { status: 204 }) });
+    const f = fakeFetch({
+      ...remoteMe(),
+      "POST /api/auth/logout": () => new Response(null, { status: 204 }),
+    });
     await createApi({ fetchFn: f.fn }).logout();
-    expect(f.calls.some((c) => c.url === "/api/auth/logout" && c.init?.method === "POST")).toBe(true);
+    expect(f.calls.some((c) => c.url === "/api/auth/logout" && c.init?.method === "POST")).toBe(
+      true,
+    );
   });
 });
 
 describe("errorText", () => {
   it("prefers the transition reason, then the message", () => {
-    expect(errorText(new ApiError(422, "transition_denied", "denied", "Couldn't move TASK-7 to Done. No agent has reported it complete."))).toBe(
-      "Couldn't move TASK-7 to Done. No agent has reported it complete.",
-    );
-    expect(errorText(new ApiError(409, "conflict", "This item changed elsewhere. Showing its latest status."))).toBe(
-      "This item changed elsewhere. Showing its latest status.",
-    );
+    expect(
+      errorText(
+        new ApiError(
+          422,
+          "transition_denied",
+          "denied",
+          "Couldn't move TASK-7 to Done. No agent has reported it complete.",
+        ),
+      ),
+    ).toBe("Couldn't move TASK-7 to Done. No agent has reported it complete.");
+    expect(
+      errorText(
+        new ApiError(409, "conflict", "This item changed elsewhere. Showing its latest status."),
+      ),
+    ).toBe("This item changed elsewhere. Showing its latest status.");
     expect(errorText(new Error("Failed to fetch"))).toBe("Failed to fetch");
     expect(errorText("boom")).toBe("boom");
   });

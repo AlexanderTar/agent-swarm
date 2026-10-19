@@ -39,7 +39,10 @@ export function App() {
   const filter = filterOf(url);
   const all = items.data?.items ?? EMPTY_ITEMS;
   const active = isFilterActive(filter);
-  const matches = useMemo(() => (active ? filterItems(all, filter).count : null), [active, all, filter.q, filter.type, filter.status]);
+  const matches = useMemo(
+    () => (active ? filterItems(all, filter).count : null),
+    [active, all, filter.q, filter.type, filter.status],
+  );
 
   const select = (key: string, f?: "agents") => {
     setFocus(f);
@@ -52,9 +55,13 @@ export function App() {
   };
   const clearFilters = () => setUrl({ q: "", type: "", status: "" });
   const newItem = (type: ItemType, parentKey?: string) =>
-    setSheet(type === "chore" ? { kind: "spike", intent: "chore" }
-      : type === "spike" ? { kind: "spike", intent: "feature" }
-      : { kind: "item", type, parentKey });
+    setSheet(
+      type === "chore"
+        ? { kind: "spike", intent: "chore" }
+        : type === "spike"
+          ? { kind: "spike", intent: "feature" }
+          : { kind: "item", type, parentKey },
+    );
   const review = (req: string) => setUrl({ view: "inbox", req });
   const startOrchestrator = (item: Item) => setSheet({ kind: "spawn", itemKey: item.key });
 
@@ -68,7 +75,12 @@ export function App() {
   };
   const view =
     url.view === "hierarchy" ? (
-      <Hierarchy {...viewProps} onAddChild={(parent, type) => newItem(type, parent)} onNewItem={() => newItem("epic")} onClearFilters={clearFilters} />
+      <Hierarchy
+        {...viewProps}
+        onAddChild={(parent, type) => newItem(type, parent)}
+        onNewItem={() => newItem("epic")}
+        onClearFilters={clearFilters}
+      />
     ) : url.view === "kanban" ? (
       <Kanban
         {...viewProps}
@@ -101,7 +113,9 @@ export function App() {
   return (
     <div className="flex h-dvh flex-col">
       {conn.state === "closed" && <ConnectionBanner onRetry={conn.retry} />}
-      {items.error ? <ItemsErrorBanner message={errorText(items.error)} onRetry={items.reload} /> : null}
+      {items.error ? (
+        <ItemsErrorBanner message={errorText(items.error)} onRetry={items.reload} />
+      ) : null}
       <Header
         url={url}
         setUrl={setUrl}
@@ -111,28 +125,49 @@ export function App() {
         onNewItem={(t) => newItem(t, url.item || undefined)}
       />
       <main className="flex min-h-0 flex-1">
-        <section data-testid="view" className="min-w-0 flex-1 overflow-auto">{view}</section>
+        <section data-testid="view" className="min-w-0 flex-1 overflow-auto">
+          {view}
+        </section>
         {showDetails && (
-          <Sheet title={url.item} header={false} modal={false} width={560} onClose={() => setUrl({ item: "" })}>
-          <div data-testid="details">
-            {outside && <OutsideViewBanner onShowInHierarchy={() => setUrl({ view: "hierarchy" })} onClearFilters={clearFilters} />}
-            <Details
-              key={url.item}
-              itemKey={url.item}
-              focus={focus}
-              connected={conn.connected}
-              onClose={() => setUrl({ item: "" })}
-              onSelect={(key) => select(key)}
-              onReview={review}
-              onStartOrchestrator={startOrchestrator}
-            />
-          </div>
+          <Sheet
+            title={url.item}
+            header={false}
+            modal={false}
+            width={560}
+            onClose={() => setUrl({ item: "" })}
+          >
+            <div data-testid="details">
+              {outside && (
+                <OutsideViewBanner
+                  onShowInHierarchy={() => setUrl({ view: "hierarchy" })}
+                  onClearFilters={clearFilters}
+                />
+              )}
+              <Details
+                key={url.item}
+                itemKey={url.item}
+                focus={focus}
+                connected={conn.connected}
+                onClose={() => setUrl({ item: "" })}
+                onSelect={(key) => select(key)}
+                onReview={review}
+                onStartOrchestrator={startOrchestrator}
+              />
+            </div>
           </Sheet>
         )}
       </main>
-      {sheet?.kind === "spike" && <NewSpikeSheet intent={sheet.intent} onClose={closeSheet} onCreated={created} />}
+      {sheet?.kind === "spike" && (
+        <NewSpikeSheet intent={sheet.intent} onClose={closeSheet} onCreated={created} />
+      )}
       {sheet?.kind === "item" && (
-        <NewItemSheet key={`${sheet.type}:${sheet.parentKey ?? ""}`} type={sheet.type} parentKey={sheet.parentKey} onClose={closeSheet} onCreated={created} />
+        <NewItemSheet
+          key={`${sheet.type}:${sheet.parentKey ?? ""}`}
+          type={sheet.type}
+          parentKey={sheet.parentKey}
+          onClose={closeSheet}
+          onCreated={created}
+        />
       )}
       {sheet?.kind === "spawn" && <SpawnSheet itemKey={sheet.itemKey} onClose={closeSheet} />}
     </div>
@@ -145,15 +180,22 @@ export default function Root() {
   const api = useMemo(() => createApi({ onUnauthenticated: () => setAuth("login") }), []);
   const load = useCallback(() => {
     // If /api/auth/me itself fails the board renders anyway and shows its own connection errors.
-    api.session().then((s) => {
-      setWho({ remote: s.origin !== "local", email: s.email });
-      setAuth(s.authenticated ? "ready" : "login");
-    }, () => setAuth("ready"));
+    api.session().then(
+      (s) => {
+        setWho({ remote: s.origin !== "local", email: s.email });
+        setAuth(s.authenticated ? "ready" : "login");
+      },
+      () => setAuth("ready"),
+    );
   }, [api]);
   useEffect(load, [load]);
   if (auth === "loading") return null;
   if (auth === "login") return <Login login={api.login} onSignedIn={load} />;
-  const signOut = () => void api.logout().then(() => setAuth("login"), () => setAuth("login"));
+  const signOut = () =>
+    void api.logout().then(
+      () => setAuth("login"),
+      () => setAuth("login"),
+    );
   return (
     <SessionProvider value={{ ...who, signOut }}>
       <DataProvider api={api}>

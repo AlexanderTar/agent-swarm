@@ -1,7 +1,15 @@
 import { ApiError, errorText } from "../api";
 import type { AgentFieldsValue } from "../components/AgentFields";
 import { C } from "../copy";
-import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Item, Settings, SpikeIntent, StartOrchestratorBody } from "../types";
+import type {
+  AgentCatalogEntry,
+  AgentNode,
+  CreateSpikeBody,
+  Item,
+  Settings,
+  SpikeIntent,
+  StartOrchestratorBody,
+} from "../types";
 import { flattenAgents } from "./agentActions";
 import { advisorPayload, choicePayload } from "./catalog";
 import { kebab } from "./kebab";
@@ -20,7 +28,11 @@ export const submitLabel = (busy: boolean) => (busy ? C.queueOrchestrator : C.st
 
 export const nameError = (name: string) => (kebab(name) === "" ? C.nameEmpty : undefined);
 
-export interface SubmitFailure { name?: string; banner?: string; detail?: string }
+export interface SubmitFailure {
+  name?: string;
+  banner?: string;
+  detail?: string;
+}
 
 export function mapSubmitError(e: unknown): SubmitFailure {
   if (e instanceof ApiError) {
@@ -35,7 +47,11 @@ export function mapSubmitError(e: unknown): SubmitFailure {
   return { banner: C.launchFailure };
 }
 
-export interface SpawnFormState { name: string; repos: string[]; fields: AgentFieldsValue }
+export interface SpawnFormState {
+  name: string;
+  repos: string[];
+  fields: AgentFieldsValue;
+}
 export interface SpikeFormState extends SpawnFormState {
   intent: SpikeIntent;
   request: string;
@@ -48,7 +64,13 @@ export interface SpikeFormState extends SpawnFormState {
 // catalog parameter and called advisorPayload with only 2 args, which doesn't typecheck against the
 // real 3-arg function. Threading catalog through here (rather than hardcoding `[]` inside this file)
 // keeps a real, non-empty settings.roles.advisor.effort from being silently dropped on every submit.
-export function orchestratorPayload(f: SpawnFormState, item: Item, settings: Settings, catalog: AgentCatalogEntry[], requestId: string): StartOrchestratorBody {
+export function orchestratorPayload(
+  f: SpawnFormState,
+  item: Item,
+  settings: Settings,
+  catalog: AgentCatalogEntry[],
+  requestId: string,
+): StartOrchestratorBody {
   const body: StartOrchestratorBody = {
     request_id: requestId,
     ...choicePayload(f.fields.choice),
@@ -63,7 +85,12 @@ export function orchestratorPayload(f: SpawnFormState, item: Item, settings: Set
   return body;
 }
 
-export async function spikePayload(f: SpikeFormState, settings: Settings, catalog: AgentCatalogEntry[], requestId: string): Promise<CreateSpikeBody> {
+export async function spikePayload(
+  f: SpikeFormState,
+  settings: Settings,
+  catalog: AgentCatalogEntry[],
+  requestId: string,
+): Promise<CreateSpikeBody> {
   const body: CreateSpikeBody = {
     request_id: requestId,
     name: f.name.trim(),

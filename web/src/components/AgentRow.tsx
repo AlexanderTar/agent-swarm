@@ -1,4 +1,14 @@
-import { Check, Leaf, LoaderCircle, Pause, Play, RotateCcw, SquareTerminal, X, type LucideIcon } from "lucide-react";
+import {
+  Check,
+  Leaf,
+  LoaderCircle,
+  type LucideIcon,
+  Pause,
+  Play,
+  RotateCcw,
+  SquareTerminal,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
@@ -7,10 +17,18 @@ import { type AgentAction, agentActions, displayState, isFinished } from "../log
 import { agentActionToast } from "../logic/toasts";
 import { useSession } from "../state/session";
 import type { AgentEndpoint, AgentNode } from "../types";
-import { AgentIcon } from "./icons";
 import { StateDot } from "./StatusLabel";
 import { useToast } from "./Toast";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog";
+import { AgentIcon } from "./icons";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
@@ -43,7 +61,8 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
     if (a.endpoint === "pause" || a.endpoint === "resume") setRequested(a.endpoint);
     try {
       await act.run(a.endpoint, a.body);
-      if (live.connected && live.epoch === epoch) toast.success(agentActionToast(a.endpoint, agent.name, a.body?.scope));
+      if (live.connected && live.epoch === epoch)
+        toast.success(agentActionToast(a.endpoint, agent.name, a.body?.scope));
     } catch (e) {
       setRequested(null);
       // F20 / contracts §2: reuse errorText rather than an inline `instanceof ApiError` ternary.
@@ -60,10 +79,15 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <AgentIcon kind={agent.kind} />
-          <span className="truncate" title={agent.name}>{`${agent.name} · ${ROLE_LABEL[agent.role]}`}</span>
+          <span
+            className="truncate"
+            title={agent.name}
+          >{`${agent.name} · ${ROLE_LABEL[agent.role]}`}</span>
         </div>
         {agent.kind_reason && (
-          <p className="truncate text-xs text-muted-foreground" title={agent.kind_reason}>{agent.kind_reason}</p>
+          <p className="truncate text-xs text-muted-foreground" title={agent.kind_reason}>
+            {agent.kind_reason}
+          </p>
         )}
         <span className="inline-flex items-center gap-1.5">
           <StateDot state={displayState(agent)} withLabel />
@@ -75,33 +99,54 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         </span>
       </div>
       <div className="flex shrink-0 gap-1">
-        {agentActions(agent).filter((a) => !(remote && a.endpoint === "terminal")).map((a) => {
-          const inFlight = a.endpoint === requested;
-          const label = inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label;
-          const Icon = inFlight || a.label === C.pausing ? LoaderCircle : ACTION_ICON[a.endpoint];
-          return (
-            <Button
-              key={a.endpoint}
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              aria-label={label}
-              title={label}
-              className={a.endpoint === "cancel" ? "text-destructive hover:text-destructive" : undefined}
-              disabled={a.disabled || inFlight || !connected || act.pending}
-              onClick={() => a.confirm ? setConfirming(a) : void onAction(a)}
-            >
-              <Icon aria-hidden className={Icon === LoaderCircle ? "animate-spin" : undefined} />
-            </Button>
-          );
-        })}
+        {agentActions(agent)
+          .filter((a) => !(remote && a.endpoint === "terminal"))
+          .map((a) => {
+            const inFlight = a.endpoint === requested;
+            const label = inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label;
+            const Icon = inFlight || a.label === C.pausing ? LoaderCircle : ACTION_ICON[a.endpoint];
+            return (
+              <Button
+                key={a.endpoint}
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label={label}
+                title={label}
+                className={
+                  a.endpoint === "cancel" ? "text-destructive hover:text-destructive" : undefined
+                }
+                disabled={a.disabled || inFlight || !connected || act.pending}
+                onClick={() => (a.confirm ? setConfirming(a) : void onAction(a))}
+              >
+                <Icon aria-hidden className={Icon === LoaderCircle ? "animate-spin" : undefined} />
+              </Button>
+            );
+          })}
       </div>
-      <AlertDialog open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+      <AlertDialog
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirming(null);
+        }}
+      >
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{confirming?.confirm}</AlertDialogTitle></AlertDialogHeader>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirming?.confirm}</AlertDialogTitle>
+          </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{C.keepRunning}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" disabled={!connected} onClick={() => { const action = confirming; setConfirming(null); if (action) void onAction(action); }}>{C.cancel}</AlertDialogAction>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={!connected}
+              onClick={() => {
+                const action = confirming;
+                setConfirming(null);
+                if (action) void onAction(action);
+              }}
+            >
+              {C.cancel}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -113,8 +158,16 @@ function Finished({ agents, depth }: { agents: AgentNode[]; depth: number }) {
   if (agents.length === 0) return null;
   return (
     <Collapsible style={{ paddingLeft: depth * 16 }}>
-      <CollapsibleTrigger asChild><Button variant="ghost" size="sm">{T.finished(agents.length)}</Button></CollapsibleTrigger>
-      <CollapsibleContent>{agents.map((a) => <AgentRow key={a.id} agent={a} />)}</CollapsibleContent>
+      <CollapsibleTrigger asChild>
+        <Button variant="ghost" size="sm">
+          {T.finished(agents.length)}
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {agents.map((a) => (
+          <AgentRow key={a.id} agent={a} />
+        ))}
+      </CollapsibleContent>
     </Collapsible>
   );
 }
@@ -123,7 +176,9 @@ function Tree({ agent, depth }: { agent: AgentNode; depth: number }) {
   return (
     <>
       <AgentRow agent={agent} depth={depth} />
-      {agent.children.map((c) => <Tree key={c.id} agent={c} depth={depth + 1} />)}
+      {agent.children.map((c) => (
+        <Tree key={c.id} agent={c} depth={depth + 1} />
+      ))}
       <Finished agents={agent.finished} depth={depth + 1} />
     </>
   );
@@ -132,7 +187,11 @@ function Tree({ agent, depth }: { agent: AgentNode; depth: number }) {
 export function AgentList({ agents }: { agents: AgentNode[] }) {
   return (
     <div>
-      {agents.filter((a) => !isFinished(a)).map((a) => <Tree key={a.id} agent={a} depth={0} />)}
+      {agents
+        .filter((a) => !isFinished(a))
+        .map((a) => (
+          <Tree key={a.id} agent={a} depth={0} />
+        ))}
       <Finished agents={agents.filter(isFinished)} depth={0} />
     </div>
   );

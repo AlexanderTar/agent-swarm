@@ -1,19 +1,43 @@
 import {
-  DndContext, type DragEndEvent, type DragStartEvent, KeyboardSensor, PointerSensor, useDraggable, useDroppable, useSensor, useSensors,
+  DndContext,
+  type DragEndEvent,
+  type DragStartEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
 } from "@dnd-kit/core";
 import { ChevronDown, ChevronRight, Lock } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { AgentIcon, Key, TypeIcon } from "../components/icons";
 import { MoveToMenu } from "../components/MoveToMenu";
 import { StatusPill } from "../components/StatusLabel";
-import { Button } from "../components/ui/button";
 import { useToast } from "../components/Toast";
+import { AgentIcon, Key, TypeIcon } from "../components/icons";
+import { Button } from "../components/ui/button";
 import { C, ROLE_EMOJI, STATUS_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { displayState, stateLabel } from "../logic/agentActions";
 import {
-  type Lane, agentLine, agentsByItem, blockedLine, buildLanes, columnCounts, columnTitle, columnsFor, DEFAULT_COLLAPSED_COLUMNS,
-  crewForCard, dropId, effectiveCollapsed, effectiveGrouping, emptyState, needsLine, parentLine, parseDropId, progressLine,
+  DEFAULT_COLLAPSED_COLUMNS,
+  type Lane,
+  agentLine,
+  agentsByItem,
+  blockedLine,
+  buildLanes,
+  columnCounts,
+  columnTitle,
+  columnsFor,
+  crewForCard,
+  dropId,
+  effectiveCollapsed,
+  effectiveGrouping,
+  emptyState,
+  needsLine,
+  parentLine,
+  parseDropId,
+  progressLine,
 } from "../logic/kanban";
 import { checkMove, failureMessage } from "../logic/transitions";
 import { buildIndex, isFilterActive } from "../logic/tree";
@@ -36,7 +60,9 @@ function Card(p: {
 }) {
   const { card } = p;
   const drag = useDraggable({ id: card.key, disabled: p.disabled || p.pending });
-  const style = drag.transform ? { transform: `translate(${drag.transform.x}px, ${drag.transform.y}px)` } : undefined;
+  const style = drag.transform
+    ? { transform: `translate(${drag.transform.x}px, ${drag.transform.y}px)` }
+    : undefined;
   const needs = needsLine(card);
   const blocked = blockedLine(card);
   const progress = progressLine(card);
@@ -62,29 +88,64 @@ function Card(p: {
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <TypeIcon type={card.type} />
-        <span className="shrink-0 whitespace-nowrap"><Key>{card.key}</Key></span>
+        <span className="shrink-0 whitespace-nowrap">
+          <Key>{card.key}</Key>
+        </span>
         <StatusPill status={card.status} />
-        {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && <span className="rounded bg-primary/10 px-1 text-[11px] text-link">R{card.workflow_state?.round}</span>}
-        {needs && <span className="ml-auto rounded bg-warning/15 px-1 text-[11px] text-warning">{needs}</span>}
+        {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && (
+          <span className="rounded bg-primary/10 px-1 text-[11px] text-link">
+            R{card.workflow_state?.round}
+          </span>
+        )}
+        {needs && (
+          <span className="ml-auto rounded bg-warning/15 px-1 text-[11px] text-warning">
+            {needs}
+          </span>
+        )}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: stops card selection */}
-        <span className={needs ? "" : "ml-auto"} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-          <MoveToMenu item={card} buttonLabel="…" ariaLabel={`${C.moveTo} ${card.key}`} disabled={p.disabled || p.pending} onMove={(s) => p.onMove(s)} />
+        <span
+          className={needs ? "" : "ml-auto"}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <MoveToMenu
+            item={card}
+            buttonLabel="…"
+            ariaLabel={`${C.moveTo} ${card.key}`}
+            disabled={p.disabled || p.pending}
+            onMove={(s) => p.onMove(s)}
+          />
         </span>
       </div>
-      <p className="line-clamp-3" title={card.title}>{card.title}</p>
+      <p className="line-clamp-3" title={card.title}>
+        {card.title}
+      </p>
       {p.parent && <p className="truncate text-muted-foreground">{p.parent}</p>}
       {p.agent && (
         <p className="flex items-center gap-1">
           <AgentIcon kind={p.agent.agent.kind} />
           <span className="truncate">{p.agent.agent.name}</span>
           {p.agent.extra > 0 && <span className="text-muted-foreground">+{p.agent.extra}</span>}
-          <span className="ml-auto text-muted-foreground">{stateLabel(displayState(p.agent.agent))}</span>
+          <span className="ml-auto text-muted-foreground">
+            {stateLabel(displayState(p.agent.agent))}
+          </span>
         </p>
       )}
-      {p.crew && <div aria-label="Crew" className="flex items-center gap-0.5 text-xs" title="Active workflow crew">
-        {p.crew.roles.map((role, i) => <span key={i} role="img" aria-label={role}>{ROLE_EMOJI[role]}</span>)}
-        {p.crew.extra > 0 && <span className="text-muted-foreground">+{p.crew.extra}</span>}
-      </div>}
+      {p.crew && (
+        <div
+          aria-label="Crew"
+          className="flex items-center gap-0.5 text-xs"
+          title="Active workflow crew"
+        >
+          {p.crew.roles.map((role, i) => (
+            <span key={i} role="img" aria-label={role}>
+              {ROLE_EMOJI[role]}
+            </span>
+          ))}
+          {p.crew.extra > 0 && <span className="text-muted-foreground">+{p.crew.extra}</span>}
+        </div>
+      )}
       {blocked && <p className="text-destructive">{blocked}</p>}
       {progress && <p className="text-muted-foreground">{progress}</p>}
       {p.pending && <p className="text-link">{C.updating}</p>}
@@ -92,10 +153,23 @@ function Card(p: {
   );
 }
 
-function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string | null; empty: boolean; children: ReactNode }) {
+function Cell(p: {
+  id: string;
+  testId: string;
+  collapsed: boolean;
+  lock: string | null;
+  empty: boolean;
+  children: ReactNode;
+}) {
   // Locked cells stay droppable: the drop runs move(), which returns the card with the §17.3 toast.
   const drop = useDroppable({ id: p.id });
-  if (p.collapsed) return <div data-testid={p.testId} className="w-[44px] shrink-0 max-sm:w-[132px] max-sm:snap-start" />;
+  if (p.collapsed)
+    return (
+      <div
+        data-testid={p.testId}
+        className="w-[44px] shrink-0 max-sm:w-[132px] max-sm:snap-start"
+      />
+    );
   return (
     <div
       ref={drop.setNodeRef}
@@ -103,7 +177,10 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
       className={`w-[280px] shrink-0 space-y-2 p-3 max-sm:w-[85vw] max-sm:snap-start ${drop.isOver ? "ring-1 ring-ring" : ""}`}
     >
       {p.lock !== null && (
-        <p className="flex items-center gap-1 text-[12px] text-muted-foreground"><Lock aria-hidden className="size-3" />{p.lock}</p>
+        <p className="flex items-center gap-1 text-[12px] text-muted-foreground">
+          <Lock aria-hidden className="size-3" />
+          {p.lock}
+        </p>
       )}
       {p.empty && p.lock === null && <p className="text-muted-foreground">{C.emptyColumn}</p>}
       {p.children}
@@ -115,30 +192,39 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
 // on a card can start one that sticks until reload.
 const pointerDown = PointerSensor.activators[0]!;
 export class MousePenSensor extends PointerSensor {
-  static activators = [{
-    eventName: pointerDown.eventName,
-    handler: (e: Parameters<typeof pointerDown.handler>[0], o: Parameters<typeof pointerDown.handler>[1]) =>
-      e.nativeEvent.pointerType !== "touch" && pointerDown.handler(e, o),
-  }];
+  static activators = [
+    {
+      eventName: pointerDown.eventName,
+      handler: (
+        e: Parameters<typeof pointerDown.handler>[0],
+        o: Parameters<typeof pointerDown.handler>[1],
+      ) => e.nativeEvent.pointerType !== "touch" && pointerDown.handler(e, o),
+    },
+  ];
 }
 
 export function Kanban(p: KanbanProps) {
   const toast = useToast();
   const { live } = useConnection();
   const [storedCols, toggleCol] = useLocalSet("swarm.kanban.columns", DEFAULT_COLLAPSED_COLUMNS);
-  const [laneState, setLaneState] = useState<Record<string, boolean>>(() => readJson(storage("localStorage"), LANES_KEY, {}));
+  const [laneState, setLaneState] = useState<Record<string, boolean>>(() =>
+    readJson(storage("localStorage"), LANES_KEY, {}),
+  );
   const [pending, setPending] = useState<Record<string, { to: ItemStatus; revision: number }>>({});
   const [dragging, setDragging] = useState<Item | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const patch = useMutation(
-    (api, key: string, status: ItemStatus, revision: number) => api.patchItem(key, { status, revision }),
+    (api, key: string, status: ItemStatus, revision: number) =>
+      api.patchItem(key, { status, revision }),
     ["items", "item:", "graph:"],
   );
   const sensors = useSensors(
     useSensor(MousePenSensor, { activationConstraint: { distance: 4 } }),
     // F8: Space alone starts a keyboard drag; Enter is freed up for card selection instead of also
     // starting one (§16.7: "Space to pick up, arrows to move, Enter to drop, Esc to cancel").
-    useSensor(KeyboardSensor, { keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space", "Enter"] } }),
+    useSensor(KeyboardSensor, {
+      keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space", "Enter"] },
+    }),
   );
 
   const group = effectiveGrouping(p.level, p.group);
@@ -159,7 +245,8 @@ export function Kanban(p: KanbanProps) {
   useEffect(() => {
     setPending((cur) => {
       const next = { ...cur };
-      for (const [k, v] of Object.entries(cur)) if (idx.byKey.get(k)?.revision !== v.revision) delete next[k];
+      for (const [k, v] of Object.entries(cur))
+        if (idx.byKey.get(k)?.revision !== v.revision) delete next[k];
       return Object.keys(next).length === Object.keys(cur).length ? cur : next;
     });
   }, [idx]);
@@ -178,13 +265,18 @@ export function Kanban(p: KanbanProps) {
     if (status === card.status) return;
     const check = checkMove(card, status);
     if (!check.ok && check.special === "accept") {
-      const req = p.requests.find((r) => r.item_key === card.key && (r.kind === "accept_epic" || r.kind === "accept_fix"));
+      const req = p.requests.find(
+        (r) => r.item_key === card.key && (r.kind === "accept_epic" || r.kind === "accept_fix"),
+      );
       if (req) p.onReview(req.id);
       else toast({ message: check.reason });
       return;
     }
     if (!check.ok && check.special === "spike") {
-      toast({ message: check.reason, action: { label: C.viewSpike, onClick: () => p.onSelect(card.key) } });
+      toast({
+        message: check.reason,
+        action: { label: C.viewSpike, onClick: () => p.onSelect(card.key) },
+      });
       return;
     }
     if (!check.ok) {
@@ -201,7 +293,8 @@ export function Kanban(p: KanbanProps) {
     }
   }
 
-  const onDragStart = (e: DragStartEvent) => setDragging(idx.byKey.get(String(e.active.id)) ?? null);
+  const onDragStart = (e: DragStartEvent) =>
+    setDragging(idx.byKey.get(String(e.active.id)) ?? null);
   const onDragEnd = (e: DragEndEvent) => {
     const card = dragging;
     setDragging(null);
@@ -219,7 +312,11 @@ export function Kanban(p: KanbanProps) {
     return (
       <div className="p-8 text-center">
         <p>{empty.text}</p>
-        {a && <Button type="button" variant="link" onClick={a[1]} className="mt-2">{a[0]}</Button>}
+        {a && (
+          <Button type="button" variant="link" onClick={a[1]} className="mt-2">
+            {a[0]}
+          </Button>
+        )}
       </div>
     );
   }
@@ -239,81 +336,127 @@ export function Kanban(p: KanbanProps) {
   };
 
   return (
-    <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-      {p.level === "stories" && <p className="px-3 pt-2 text-muted-foreground">{C.storiesCaption}</p>}
+    <DndContext
+      sensors={sensors}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragCancel={() => setDragging(null)}
+    >
+      {p.level === "stories" && (
+        <p className="px-3 pt-2 text-muted-foreground">{C.storiesCaption}</p>
+      )}
       <div
         ref={scroller}
-        onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
+        onScroll={(e) =>
+          writeJson(storage("localStorage"), SCROLL_KEY, {
+            left: e.currentTarget.scrollLeft,
+            top: e.currentTarget.scrollTop,
+          })
+        }
         className="h-full overflow-auto pl-[max(0px,env(safe-area-inset-left))] pr-[max(0px,env(safe-area-inset-right))] max-sm:snap-x max-sm:snap-mandatory"
       >
         <div className="max-md:w-max max-md:min-w-full">
-        <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
-          {cols.map((s) => {
-            const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
-            const collapsed = collapsedCols.has(s);
+          <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
+            {cols.map((s) => {
+              const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
+              const collapsed = collapsedCols.has(s);
+              return (
+                <Button
+                  key={s}
+                  type="button"
+                  variant="ghost"
+                  data-testid={`col-${s}`}
+                  data-collapsed={collapsed}
+                  title={t.tooltip}
+                  aria-label={
+                    collapsed ? `${STATUS_LABEL[s]} ${counts.get(s)?.shown ?? 0}` : undefined
+                  }
+                  onClick={() => toggleCol(s)}
+                  className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate max-sm:w-[132px]" : "w-[280px] max-sm:w-[85vw]"} max-sm:snap-start`}
+                >
+                  {collapsed && <span className="sr-only max-sm:hidden">{STATUS_LABEL[s]}</span>}
+                  {collapsed ? (
+                    <>
+                      <span className="max-sm:hidden">{counts.get(s)?.shown ?? 0}</span>
+                      <span className="hidden truncate max-sm:inline">
+                        {STATUS_LABEL[s]} · {counts.get(s)?.shown ?? 0}
+                      </span>
+                    </>
+                  ) : (
+                    t.text
+                  )}
+                </Button>
+              );
+            })}
+          </div>
+          {lanes.map((l) => {
+            const collapsed = group === "root" && laneCollapsed(l);
             return (
-              <Button
-                key={s}
-                type="button"
-                variant="ghost"
-                data-testid={`col-${s}`}
+              <section
+                key={l.id}
+                data-testid={`lane-${l.id}`}
                 data-collapsed={collapsed}
-                title={t.tooltip}
-                aria-label={collapsed ? `${STATUS_LABEL[s]} ${counts.get(s)?.shown ?? 0}` : undefined}
-                onClick={() => toggleCol(s)}
-                className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate max-sm:w-[132px]" : "w-[280px] max-sm:w-[85vw]"} max-sm:snap-start`}
+                className="w-max border-b border-border max-md:min-w-full"
               >
-                {collapsed && <span className="sr-only max-sm:hidden">{STATUS_LABEL[s]}</span>}
-                {collapsed ? <><span className="max-sm:hidden">{counts.get(s)?.shown ?? 0}</span><span className="hidden truncate max-sm:inline">{STATUS_LABEL[s]} · {counts.get(s)?.shown ?? 0}</span></> : t.text}
-              </Button>
+                {group === "root" && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => toggleLane(l)}
+                    className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-md:h-auto max-md:min-h-11 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left"
+                  >
+                    {collapsed ? (
+                      <ChevronRight className="size-3.5" />
+                    ) : (
+                      <ChevronDown className="size-3.5" />
+                    )}
+                    {l.root ? (
+                      <>
+                        <Key>{l.root.key}</Key>
+                        <span className="font-semibold">{l.root.title}</span>
+                      </>
+                    ) : (
+                      <span className="font-semibold">{C.unassignedLane}</span>
+                    )}
+                    <span className="font-normal text-muted-foreground">
+                      {collapsed && l.completedText ? l.completedText : l.header}
+                    </span>
+                  </Button>
+                )}
+                {!collapsed && (
+                  <div className="flex">
+                    {cols.map((s) => {
+                      const list = cardsIn(l, s);
+                      return (
+                        <Cell
+                          key={s}
+                          id={dropId(l.id, s)}
+                          testId={`cell-${l.id}-${s}`}
+                          collapsed={collapsedCols.has(s)}
+                          lock={lockFor(s)}
+                          empty={list.length === 0}
+                        >
+                          {list.map((c) => (
+                            <Card
+                              key={c.key}
+                              card={c}
+                              pending={pending[c.key] !== undefined}
+                              disabled={!p.connected}
+                              parent={parentLine(c, idx.byKey, group)}
+                              agent={agentLine(c, byItem)}
+                              crew={crewForCard(c, byItem)}
+                              onSelect={() => p.onSelect(c.key)}
+                              onMove={(s2) => void move(c, s2)}
+                            />
+                          ))}
+                        </Cell>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             );
           })}
-        </div>
-        {lanes.map((l) => {
-          const collapsed = group === "root" && laneCollapsed(l);
-          return (
-            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border max-md:min-w-full">
-              {group === "root" && (
-                <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2 max-md:h-auto max-md:min-h-11 max-sm:max-w-[100vw] max-sm:flex-wrap max-sm:whitespace-normal max-sm:text-left">
-                  {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-                  {l.root ? <><Key>{l.root.key}</Key><span className="font-semibold">{l.root.title}</span></> : <span className="font-semibold">{C.unassignedLane}</span>}
-                  <span className="font-normal text-muted-foreground">{collapsed && l.completedText ? l.completedText : l.header}</span>
-                </Button>
-              )}
-              {!collapsed && (
-                <div className="flex">
-                  {cols.map((s) => {
-                    const list = cardsIn(l, s);
-                    return (
-                      <Cell
-                        key={s}
-                        id={dropId(l.id, s)}
-                        testId={`cell-${l.id}-${s}`}
-                        collapsed={collapsedCols.has(s)}
-                        lock={lockFor(s)}
-                        empty={list.length === 0}
-                      >
-                        {list.map((c) => (
-                          <Card
-                            key={c.key}
-                            card={c}
-                            pending={pending[c.key] !== undefined}
-                            disabled={!p.connected}
-                            parent={parentLine(c, idx.byKey, group)}
-                            agent={agentLine(c, byItem)}
-                            crew={crewForCard(c, byItem)}
-                            onSelect={() => p.onSelect(c.key)}
-                            onMove={(s2) => void move(c, s2)}
-                          />
-                        ))}
-                      </Cell>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-          );
-        })}
         </div>
       </div>
     </DndContext>

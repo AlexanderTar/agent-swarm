@@ -7,12 +7,20 @@ import { NewItemSheet } from "./NewItemSheet";
 
 describe("NewItemSheet (§16.5)", () => {
   it("shows the parent picker for stories and tasks with the right options", async () => {
-    const { user } = renderWithDaemon(<NewItemSheet type="story" parentKey="BUG-7" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
+    const { user } = renderWithDaemon(
+      <NewItemSheet type="story" parentKey="BUG-7" onClose={vi.fn()} onCreated={vi.fn()} />,
+      { events: false },
+    );
     const sheet = await screen.findByRole("dialog", { name: "New item" });
     expect(within(sheet).getByText("Type", { selector: "label" })).toBeVisible();
     const parent = await within(sheet).findByRole("combobox", { name: "Parent" });
     expect(parent).toHaveTextContent("—");
-    expect(await optionTexts(user, "Parent")).toEqual(["—", "EPIC-12 · Authentication", "EPIC-20 · Billing", "EPIC-30 · Legacy cleanup"]);
+    expect(await optionTexts(user, "Parent")).toEqual([
+      "—",
+      "EPIC-12 · Authentication",
+      "EPIC-20 · Billing",
+      "EPIC-30 · Legacy cleanup",
+    ]);
     await user.click(within(sheet).getByRole("radio", { name: "Task" }));
     expect(comboText("Parent")).toContain("BUG-7");
     await user.click(within(sheet).getByRole("radio", { name: "Epic" }));
@@ -20,7 +28,10 @@ describe("NewItemSheet (§16.5)", () => {
   });
 
   it("keeps Create item disabled until valid", async () => {
-    const { user } = renderWithDaemon(<NewItemSheet type="task" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
+    const { user } = renderWithDaemon(
+      <NewItemSheet type="task" onClose={vi.fn()} onCreated={vi.fn()} />,
+      { events: false },
+    );
     const create = await screen.findByRole("button", { name: "Create item" });
     expect(create).toBeDisabled();
     await user.type(screen.getByRole("textbox", { name: "Title" }), "Add tests");
@@ -35,7 +46,10 @@ describe("NewItemSheet (§16.5)", () => {
     const d = createMockDaemon();
     const before = d.db.items.length;
     const onCreated = vi.fn();
-    const { user } = renderWithDaemon(<NewItemSheet type="epic" onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
+    const { user } = renderWithDaemon(
+      <NewItemSheet type="epic" onClose={vi.fn()} onCreated={onCreated} />,
+      { daemon: d, events: false },
+    );
     await user.type(await screen.findByRole("textbox", { name: "Title" }), "Payments");
     await user.type(screen.getByRole("textbox", { name: "Acceptance 1" }), "Cards work");
     await user.click(screen.getByRole("button", { name: "Add Acceptance" }));
@@ -43,22 +57,37 @@ describe("NewItemSheet (§16.5)", () => {
     await user.dblClick(screen.getByRole("button", { name: "Create item" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^EPIC-/)));
     expect(d.db.items.length).toBe(before + 1);
-    expect(d.db.items.at(-1)).toMatchObject({ title: "Payments", acceptance: ["Cards work", "Refunds work"], status: "draft" });
+    expect(d.db.items.at(-1)).toMatchObject({
+      title: "Payments",
+      acceptance: ["Cards work", "Refunds work"],
+      status: "draft",
+    });
   });
 
   it("toasts the created key", async () => {
     const onCreated = vi.fn();
-    const { user } = renderWithDaemon(<NewItemSheet type="epic" onClose={vi.fn()} onCreated={onCreated} />, { events: false });
+    const { user } = renderWithDaemon(
+      <NewItemSheet type="epic" onClose={vi.fn()} onCreated={onCreated} />,
+      { events: false },
+    );
     await user.type(await screen.findByRole("textbox", { name: "Title" }), "Wire banner");
     await user.click(screen.getByRole("button", { name: "Create item" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    expect(await screen.findByText(`Created ${onCreated.mock.calls.at(0)?.[0]}`)).toBeInTheDocument();
+    expect(
+      await screen.findByText(`Created ${onCreated.mock.calls.at(0)?.[0]}`),
+    ).toBeInTheDocument();
   });
 
   it("shows a daemon error", async () => {
     const d = createMockDaemon();
-    d.override("POST /api/items", { status: 400, body: { error: { code: "bad_request", message: "invalid parent" } } });
-    const { user } = renderWithDaemon(<NewItemSheet type="bug" onClose={vi.fn()} onCreated={vi.fn()} />, { daemon: d, events: false });
+    d.override("POST /api/items", {
+      status: 400,
+      body: { error: { code: "bad_request", message: "invalid parent" } },
+    });
+    const { user } = renderWithDaemon(
+      <NewItemSheet type="bug" onClose={vi.fn()} onCreated={vi.fn()} />,
+      { daemon: d, events: false },
+    );
     await user.type(await screen.findByRole("textbox", { name: "Title" }), "Crash");
     await user.click(screen.getByRole("button", { name: "Create item" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("invalid parent");
@@ -70,14 +99,25 @@ describe("NewItemSheet (§16.5)", () => {
   // was wrong.
   it("surfaces a failed items load with a working retry (standing rule)", async () => {
     const d = createMockDaemon();
-    const real = d.handle({ method: "GET", url: "/api/items?view=flat", headers: { authorization: `Bearer ${d.db.token}` } });
+    const real = d.handle({
+      method: "GET",
+      url: "/api/items?view=flat",
+      headers: { authorization: `Bearer ${d.db.token}` },
+    });
     let attempt = 0;
     d.override("GET /api/items", () => {
       attempt += 1;
-      if (attempt === 1) return { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load items." } } };
+      if (attempt === 1)
+        return {
+          status: 500,
+          body: { error: { code: "internal", message: "x", reason: "Couldn't load items." } },
+        };
       return real;
     });
-    const { user } = renderWithDaemon(<NewItemSheet type="story" onClose={vi.fn()} onCreated={vi.fn()} />, { daemon: d, events: false });
+    const { user } = renderWithDaemon(
+      <NewItemSheet type="story" onClose={vi.fn()} onCreated={vi.fn()} />,
+      { daemon: d, events: false },
+    );
     expect(await screen.findByText("Couldn't load items.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.queryByText("Couldn't load items.")).not.toBeInTheDocument());

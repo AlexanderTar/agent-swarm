@@ -15,7 +15,11 @@ const TONE: Record<ItemStatus, "outline" | "warning" | "info" | "success"> = {
 };
 
 export const StatusPill = ({ status }: { status: ItemStatus }) => (
-  <Badge variant={TONE[status]} data-tone={TONE[status]} className={status === "cancelled" ? "line-through" : undefined}>
+  <Badge
+    variant={TONE[status]}
+    data-tone={TONE[status]}
+    className={status === "cancelled" ? "line-through" : undefined}
+  >
     {STATUS_LABEL[status]}
   </Badge>
 );
@@ -30,11 +34,18 @@ const DOT = {
   red: "bg-destructive",
 } as const;
 
-export function StateDot({ state, withLabel = false }: { state: DisplayState; withLabel?: boolean }) {
+export function StateDot({
+  state,
+  withLabel = false,
+}: { state: DisplayState; withLabel?: boolean }) {
   const label = stateLabel(state);
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span aria-label={withLabel ? undefined : label} role={withLabel ? undefined : "img"} className={`inline-block size-2 rounded-full ${DOT[stateTone(state)]}`} />
+      <span
+        aria-label={withLabel ? undefined : label}
+        role={withLabel ? undefined : "img"}
+        className={`inline-block size-2 rounded-full ${DOT[stateTone(state)]}`}
+      />
       {withLabel && <span className="text-muted-foreground">{label}</span>}
     </span>
   );

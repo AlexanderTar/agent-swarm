@@ -1,10 +1,17 @@
-import { type FormEvent, useState } from "react";
-import { ApiError, errorText } from "../api";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { type FormEvent, useState } from "react";
+import { ApiError, errorText } from "../api";
 import { C } from "../copy";
 
 function loginError(e: unknown): string {
@@ -13,7 +20,10 @@ function loginError(e: unknown): string {
   return errorText(e);
 }
 
-export function Login({ login, onSignedIn }: { login: (email: string, password: string) => Promise<void>; onSignedIn: () => void }) {
+export function Login({
+  login,
+  onSignedIn,
+}: { login: (email: string, password: string) => Promise<void>; onSignedIn: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
@@ -46,11 +56,25 @@ export function Login({ login, onSignedIn }: { login: (email: string, password: 
           <CardContent className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="login-email">{C.email}</Label>
-              <Input id="login-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
+              <Input
+                id="login-email"
+                type="email"
+                autoComplete="username"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="login-password">{C.password}</Label>
-              <Input id="login-password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+              <Input
+                id="login-password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
             </div>
             {error && (
               <Alert variant="destructive">
@@ -59,7 +83,9 @@ export function Login({ login, onSignedIn }: { login: (email: string, password: 
             )}
           </CardContent>
           <CardFooter>
-            <Button type="submit" className="w-full" disabled={pending}>{pending ? C.signingIn : C.signIn}</Button>
+            <Button type="submit" className="w-full" disabled={pending}>
+              {pending ? C.signingIn : C.signIn}
+            </Button>
           </CardFooter>
         </form>
       </Card>

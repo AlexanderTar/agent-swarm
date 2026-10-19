@@ -23,7 +23,10 @@ describe("App flows", () => {
     await user.click(within(sheet).getByRole("button", { name: "Cancel" }));
     await user.click(screen.getByRole("button", { name: "New item" }));
     await user.click(await screen.findByRole("menuitem", { name: "Spike" }));
-    expect(await screen.findByRole("radio", { name: "Feature spike" })).toHaveAttribute("aria-checked", "true");
+    expect(await screen.findByRole("radio", { name: "Feature spike" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   });
 
   it("creates a spike and selects it", async () => {
@@ -42,7 +45,10 @@ describe("App flows", () => {
     await user.click(await screen.findByRole("button", { name: "New item" }));
     await user.click(await screen.findByRole("menuitem", { name: "Chore" }));
     const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
-    expect(within(sheet).getByRole("radio", { name: "Chore" })).toHaveAttribute("aria-checked", "true");
+    expect(within(sheet).getByRole("radio", { name: "Chore" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Bump deps");
     await user.click(await within(sheet).findByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(window.location.hash).toMatch(/item=CHORE-\d+/));
@@ -68,13 +74,19 @@ describe("App flows", () => {
     row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     await user.click(await screen.findByRole("menuitem", { name: "Add task" }));
     const sheet = await screen.findByRole("dialog", { name: "New item" });
-    expect(within(sheet).getByRole("radio", { name: "Task" })).toHaveAttribute("aria-checked", "true");
+    expect(within(sheet).getByRole("radio", { name: "Task" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
     expect(await within(sheet).findByRole("combobox", { name: "Parent" })).toBeInTheDocument();
     expect(comboText("Parent")).toContain("STORY-40");
   });
 
   it("opens the spawn sheet from Details", async () => {
-    const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=EPIC-20", daemon: roomy() });
+    const { user } = renderWithDaemon(<App />, {
+      hash: "#/hierarchy?item=EPIC-20",
+      daemon: roomy(),
+    });
     await user.click(await screen.findByRole("button", { name: "Start orchestrator" }));
     const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
     expect(within(sheet).getByText("EPIC-20 · Billing")).toBeInTheDocument();
@@ -87,7 +99,9 @@ describe("App flows", () => {
     await user.click(await screen.findByRole("button", { name: "Move to… EPIC-12" }));
     await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
     expect(window.location.hash).toBe("#/inbox?level=top&req=req_accept");
-    expect(await screen.findByRole("heading", { name: "Finish epic · EPIC-12 › Authentication" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Finish epic · EPIC-12 › Authentication" }),
+    ).toBeInTheDocument();
   });
 
   it("reviews from Details and resolves a request in the inbox", async () => {

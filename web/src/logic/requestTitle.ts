@@ -25,4 +25,9 @@ export function requestTitle(r: Request): string {
   }
 }
 
-export const ARTIFACT_LABEL: Record<Artifact["kind"], string> = { spec: "Spec", plan: "Plan", debug_report: "Report", note: "Note" };
+export const ARTIFACT_LABEL: Record<Artifact["kind"], string> = {
+  spec: "Spec",
+  plan: "Plan",
+  debug_report: "Report",
+  note: "Note",
+};

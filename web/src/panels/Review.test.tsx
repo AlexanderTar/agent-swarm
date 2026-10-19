@@ -7,18 +7,27 @@ import { Review } from "./Review";
 
 function setup(id: string, d = createMockDaemon(), connected = true) {
   const request = d.db.requests.find((r) => r.id === id)!;
-  return renderWithDaemon(<Review key={request.id} request={request} connected={connected} />, { daemon: d, events: false });
+  return renderWithDaemon(<Review key={request.id} request={request} connected={connected} />, {
+    daemon: d,
+    events: false,
+  });
 }
-const lastPost = (d: ReturnType<typeof createMockDaemon>) => d.calls.filter((c) => c.method === "POST").at(-1);
+const lastPost = (d: ReturnType<typeof createMockDaemon>) =>
+  d.calls.filter((c) => c.method === "POST").at(-1);
 
 describe("Review (§16.11)", () => {
   it("shows exactly the section snapshot and approves it with its hash", async () => {
     const d = createMockDaemon();
     const rec = d.db.artifacts.find((a) => a.artifact.id === "art_spec")!;
-    rec.revisions[4] = { markdown: "## Data model\n\nCHANGED ON DISK\n", sections: { "data-model": "## Data model\n\nCHANGED ON DISK\n" } };
+    rec.revisions[4] = {
+      markdown: "## Data model\n\nCHANGED ON DISK\n",
+      sections: { "data-model": "## Data model\n\nCHANGED ON DISK\n" },
+    };
     rec.artifact.head_revision = 4;
     const { user } = setup("req_section", d);
-    expect(screen.getByRole("heading", { name: "Approve section · SPIKE-3 › Offline mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Approve section · SPIKE-3 › Offline mode" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/^Requested by offline-spike-orchestrator · /)).toBeInTheDocument();
     expect(screen.getByText('Spec revision 3 · Section "Data model"')).toBeInTheDocument();
     expect(await screen.findByText("A local queue of pending messages.")).toBeInTheDocument();
@@ -27,20 +36,32 @@ describe("Review (§16.11)", () => {
     await user.click(screen.getByRole("button", { name: "View full spec" }));
     expect(await screen.findByText("Work offline.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve section" }));
-    await waitFor(() => expect(lastPost(d)).toMatchObject({
-      path: "/api/requests/req_section/approve", body: { section_sha256: "sha-dm-3", artifact_revision: 3, via: "board" },
-    }));
-    expect(d.calls.some((c) => c.path === "/api/artifacts/art_spec?revision=3&section=data-model")).toBe(true);
+    await waitFor(() =>
+      expect(lastPost(d)).toMatchObject({
+        path: "/api/requests/req_section/approve",
+        body: { section_sha256: "sha-dm-3", artifact_revision: 3, via: "board" },
+      }),
+    );
+    expect(
+      d.calls.some((c) => c.path === "/api/artifacts/art_spec?revision=3&section=data-model"),
+    ).toBe(true);
     expect(await screen.findByText("Approved SPIKE-3")).toBeInTheDocument();
   });
 
   it("reloads when the request changed", async () => {
     const d = createMockDaemon();
-    d.override("POST /api/requests/req_section/approve", { status: 409, body: { error: { code: "conflict", message: "This request changed. Review the latest version." } } });
+    d.override("POST /api/requests/req_section/approve", {
+      status: 409,
+      body: {
+        error: { code: "conflict", message: "This request changed. Review the latest version." },
+      },
+    });
     const { user } = setup("req_section", d);
     await screen.findByText("A local queue of pending messages.");
     await user.click(screen.getByRole("button", { name: "Approve section" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("This request changed. Review the latest version.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This request changed. Review the latest version.",
+    );
     expect(screen.queryByText("Approved SPIKE-3")).not.toBeInTheDocument();
   });
 
@@ -60,24 +81,45 @@ describe("Review (§16.11)", () => {
 
   it("shows plan validation warnings above the plan snapshot", async () => {
     const d = createMockDaemon();
-    const base = d.handle({ method: "GET", url: "/api/artifacts/art_plan?revision=1", headers: { Authorization: `Bearer ${d.db.token}` } });
-    d.override("GET /api/artifacts/art_plan", { status: 200, body: {
-      ...(base.body as object), warnings: ["Task t-1 is a single unit. Batch it with related units."],
-    } });
+    const base = d.handle({
+      method: "GET",
+      url: "/api/artifacts/art_plan?revision=1",
+      headers: { Authorization: `Bearer ${d.db.token}` },
+    });
+    d.override("GET /api/artifacts/art_plan", {
+      status: 200,
+      body: {
+        ...(base.body as object),
+        warnings: ["Task t-1 is a single unit. Batch it with related units."],
+      },
+    });
     setup("req_plan", d);
     const heading = await screen.findByRole("heading", { name: "Plan warnings" });
-    expect(screen.getByText("Task t-1 is a single unit. Batch it with related units.")).toBeInTheDocument();
-    expect(heading.compareDocumentPosition(screen.getByText("Two stories.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen.getByText("Task t-1 is a single unit. Batch it with related units."),
+    ).toBeInTheDocument();
+    expect(
+      heading.compareDocumentPosition(screen.getByText("Two stories.")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("shows the accept-epic binding, verification, children and plan, and sends the binding back", async () => {
     const d = createMockDaemon();
     const { user } = setup("req_accept", d);
-    expect(screen.getByRole("heading", { name: "Finish epic · EPIC-12 › Authentication" })).toBeInTheDocument();
-    expect(screen.getByText("endurio-chat · epic/epic-12-authentication · a1b2c3d")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Finish epic · EPIC-12 › Authentication" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("endurio-chat · epic/epic-12-authentication · a1b2c3d"),
+    ).toBeInTheDocument();
     expect(await screen.findByText("✓ go test ./...")).toBeInTheDocument();
     const children = await screen.findByRole("list", { name: "Children" });
-    expect(within(children).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    expect(
+      within(children)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual([
       expect.stringContaining("STORY-40 Login"),
       expect.stringContaining("STORY-41 Password reset"),
     ]);
@@ -87,28 +129,41 @@ describe("Review (§16.11)", () => {
     expect(screen.getByRole("button", { name: "Create PR" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create PR + auto-merge" }));
-    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({
-      binding: { item_revision: 7, integrated_checkpoint: "ckp_int", git: [{ repo: "endurio-chat", sha: "a1b2c3d4e5f6a7b8" }] },
-      merge: "auto",
-    }));
+    await waitFor(() =>
+      expect(lastPost(d)?.body).toMatchObject({
+        binding: {
+          item_revision: 7,
+          integrated_checkpoint: "ckp_int",
+          git: [{ repo: "endurio-chat", sha: "a1b2c3d4e5f6a7b8" }],
+        },
+        merge: "auto",
+      }),
+    );
   });
 
   it("finishes with a PR and no auto-merge", async () => {
     const d = createMockDaemon();
     const { user } = setup("req_accept", d);
     await user.click(screen.getByRole("button", { name: "Create PR" }));
-    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "manual" }));
+    await waitFor(() =>
+      expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "manual" }),
+    );
   });
 
   it("offers only a local merge when no repo has a GitHub remote", async () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;
-    const { user } = renderWithDaemon(<Review request={{ ...req, finish_local: true }} connected />, { daemon: d, events: false });
+    const { user } = renderWithDaemon(
+      <Review request={{ ...req, finish_local: true }} connected />,
+      { daemon: d, events: false },
+    );
     expect(screen.queryByRole("button", { name: "Create PR" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Create PR + auto-merge" })).toBeNull();
     expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Merge locally" }));
-    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "local" }));
+    await waitFor(() =>
+      expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "local" }),
+    );
   });
 
   it("renders agent finish options as buttons and posts choice, comment and custom merge", async () => {
@@ -116,7 +171,11 @@ describe("Review (§16.11)", () => {
     const req = d.db.requests.find((r) => r.id === "req_accept")!;
     const { user } = renderWithDaemon(
       <Review
-        request={{ ...req, options: ["Squash-merge PR", "Push straight to main"], option_descriptions: ["Open a PR, squash when green", "Fast-forward main, no PR"] }}
+        request={{
+          ...req,
+          options: ["Squash-merge PR", "Push straight to main"],
+          option_descriptions: ["Open a PR, squash when green", "Fast-forward main, no PR"],
+        }}
         connected
       />,
       { daemon: d, events: false },
@@ -127,9 +186,14 @@ describe("Review (§16.11)", () => {
     expect(screen.getByRole("button", { name: /Request changes/ })).toBeInTheDocument();
     await user.type(screen.getByLabelText("Comment (optional)"), "ship it");
     await user.click(screen.getByRole("button", { name: /Push straight to main/ }));
-    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({
-      binding: { item_revision: 7 }, merge: "custom", choice: "Push straight to main", comment: "ship it",
-    }));
+    await waitFor(() =>
+      expect(lastPost(d)?.body).toMatchObject({
+        binding: { item_revision: 7 },
+        merge: "custom",
+        choice: "Push straight to main",
+        comment: "ship it",
+      }),
+    );
   });
 
   it("keeps today's finish buttons when the request has no agent options", async () => {
@@ -143,20 +207,36 @@ describe("Review (§16.11)", () => {
     ["req_section", "Approve section", { section_sha256: "sha-dm-3", artifact_revision: 3 }],
     ["req_plan", "Approve plan", { artifact_revision: 1 }],
     ["req_report", "Approve report", {}],
-  ])("renders agent options on %s as approval buttons and sends choice and comment", async (id, fixedLabel, bound) => {
-    const d = createMockDaemon();
-    const req = d.db.requests.find((r) => r.id === id)!;
-    const { user } = renderWithDaemon(
-      <Review request={{ ...req, options: ["Looks good", "Approve with follow-ups"], option_descriptions: ["Ship as written", "Ship, then fix nits"] }} connected />,
-      { daemon: d, events: false },
-    );
-    expect(screen.queryByRole("button", { name: fixedLabel })).toBeNull();
-    expect(screen.getByText("Ship, then fix nits")).toBeInTheDocument();
-    await user.type(screen.getByLabelText("Comment (optional)"), "nit: rename x");
-    await user.click(screen.getByRole("button", { name: /Approve with follow-ups/ }));
-    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ ...bound, choice: "Approve with follow-ups", comment: "nit: rename x" }));
-    expect(lastPost(d)?.body).not.toHaveProperty("merge");
-  });
+  ])(
+    "renders agent options on %s as approval buttons and sends choice and comment",
+    async (id, fixedLabel, bound) => {
+      const d = createMockDaemon();
+      const req = d.db.requests.find((r) => r.id === id)!;
+      const { user } = renderWithDaemon(
+        <Review
+          request={{
+            ...req,
+            options: ["Looks good", "Approve with follow-ups"],
+            option_descriptions: ["Ship as written", "Ship, then fix nits"],
+          }}
+          connected
+        />,
+        { daemon: d, events: false },
+      );
+      expect(screen.queryByRole("button", { name: fixedLabel })).toBeNull();
+      expect(screen.getByText("Ship, then fix nits")).toBeInTheDocument();
+      await user.type(screen.getByLabelText("Comment (optional)"), "nit: rename x");
+      await user.click(screen.getByRole("button", { name: /Approve with follow-ups/ }));
+      await waitFor(() =>
+        expect(lastPost(d)?.body).toMatchObject({
+          ...bound,
+          choice: "Approve with follow-ups",
+          comment: "nit: rename x",
+        }),
+      );
+      expect(lastPost(d)?.body).not.toHaveProperty("merge");
+    },
+  );
 
   it("offers an optional comment on a plain approval", async () => {
     const d = createMockDaemon();
@@ -170,8 +250,15 @@ describe("Review (§16.11)", () => {
   it("shows the waiver and override history count even when none are live any more", async () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;
-    expect(d.db.items.filter((i) => i.root_key === req.root_key).every((i) => !i.waivers?.length && !i.override)).toBe(true);
-    renderWithDaemon(<Review request={{ ...req, waiver_history: { waivers: 2, overrides: 1 } }} connected />, { daemon: d, events: false });
+    expect(
+      d.db.items
+        .filter((i) => i.root_key === req.root_key)
+        .every((i) => !i.waivers?.length && !i.override),
+    ).toBe(true);
+    renderWithDaemon(
+      <Review request={{ ...req, waiver_history: { waivers: 2, overrides: 1 } }} connected />,
+      { daemon: d, events: false },
+    );
     expect(await screen.findByText("2 waivers, 1 override in this tree")).toBeInTheDocument();
   });
 
@@ -185,11 +272,19 @@ describe("Review (§16.11)", () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;
     const { user } = renderWithDaemon(
-      <Review request={{ ...req, binding: { item_revision: 6, integrated_checkpoint: "ckp_old", git: [] } }} connected />,
+      <Review
+        request={{
+          ...req,
+          binding: { item_revision: 6, integrated_checkpoint: "ckp_old", git: [] },
+        }}
+        connected
+      />,
       { daemon: d, events: false },
     );
     await user.click(await screen.findByRole("button", { name: "Create PR + auto-merge" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("This request changed. Review the latest version.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This request changed. Review the latest version.",
+    );
   });
 
   it("accepts a fix with its failing verification line", async () => {
@@ -205,7 +300,12 @@ describe("Review (§16.11)", () => {
     expect(await screen.findByText("EPIC-12 already covers the retry banner.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close spike" }));
-    await waitFor(() => expect(lastPost(d)).toMatchObject({ path: "/api/requests/req_close/close-spike", body: { via: "board" } }));
+    await waitFor(() =>
+      expect(lastPost(d)).toMatchObject({
+        path: "/api/requests/req_close/close-spike",
+        body: { via: "board" },
+      }),
+    );
     expect(await screen.findByText("Closed SPIKE-4")).toBeInTheDocument();
   });
 
@@ -252,13 +352,18 @@ describe("Review (§16.11)", () => {
       terminal_agent: "test-agent",
     };
     d.db.requests.push(promptReq);
-    const { user, rerender } = renderWithDaemon(<Review request={promptReq} connected={true} />, { daemon: d, events: false });
+    const { user, rerender } = renderWithDaemon(<Review request={promptReq} connected={true} />, {
+      daemon: d,
+      events: false,
+    });
     const termBtn = await screen.findByRole("button", { name: "Open orchestrator terminal" });
     await waitFor(() => expect(termBtn).toBeEnabled());
     await user.click(termBtn);
-    await waitFor(() => expect(lastPost(d)).toMatchObject({
-      path: "/api/agents/test-agent/terminal",
-    }));
+    await waitFor(() =>
+      expect(lastPost(d)).toMatchObject({
+        path: "/api/agents/test-agent/terminal",
+      }),
+    );
 
     rerender(<Review request={promptReq} connected={false} />);
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
@@ -275,7 +380,13 @@ describe("Review (§16.11)", () => {
     const d = createMockDaemon();
     d.override("POST /api/requests/req_plan/approve", {
       status: 500,
-      body: { error: { code: "internal", message: "internal error", reason: "The plan artifact is locked for editing." } },
+      body: {
+        error: {
+          code: "internal",
+          message: "internal error",
+          reason: "The plan artifact is locked for editing.",
+        },
+      },
     });
     const { user } = setup("req_plan", d);
     await screen.findByText("Two stories.");
@@ -286,7 +397,10 @@ describe("Review (§16.11)", () => {
 
   it("shows a message and retry when the section snapshot fails to load", async () => {
     const d = createMockDaemon();
-    d.override("GET /api/artifacts/art_spec", { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load the spec." } } });
+    d.override("GET /api/artifacts/art_spec", {
+      status: 500,
+      body: { error: { code: "internal", message: "x", reason: "Couldn't load the spec." } },
+    });
     setup("req_section", d);
     expect(await screen.findByText("Couldn't load the spec.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
@@ -294,7 +408,10 @@ describe("Review (§16.11)", () => {
 
   it("shows a message and retry when the item detail fails to load in an acceptance review", async () => {
     const d = createMockDaemon();
-    d.override("GET /api/items/EPIC-12", { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load the item." } } });
+    d.override("GET /api/items/EPIC-12", {
+      status: 500,
+      body: { error: { code: "internal", message: "x", reason: "Couldn't load the item." } },
+    });
     setup("req_accept", d);
     expect(await screen.findByText("Couldn't load the item.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
@@ -302,7 +419,10 @@ describe("Review (§16.11)", () => {
 
   it("shows a message and retry when checkpoints fail to load in an acceptance review", async () => {
     const d = createMockDaemon();
-    d.override("GET /api/items/EPIC-12/checkpoints", { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load checkpoints." } } });
+    d.override("GET /api/items/EPIC-12/checkpoints", {
+      status: 500,
+      body: { error: { code: "internal", message: "x", reason: "Couldn't load checkpoints." } },
+    });
     setup("req_accept", d);
     expect(await screen.findByText("Couldn't load checkpoints.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();

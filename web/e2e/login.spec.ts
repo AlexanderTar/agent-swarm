@@ -41,7 +41,9 @@ test("too many attempts shows the wait", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveText("Too many attempts. Try again in 9 minutes.");
 });
 
-test("signing in loads the board, hides Open terminal, and Sign out returns to Login", async ({ page }) => {
+test("signing in loads the board, hides Open terminal, and Sign out returns to Login", async ({
+  page,
+}) => {
   await page.goto("/#/hierarchy?item=EPIC-12");
   await signIn(page);
   await expect(page.getByTestId("view")).toBeVisible();

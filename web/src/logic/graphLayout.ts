@@ -9,8 +9,17 @@ export const NODE_H = 64;
 const PAD = 12;
 const LABEL_H = 22;
 
-export interface Box { x: number; y: number; width: number; height: number }
-export interface Laid { nodes: Map<string, Box>; groups: Map<string, Box>; order: string[] }
+export interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export interface Laid {
+  nodes: Map<string, Box>;
+  groups: Map<string, Box>;
+  order: string[];
+}
 export type StoryOf = (key: string) => string | null;
 
 export function storyOfFn(byKey: Map<string, Item>, scope: GraphScope): StoryOf {
@@ -38,7 +47,12 @@ export function layoutGraph(g: Graph, storyOf: StoryOf): Laid {
   const nodes = new Map<string, Box>();
   for (const n of g.nodes) {
     const p = d.node(n.key);
-    nodes.set(n.key, { x: (p.x ?? 0) - NODE_W / 2, y: (p.y ?? 0) - NODE_H / 2, width: NODE_W, height: NODE_H });
+    nodes.set(n.key, {
+      x: (p.x ?? 0) - NODE_W / 2,
+      y: (p.y ?? 0) - NODE_H / 2,
+      width: NODE_W,
+      height: NODE_H,
+    });
   }
 
   // ponytail: story boxes are bounding rectangles after a flat layout; they can overlap when a
@@ -79,13 +93,24 @@ export function dimmedKeys(g: Graph, f: Filter): Set<string> {
   return new Set(g.nodes.filter((n) => !matches(n, f)).map((n) => n.key));
 }
 
-export interface ItemNodeData extends Record<string, unknown> { node: GraphNode; dimmed: boolean; needsYou: boolean }
-export interface StoryNodeData extends Record<string, unknown> { label: string }
+export interface ItemNodeData extends Record<string, unknown> {
+  node: GraphNode;
+  dimmed: boolean;
+  needsYou: boolean;
+}
+export interface StoryNodeData extends Record<string, unknown> {
+  label: string;
+}
 
 export function toFlow(
   g: Graph,
   laid: Laid,
-  o: { selected: string; dimmed: ReadonlySet<string>; needsYou: ReadonlySet<string>; storyLabel: (key: string) => string },
+  o: {
+    selected: string;
+    dimmed: ReadonlySet<string>;
+    needsYou: ReadonlySet<string>;
+    storyLabel: (key: string) => string;
+  },
 ): { nodes: Node[]; edges: Edge[] } {
   const stories: Node<StoryNodeData>[] = [...laid.groups].map(([key, b]) => ({
     id: `group:${key}`,
@@ -103,15 +128,17 @@ export function toFlow(
     const b = laid.nodes.get(key);
     const n = byKey.get(key);
     if (!b || !n) return [];
-    return [{
-      id: key,
-      type: "item",
-      position: { x: b.x, y: b.y },
-      data: { node: n, dimmed: o.dimmed.has(key), needsYou: o.needsYou.has(key) },
-      selected: key === o.selected,
-      draggable: false,
-      style: { width: b.width, height: b.height },
-    }];
+    return [
+      {
+        id: key,
+        type: "item",
+        position: { x: b.x, y: b.y },
+        data: { node: n, dimmed: o.dimmed.has(key), needsYou: o.needsYou.has(key) },
+        selected: key === o.selected,
+        draggable: false,
+        style: { width: b.width, height: b.height },
+      },
+    ];
   });
   const edges: Edge[] = g.edges.map((e) => ({
     id: `${e.from}>${e.to}`,

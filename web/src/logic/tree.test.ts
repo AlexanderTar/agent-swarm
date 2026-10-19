@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { Filter } from "../types";
 import {
-  LEVEL_TYPES, PARENT_TYPES, ancestors, buildIndex, compareKeys, compareTopLevel, filterItems, hierarchyRows, isFilterActive, makeItem, matches, outsideView,
+  LEVEL_TYPES,
+  PARENT_TYPES,
+  ancestors,
+  buildIndex,
+  compareKeys,
+  compareTopLevel,
+  filterItems,
+  hierarchyRows,
+  isFilterActive,
+  makeItem,
+  matches,
+  outsideView,
 } from "./tree";
 
 const none: Filter = { q: "", type: "", status: "" };
@@ -9,10 +20,34 @@ const items = [
   makeItem({ key: "BUG-7", title: "Login crash", priority: 1, created_at: 5 }),
   makeItem({ key: "EPIC-12", title: "Authentication", priority: 1, created_at: 9 }),
   makeItem({ key: "SPIKE-3", title: "Offline mode", priority: 2, created_at: 99 }),
-  makeItem({ key: "STORY-41", title: "Password reset", parent_key: "EPIC-12", root_key: "EPIC-12", sort_order: 2 }),
-  makeItem({ key: "STORY-40", title: "Login", parent_key: "EPIC-12", root_key: "EPIC-12", sort_order: 1 }),
-  makeItem({ key: "TASK-102", title: "Session handling", parent_key: "STORY-40", root_key: "EPIC-12", status: "in_review" }),
-  makeItem({ key: "TASK-99", title: "Login form", parent_key: "STORY-40", root_key: "EPIC-12", status: "done" }),
+  makeItem({
+    key: "STORY-41",
+    title: "Password reset",
+    parent_key: "EPIC-12",
+    root_key: "EPIC-12",
+    sort_order: 2,
+  }),
+  makeItem({
+    key: "STORY-40",
+    title: "Login",
+    parent_key: "EPIC-12",
+    root_key: "EPIC-12",
+    sort_order: 1,
+  }),
+  makeItem({
+    key: "TASK-102",
+    title: "Session handling",
+    parent_key: "STORY-40",
+    root_key: "EPIC-12",
+    status: "in_review",
+  }),
+  makeItem({
+    key: "TASK-99",
+    title: "Login form",
+    parent_key: "STORY-40",
+    root_key: "EPIC-12",
+    status: "done",
+  }),
   makeItem({ key: "TASK-999", title: "Orphan", parent_key: "STORY-404", root_key: "EPIC-404" }),
 ];
 
@@ -34,7 +69,11 @@ describe("tree logic (§16.5, §16.6)", () => {
   });
 
   it("orders keys numerically, top-level by priority then newest, children by sort order", () => {
-    expect(["TASK-101", "TASK-99", "STORY-2"].sort(compareKeys)).toEqual(["STORY-2", "TASK-99", "TASK-101"]);
+    expect(["TASK-101", "TASK-99", "STORY-2"].sort(compareKeys)).toEqual([
+      "STORY-2",
+      "TASK-99",
+      "TASK-101",
+    ]);
     const idx = buildIndex(items);
     expect(idx.roots.map((i) => i.key)).toEqual(["EPIC-12", "BUG-7", "SPIKE-3"]);
     expect(idx.children.get("EPIC-12")?.map((i) => i.key)).toEqual(["STORY-40", "STORY-41"]);
@@ -62,9 +101,18 @@ describe("tree logic (§16.5, §16.6)", () => {
   it("builds rows with depth, collapse and context", () => {
     const all = hierarchyRows(items, none, new Set(["STORY-40"]));
     expect(all.map((r) => `${r.depth}:${r.item.key}${r.expanded ? "" : "+"}`)).toEqual([
-      "0:EPIC-12", "1:STORY-40+", "1:STORY-41", "0:BUG-7", "0:SPIKE-3", "0:TASK-999",
+      "0:EPIC-12",
+      "1:STORY-40+",
+      "1:STORY-41",
+      "0:BUG-7",
+      "0:SPIKE-3",
+      "0:TASK-999",
     ]);
-    const filtered = hierarchyRows(items, { ...none, q: "session" }, new Set(["STORY-40", "EPIC-12"]));
+    const filtered = hierarchyRows(
+      items,
+      { ...none, q: "session" },
+      new Set(["STORY-40", "EPIC-12"]),
+    );
     expect(filtered.map((r) => [r.item.key, r.context, r.expanded])).toEqual([
       ["EPIC-12", true, true],
       ["STORY-40", true, true],
@@ -81,7 +129,8 @@ describe("tree logic (§16.5, §16.6)", () => {
       makeItem({ key: "EPIC-2", status: "cancelled", priority: 3 }),
       makeItem({ key: "STORY-2", parent_key: "EPIC-2", root_key: "EPIC-2", status: "cancelled" }),
     ];
-    const keys = (c: string[], o: string[], f = none) => hierarchyRows(fin, f, new Set(c), new Set(o)).map((r) => r.item.key);
+    const keys = (c: string[], o: string[], f = none) =>
+      hierarchyRows(fin, f, new Set(c), new Set(o)).map((r) => r.item.key);
     expect(keys([], [])).toEqual(["EPIC-1", "EPIC-2"]);
     expect(keys(["EPIC-1"], [])).toEqual(["EPIC-1", "EPIC-2"]);
     expect(keys([], ["EPIC-1"])).toEqual(["EPIC-1", "STORY-1", "EPIC-2"]);
@@ -93,9 +142,15 @@ describe("tree logic (§16.5, §16.6)", () => {
     expect(outsideView("TASK-102", items, none, "kanban", "tasks")).toBe(false);
     expect(outsideView("EPIC-12", items, none, "kanban", "tasks")).toBe(true);
     expect(outsideView("EPIC-12", items, none, "kanban", "top")).toBe(false);
-    expect(outsideView("TASK-99", items, { ...none, status: "blocked" }, "hierarchy", "tasks")).toBe(true);
-    expect(outsideView("STORY-40", items, { ...none, q: "session" }, "hierarchy", "tasks")).toBe(false);
-    expect(outsideView("TASK-99", items, { ...none, status: "blocked" }, "dependencies", "tasks")).toBe(false);
+    expect(
+      outsideView("TASK-99", items, { ...none, status: "blocked" }, "hierarchy", "tasks"),
+    ).toBe(true);
+    expect(outsideView("STORY-40", items, { ...none, q: "session" }, "hierarchy", "tasks")).toBe(
+      false,
+    );
+    expect(
+      outsideView("TASK-99", items, { ...none, status: "blocked" }, "dependencies", "tasks"),
+    ).toBe(false);
     expect(outsideView("NOPE-1", items, none, "hierarchy", "tasks")).toBe(false);
     expect(outsideView("", items, none, "hierarchy", "tasks")).toBe(false);
   });

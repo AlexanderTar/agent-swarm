@@ -9,7 +9,15 @@ import museUrl from "../assets/agents/muse.svg";
 import { AGENT_LABEL, TYPE_LABEL } from "../copy";
 import type { AgentKind, ItemType } from "../types";
 
-const AGENT_URL: Record<AgentKind, string> = { claude: claudeUrl, codex: codexUrl, agy: agyUrl, cursor: cursorUrl, muse: museUrl, grok: grokUrl, fake: claudeUrl };
+const AGENT_URL: Record<AgentKind, string> = {
+  claude: claudeUrl,
+  codex: codexUrl,
+  agy: agyUrl,
+  cursor: cursorUrl,
+  muse: museUrl,
+  grok: grokUrl,
+  fake: claudeUrl,
+};
 
 export function AgentIcon({ kind, className = "" }: { kind: AgentKind; className?: string }) {
   const mask = `url("${AGENT_URL[kind]}") center / contain no-repeat`;
@@ -23,13 +31,29 @@ export function AgentIcon({ kind, className = "" }: { kind: AgentKind; className
   );
 }
 
-const TYPE_ICON: Record<ItemType, ComponentType<{ className?: string; "aria-label"?: string; role?: string }>> = {
-  epic: Layers, story: BookOpen, task: Square, bug: Bug, spike: FlaskConical, chore: Wrench,
+const TYPE_ICON: Record<
+  ItemType,
+  ComponentType<{ className?: string; "aria-label"?: string; role?: string }>
+> = {
+  epic: Layers,
+  story: BookOpen,
+  task: Square,
+  bug: Bug,
+  spike: FlaskConical,
+  chore: Wrench,
 };
 
 export function TypeIcon({ type, className = "" }: { type: ItemType; className?: string }) {
   const Icon = TYPE_ICON[type];
-  return <Icon role="img" aria-label={TYPE_LABEL[type]} className={`size-3.5 shrink-0 text-muted-foreground ${className}`} />;
+  return (
+    <Icon
+      role="img"
+      aria-label={TYPE_LABEL[type]}
+      className={`size-3.5 shrink-0 text-muted-foreground ${className}`}
+    />
+  );
 }
 
-export const Key = ({ children }: { children: string }) => <span className="key font-normal">{children}</span>;
+export const Key = ({ children }: { children: string }) => (
+  <span className="key font-normal">{children}</span>
+);

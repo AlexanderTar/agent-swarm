@@ -1,19 +1,34 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_URL, type BoardUrl } from "../state/url";
-import { pickOption } from "../test/select";
 import { SessionProvider } from "../state/session";
+import { type BoardUrl, DEFAULT_URL } from "../state/url";
+import { pickOption } from "../test/select";
 import { Header } from "./Header";
 
 const narrow = (matches: boolean) =>
-  vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
-    ({ matches: query.includes("639px") ? matches : false, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+  vi
+    .spyOn(window, "matchMedia")
+    .mockImplementation(((query: string) => ({
+      matches: query.includes("639px") ? matches : false,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    })) as unknown as typeof window.matchMedia);
 
 function setup(url: Partial<BoardUrl> = {}, matches: number | null = null) {
   const setUrl = vi.fn();
   const user = userEvent.setup();
-  render(<Header url={{ ...DEFAULT_URL, ...url }} setUrl={setUrl} matches={matches} needsYou={0} onNewSpike={() => {}} onNewItem={() => {}} />);
+  render(
+    <Header
+      url={{ ...DEFAULT_URL, ...url }}
+      setUrl={setUrl}
+      matches={matches}
+      needsYou={0}
+      onNewSpike={() => {}}
+      onNewItem={() => {}}
+    />,
+  );
   return { setUrl, user };
 }
 
@@ -55,7 +70,10 @@ describe("Header filters below sm", () => {
   it("uses a short placeholder on phones and keeps the full accessible name", () => {
     narrow(true);
     setup();
-    expect(screen.getByRole("searchbox", { name: "Search name or key…" })).toHaveAttribute("placeholder", "Search");
+    expect(screen.getByRole("searchbox", { name: "Search name or key…" })).toHaveAttribute(
+      "placeholder",
+      "Search",
+    );
   });
 
   it("has no badge without active filters", () => {
@@ -88,7 +106,16 @@ describe("Header filters below sm", () => {
     narrow(true);
     const onNewSpike = vi.fn();
     const user = userEvent.setup();
-    render(<Header url={DEFAULT_URL} setUrl={() => {}} matches={null} needsYou={0} onNewSpike={onNewSpike} onNewItem={() => {}} />);
+    render(
+      <Header
+        url={DEFAULT_URL}
+        setUrl={() => {}}
+        matches={null}
+        needsYou={0}
+        onNewSpike={onNewSpike}
+        onNewItem={() => {}}
+      />,
+    );
     expect(screen.queryByRole("button", { name: "New orchestrator" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "New item" }));
     await user.click(await screen.findByRole("menuitem", { name: "New orchestrator" }));
@@ -114,16 +141,27 @@ describe("Header at sm and up", () => {
     setup({ view: "kanban" });
     expect(screen.queryByRole("button", { name: /^Filters/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New orchestrator" })).toBeInTheDocument();
-    for (const name of ["Type", "Status", "Card level", "Group by"]) expect(screen.getByRole("combobox", { name })).toBeInTheDocument();
+    for (const name of ["Type", "Status", "Card level", "Group by"])
+      expect(screen.getByRole("combobox", { name })).toBeInTheDocument();
   });
 });
 
-describe.each([["phone", true], ["desktop", false]])("Header Sign out on %s", (_name, isNarrow) => {
+describe.each([
+  ["phone", true],
+  ["desktop", false],
+])("Header Sign out on %s", (_name, isNarrow) => {
   const remote = (signOut = vi.fn()) => {
     narrow(isNarrow);
     render(
       <SessionProvider value={{ remote: true, email: "me@example.com", signOut }}>
-        <Header url={DEFAULT_URL} setUrl={() => {}} matches={null} needsYou={0} onNewSpike={() => {}} onNewItem={() => {}} />
+        <Header
+          url={DEFAULT_URL}
+          setUrl={() => {}}
+          matches={null}
+          needsYou={0}
+          onNewSpike={() => {}}
+          onNewItem={() => {}}
+        />
       </SessionProvider>,
     );
     return signOut;

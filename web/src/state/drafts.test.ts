@@ -12,7 +12,9 @@ describe("drafts (§16.11 unsent text)", () => {
   });
 
   it("keeps text when switching requests", () => {
-    const { result, rerender } = renderHook(({ id }) => useDraft(id, "changes"), { initialProps: { id: "req_a" } });
+    const { result, rerender } = renderHook(({ id }) => useDraft(id, "changes"), {
+      initialProps: { id: "req_a" },
+    });
     act(() => result.current[1]("fix the title"));
     rerender({ id: "req_b" });
     expect(result.current[0]).toBe("");

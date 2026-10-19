@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
 import { toast as sonner } from "sonner";
+import { describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { renderWithDaemon } from "../test/render";
 import { Sheet } from "./Sheet";
@@ -36,7 +36,13 @@ describe("touch primitives (max-md 44 px)", () => {
   });
 
   it("SelectTrigger is 44 px below md for both sizes", () => {
-    render(<Select><SelectTrigger aria-label="t"><SelectValue /></SelectTrigger></Select>);
+    render(
+      <Select>
+        <SelectTrigger aria-label="t">
+          <SelectValue />
+        </SelectTrigger>
+      </Select>,
+    );
     const cls = screen.getByRole("combobox", { name: "t" }).className;
     expect(cls).toContain("data-[size=default]:h-8");
     expect(cls).toContain("max-md:data-[size=default]:h-11");
@@ -44,9 +50,17 @@ describe("touch primitives (max-md 44 px)", () => {
   });
 
   it("TabsTrigger is 44 px below md", () => {
-    render(<Tabs defaultValue="a"><TabsList aria-label="v"><TabsTrigger value="a">A</TabsTrigger></TabsList></Tabs>);
+    render(
+      <Tabs defaultValue="a">
+        <TabsList aria-label="v">
+          <TabsTrigger value="a">A</TabsTrigger>
+        </TabsList>
+      </Tabs>,
+    );
     expect(screen.getByRole("tab", { name: "A" })).toHaveClass("max-md:min-h-11");
-    expect(screen.getByRole("tablist")).toHaveClass("max-md:group-data-[orientation=horizontal]/tabs:h-auto");
+    expect(screen.getByRole("tablist")).toHaveClass(
+      "max-md:group-data-[orientation=horizontal]/tabs:h-auto",
+    );
   });
 });
 
@@ -67,17 +81,32 @@ describe("responsive shell", () => {
   });
 
   it("pads the sheet footer by the bottom inset", () => {
-    render(<Sheet title="T" onClose={() => {}} footer={<span>f</span>}>body</Sheet>);
-    expect(document.querySelector("[data-slot=sheet-footer]")!.className).toContain("pb-[max(0.75rem,env(safe-area-inset-bottom))]");
+    render(
+      <Sheet title="T" onClose={() => {}} footer={<span>f</span>}>
+        body
+      </Sheet>,
+    );
+    expect(document.querySelector("[data-slot=sheet-footer]")!.className).toContain(
+      "pb-[max(0.75rem,env(safe-area-inset-bottom))]",
+    );
   });
 
   it("places toasts top-center below sm and bottom-left above", async () => {
-    const mq = (matches: boolean) => vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
-      ({ matches, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    const mq = (matches: boolean) =>
+      vi
+        .spyOn(window, "matchMedia")
+        .mockImplementation(((query: string) => ({
+          matches,
+          media: query,
+          addEventListener() {},
+          removeEventListener() {},
+        })) as unknown as typeof window.matchMedia);
     const toaster = () => document.querySelector("[data-sonner-toaster]");
     mq(true);
     const narrow = render(<Toaster />);
-    act(() => { sonner.error("narrow"); });
+    act(() => {
+      sonner.error("narrow");
+    });
     await waitFor(() => expect(toaster()).toBeInTheDocument());
     expect(toaster()).toHaveAttribute("data-x-position", "center");
     expect(toaster()).toHaveAttribute("data-y-position", "top");
@@ -85,7 +114,9 @@ describe("responsive shell", () => {
     sonner.dismiss();
     mq(false);
     render(<Toaster />);
-    act(() => { sonner.error("wide"); });
+    act(() => {
+      sonner.error("wide");
+    });
     await waitFor(() => expect(toaster()).toBeInTheDocument());
     expect(toaster()).toHaveAttribute("data-x-position", "left");
     expect(toaster()).toHaveAttribute("data-y-position", "bottom");
@@ -93,17 +124,33 @@ describe("responsive shell", () => {
   });
 
   it("keeps Sonner's default desktop offset (24px) and applies the safe-area insets to phone toasts", async () => {
-    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
-      ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    })) as unknown as typeof window.matchMedia);
     render(<Toaster />);
-    act(() => { sonner.error("offsets"); });
-    await waitFor(() => expect(document.querySelector("[data-sonner-toaster]")).toBeInTheDocument());
+    act(() => {
+      sonner.error("offsets");
+    });
+    await waitFor(() =>
+      expect(document.querySelector("[data-sonner-toaster]")).toBeInTheDocument(),
+    );
     const style = (document.querySelector("[data-sonner-toaster]") as HTMLElement).style;
     expect(style.getPropertyValue("--offset-left")).toBe("max(24px, env(safe-area-inset-left))");
-    expect(style.getPropertyValue("--offset-bottom")).toBe("max(24px, env(safe-area-inset-bottom))");
-    expect(style.getPropertyValue("--mobile-offset-top")).toBe("max(16px, env(safe-area-inset-top))");
-    expect(style.getPropertyValue("--mobile-offset-left")).toBe("max(16px, env(safe-area-inset-left))");
-    expect(style.getPropertyValue("--mobile-offset-right")).toBe("max(16px, env(safe-area-inset-right))");
+    expect(style.getPropertyValue("--offset-bottom")).toBe(
+      "max(24px, env(safe-area-inset-bottom))",
+    );
+    expect(style.getPropertyValue("--mobile-offset-top")).toBe(
+      "max(16px, env(safe-area-inset-top))",
+    );
+    expect(style.getPropertyValue("--mobile-offset-left")).toBe(
+      "max(16px, env(safe-area-inset-left))",
+    );
+    expect(style.getPropertyValue("--mobile-offset-right")).toBe(
+      "max(16px, env(safe-area-inset-right))",
+    );
     vi.restoreAllMocks();
   });
 });
@@ -138,7 +185,11 @@ describe("view bodies and the Details sheet respect the left and right safe-area
   });
 
   it("Details sheet header, body and footer", () => {
-    render(<Sheet title="T" onClose={() => {}} footer={<span>f</span>}>body</Sheet>);
+    render(
+      <Sheet title="T" onClose={() => {}} footer={<span>f</span>}>
+        body
+      </Sheet>,
+    );
     const header = document.querySelector("[data-slot=sheet-header]")!;
     expect(header.className).toContain("pl-[max(1.25rem,env(safe-area-inset-left))]");
     expect(header.className).toContain("env(safe-area-inset-right)");

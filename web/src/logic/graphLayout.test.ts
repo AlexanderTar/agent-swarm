@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Graph } from "../types";
-import { LayoutCache, NODE_W, dimmedKeys, layoutGraph, signature, storyOfFn, toFlow } from "./graphLayout";
+import {
+  LayoutCache,
+  NODE_W,
+  dimmedKeys,
+  layoutGraph,
+  signature,
+  storyOfFn,
+  toFlow,
+} from "./graphLayout";
 import { buildIndex, makeItem } from "./tree";
 
 const items = [
@@ -13,11 +21,35 @@ const items = [
 ];
 const g: Graph = {
   nodes: [
-    { key: "TASK-98", type: "task", title: "Fix race", status: "done", root_key: "BUG-7", external: true },
-    { key: "TASK-102", type: "task", title: "Persist session", status: "blocked", root_key: "EPIC-12", external: false },
-    { key: "TASK-104", type: "task", title: "Validate inputs", status: "ready", root_key: "EPIC-12", external: false },
+    {
+      key: "TASK-98",
+      type: "task",
+      title: "Fix race",
+      status: "done",
+      root_key: "BUG-7",
+      external: true,
+    },
+    {
+      key: "TASK-102",
+      type: "task",
+      title: "Persist session",
+      status: "blocked",
+      root_key: "EPIC-12",
+      external: false,
+    },
+    {
+      key: "TASK-104",
+      type: "task",
+      title: "Validate inputs",
+      status: "ready",
+      root_key: "EPIC-12",
+      external: false,
+    },
   ],
-  edges: [{ from: "TASK-98", to: "TASK-102" }, { from: "TASK-102", to: "TASK-104" }],
+  edges: [
+    { from: "TASK-98", to: "TASK-102" },
+    { from: "TASK-102", to: "TASK-104" },
+  ],
 };
 const byKey = buildIndex(items).byKey;
 
@@ -56,7 +88,10 @@ describe("graph layout (§16.8)", () => {
   });
 
   it("dims non-matching nodes", () => {
-    expect([...dimmedKeys(g, { q: "", type: "", status: "blocked" })].sort()).toEqual(["TASK-104", "TASK-98"]);
+    expect([...dimmedKeys(g, { q: "", type: "", status: "blocked" })].sort()).toEqual([
+      "TASK-104",
+      "TASK-98",
+    ]);
     expect(dimmedKeys(g, { q: "", type: "", status: "" }).size).toBe(0);
   });
 
@@ -69,9 +104,17 @@ describe("graph layout (§16.8)", () => {
       storyLabel: (k) => `${k} ${byKey.get(k)?.title ?? ""}`,
     });
     expect(flow.nodes.map((n) => `${n.type}:${n.id}`)).toEqual([
-      "story:group:STORY-40", "item:TASK-98", "item:TASK-102", "item:TASK-104",
+      "story:group:STORY-40",
+      "item:TASK-98",
+      "item:TASK-102",
+      "item:TASK-104",
     ]);
-    expect(flow.nodes[0]).toMatchObject({ data: { label: "STORY-40 Login" }, focusable: false, selectable: false, zIndex: -1 });
+    expect(flow.nodes[0]).toMatchObject({
+      data: { label: "STORY-40 Login" },
+      focusable: false,
+      selectable: false,
+      zIndex: -1,
+    });
     expect(flow.nodes[1]?.data).toMatchObject({ dimmed: true, needsYou: false });
     expect(flow.nodes[2]?.selected).toBe(true);
     expect(flow.nodes[3]?.data).toMatchObject({ needsYou: true });

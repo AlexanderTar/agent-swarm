@@ -35,6 +35,8 @@ export function adviceTotals(advice: Advice[]): string | null {
   return T.advisorTotals(formatTokens(t), known.length ? formatCost(cost) : "");
 }
 
-export const gitLine = (g: GitRef) => `${g.repo} ${g.branch} ${sha7(g.sha)}${g.dirty ? " dirty" : ""}`;
-export const verifyLine = (v: VerifyEntry) => `${v.ok ? "✓" : "✗"} ${v.cmd}${v.note ? ` — ${v.note}` : ""}`;
+export const gitLine = (g: GitRef) =>
+  `${g.repo} ${g.branch} ${sha7(g.sha)}${g.dirty ? " dirty" : ""}`;
+export const verifyLine = (v: VerifyEntry) =>
+  `${v.ok ? "✓" : "✗"} ${v.cmd}${v.note ? ` — ${v.note}` : ""}`;
 export const kindLabel = (k: CheckpointKind) => k.charAt(0).toUpperCase() + k.slice(1);

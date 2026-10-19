@@ -20,7 +20,8 @@ export const isFilterActive = (f: Filter) => f.q.trim() !== "" || f.type !== "" 
 
 export function matches(item: Matchable, f: Filter): boolean {
   const q = f.q.trim().toLowerCase();
-  if (q && !item.key.toLowerCase().includes(q) && !item.title.toLowerCase().includes(q)) return false;
+  if (q && !item.key.toLowerCase().includes(q) && !item.title.toLowerCase().includes(q))
+    return false;
   if (f.type && item.type !== f.type) return false;
   if (f.status && item.status !== f.status) return false;
   return true;
@@ -40,9 +41,15 @@ export function compareKeys(a: string, b: string): number {
 // The id tiebreak keeps equal-priority, equal-age rows in one order across re-renders.
 export const compareTopLevel = (a: Item, b: Item) =>
   a.priority - b.priority || b.created_at - a.created_at || a.id.localeCompare(b.id);
-export const compareChildren = (a: Item, b: Item) => a.sort_order - b.sort_order || compareKeys(a.key, b.key);
+export const compareChildren = (a: Item, b: Item) =>
+  a.sort_order - b.sort_order || compareKeys(a.key, b.key);
 
-export interface ItemIndex { byKey: Map<string, Item>; children: Map<string, Item[]>; roots: Item[]; orphans: Item[] }
+export interface ItemIndex {
+  byKey: Map<string, Item>;
+  children: Map<string, Item[]>;
+  roots: Item[];
+  orphans: Item[];
+}
 
 export function buildIndex(items: Item[]): ItemIndex {
   const byKey = new Map(items.map((i) => [i.key, i]));
@@ -72,17 +79,28 @@ export function ancestors(key: string, byKey: Map<string, Item>): Item[] {
   return out;
 }
 
-export interface FilterResult { matched: Set<string>; context: Set<string>; count: number }
+export interface FilterResult {
+  matched: Set<string>;
+  context: Set<string>;
+  count: number;
+}
 
 export function filterItems(items: Item[], f: Filter): FilterResult {
   const byKey = new Map(items.map((i) => [i.key, i]));
   const matched = new Set(items.filter((i) => matches(i, f)).map((i) => i.key));
   const context = new Set<string>();
-  for (const k of matched) for (const a of ancestors(k, byKey)) if (!matched.has(a.key)) context.add(a.key);
+  for (const k of matched)
+    for (const a of ancestors(k, byKey)) if (!matched.has(a.key)) context.add(a.key);
   return { matched, context, count: matched.size };
 }
 
-export interface TreeRow { item: Item; depth: number; context: boolean; hasChildren: boolean; expanded: boolean }
+export interface TreeRow {
+  item: Item;
+  depth: number;
+  context: boolean;
+  hasChildren: boolean;
+  expanded: boolean;
+}
 
 const isFinal = (s: Item["status"]) => s === "done" || s === "cancelled";
 
@@ -102,7 +120,9 @@ export function hierarchyRows(
     if (fr && !fr.matched.has(it.key) && !context) return;
     const kids = idx.children.get(it.key) ?? [];
     // Context rows stay open so matches are visible; the stored collapse state is untouched.
-    const expanded = context || (!collapsed.has(it.key) && (opened.has(it.key) || fr !== null || !isFinal(it.status)));
+    const expanded =
+      context ||
+      (!collapsed.has(it.key) && (opened.has(it.key) || fr !== null || !isFinal(it.status)));
     rows.push({ item: it, depth, context, hasChildren: kids.length > 0, expanded });
     if (expanded) for (const k of kids) visit(k, depth + 1);
   };
@@ -110,7 +130,13 @@ export function hierarchyRows(
   return rows;
 }
 
-export function outsideView(key: string, items: Item[], f: Filter, view: View, level: CardLevel): boolean {
+export function outsideView(
+  key: string,
+  items: Item[],
+  f: Filter,
+  view: View,
+  level: CardLevel,
+): boolean {
   const item = items.find((i) => i.key === key);
   if (!item || view === "dependencies" || view === "inbox") return false;
   if (view === "kanban" && !LEVEL_TYPES[level].includes(item.type)) return true;

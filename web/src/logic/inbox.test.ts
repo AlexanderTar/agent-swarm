@@ -8,22 +8,55 @@ const reqs = [...seed().requests].reverse();
 
 // Minimal Request factory for the shared Needs-you rules (spec 4.4), independent of the board fixtures.
 const req = (p: Partial<Request> & Pick<Request, "id">): Request => ({
-  kind: "question", is_hitl: true, agent_name: null, terminal_agent: null,
-  item_key: "TASK-1", item_title: "Task", root_key: "TASK-1", artifact_id: null, artifact_revision: null,
-  section_id: null, section_title: null, section_sha256: null, prompt: "", options: [], state: "open",
-  confirmed: null, binding: null, response_text: null, responded_via: null, responded_at: null,
-  created_at: 0, native_pending: false, approval_evidence: null, ...p,
+  kind: "question",
+  is_hitl: true,
+  agent_name: null,
+  terminal_agent: null,
+  item_key: "TASK-1",
+  item_title: "Task",
+  root_key: "TASK-1",
+  artifact_id: null,
+  artifact_revision: null,
+  section_id: null,
+  section_title: null,
+  section_sha256: null,
+  prompt: "",
+  options: [],
+  state: "open",
+  confirmed: null,
+  binding: null,
+  response_text: null,
+  responded_via: null,
+  responded_at: null,
+  created_at: 0,
+  native_pending: false,
+  approval_evidence: null,
+  ...p,
 });
 
 describe("inbox rules (§16.11)", () => {
   it("filters and orders oldest first", () => {
     // Every open request is in "all" now (2.2.5), not just the HITL ones.
     expect(filterRequests(reqs, "all").map((r) => r.id)).toEqual([
-      "req_accept", "req_question", "req_q2", "req_section", "req_plan", "req_report", "req_close", "req_repos", "req_fix",
+      "req_accept",
+      "req_question",
+      "req_q2",
+      "req_section",
+      "req_plan",
+      "req_report",
+      "req_close",
+      "req_repos",
+      "req_fix",
     ]);
     expect(filterRequests(reqs, "questions").map((r) => r.id)).toEqual(["req_question", "req_q2"]);
     expect(filterRequests(reqs, "approvals").map((r) => r.id)).toEqual([
-      "req_accept", "req_section", "req_plan", "req_report", "req_close", "req_repos", "req_fix",
+      "req_accept",
+      "req_section",
+      "req_plan",
+      "req_report",
+      "req_close",
+      "req_repos",
+      "req_fix",
     ]);
   });
 
@@ -43,10 +76,17 @@ describe("inbox rules (§16.11)", () => {
 
   it("needsYouRow is generic and never shows the prompt", () => {
     const r = req({
-      id: "r", item_key: "SPIKE-16", item_title: "go-migration-agent-debug",
-      agent_name: "go-migration-agent-debug", prompt: "SECRET",
+      id: "r",
+      item_key: "SPIKE-16",
+      item_title: "go-migration-agent-debug",
+      agent_name: "go-migration-agent-debug",
+      prompt: "SECRET",
     });
-    expect(needsYouRow(r)).toEqual(["SPIKE-16 · go-migration-agent-debug", "go-migration-agent-debug", "Waiting for your input"]);
+    expect(needsYouRow(r)).toEqual([
+      "SPIKE-16 · go-migration-agent-debug",
+      "go-migration-agent-debug",
+      "Waiting for your input",
+    ]);
     expect(needsYouRow({ ...r, agent_name: null, terminal_agent: null })[1]).toBe("—");
   });
 
@@ -60,28 +100,61 @@ describe("inbox rules (§16.11)", () => {
 });
 
 describe("requestTarget", () => {
-  const q = { ...reqs.find((r) => r.id === "req_question")!, kind: "question", is_hitl: true, terminal_agent: "orch" } as Request;
+  const q = {
+    ...reqs.find((r) => r.id === "req_question")!,
+    kind: "question",
+    is_hitl: true,
+    terminal_agent: "orch",
+  } as Request;
   const orch = (session: Partial<SessionInfo> | null) =>
-    makeAgent({ name: "orch", role: "orchestrator", session: session && { ...makeAgent().session!, ...session } });
+    makeAgent({
+      name: "orch",
+      role: "orchestrator",
+      session: session && { ...makeAgent().session!, ...session },
+    });
   it("opens the terminal when the tmux session is alive", () => {
-    expect(requestTarget(q, [orch({ tmux_alive: true, state: "running" })])).toEqual({ kind: "terminal", agent: "orch" });
+    expect(requestTarget(q, [orch({ tmux_alive: true, state: "running" })])).toEqual({
+      kind: "terminal",
+      agent: "orch",
+    });
   });
   it("says paused for a paused or interrupted orchestrator", () => {
-    expect(requestTarget(q, [orch({ tmux_alive: false, state: "paused" })])).toEqual({ kind: "unavailable", hint: "Orchestrator is paused. Resume it to continue." });
-    expect(requestTarget(q, [orch({ tmux_alive: false, state: "interrupted" })])).toEqual({ kind: "unavailable", hint: "Orchestrator is paused. Resume it to continue." });
+    expect(requestTarget(q, [orch({ tmux_alive: false, state: "paused" })])).toEqual({
+      kind: "unavailable",
+      hint: "Orchestrator is paused. Resume it to continue.",
+    });
+    expect(requestTarget(q, [orch({ tmux_alive: false, state: "interrupted" })])).toEqual({
+      kind: "unavailable",
+      hint: "Orchestrator is paused. Resume it to continue.",
+    });
   });
   it("says not running otherwise, including an unknown agent", () => {
-    expect(requestTarget(q, [orch({ tmux_alive: false, state: "crashed" })])).toMatchObject({ kind: "unavailable", hint: "Orchestrator isn't running." });
-    expect(requestTarget(q, [])).toMatchObject({ kind: "unavailable", hint: "Orchestrator isn't running." });
+    expect(requestTarget(q, [orch({ tmux_alive: false, state: "crashed" })])).toMatchObject({
+      kind: "unavailable",
+      hint: "Orchestrator isn't running.",
+    });
+    expect(requestTarget(q, [])).toMatchObject({
+      kind: "unavailable",
+      hint: "Orchestrator isn't running.",
+    });
   });
   it("is null only without a terminal agent; approvals with one get a target too", () => {
     expect(requestTarget({ ...q, terminal_agent: null }, [])).toBeNull();
-    expect(requestTarget({ ...q, kind: "approve_plan", is_hitl: false }, [])).toMatchObject({ kind: "unavailable" });
+    expect(requestTarget({ ...q, kind: "approve_plan", is_hitl: false }, [])).toMatchObject({
+      kind: "unavailable",
+    });
   });
 
   it("requestTarget works for approvals with a terminal_agent", () => {
-    const liveO = makeAgent({ name: "o", role: "orchestrator", session: { ...makeAgent().session!, tmux_alive: true, state: "running" } });
-    expect(requestTarget(req({ id: "r", kind: "approve_plan", is_hitl: false, terminal_agent: "o" }), [liveO]))
-      .toEqual({ kind: "terminal", agent: "o" });
+    const liveO = makeAgent({
+      name: "o",
+      role: "orchestrator",
+      session: { ...makeAgent().session!, tmux_alive: true, state: "running" },
+    });
+    expect(
+      requestTarget(req({ id: "r", kind: "approve_plan", is_hitl: false, terminal_agent: "o" }), [
+        liveO,
+      ]),
+    ).toEqual({ kind: "terminal", agent: "o" });
   });
 });

@@ -1,84 +1,179 @@
 import { describe, expect, it } from "vitest";
 import type { AgentCatalogEntry, CatalogModel, Settings } from "../types";
 import {
-  advisorAgentOptions, advisorModelOptions, advisorOptions, advisorPayload, agentOptions, catalogNote, changeAdvisorAgent, changeAgent, changeModel, choicePayload, decodeAdvisor,
-  defaultEffortLabel, effortOptions, encodeAdvisor, isValid, modelLabel, modelOptions, normalizeEffort, prefill,
-  resolveModel, validateChoice,
+  advisorAgentOptions,
+  advisorModelOptions,
+  advisorOptions,
+  advisorPayload,
+  agentOptions,
+  catalogNote,
+  changeAdvisorAgent,
+  changeAgent,
+  changeModel,
+  choicePayload,
+  decodeAdvisor,
+  defaultEffortLabel,
+  effortOptions,
+  encodeAdvisor,
+  isValid,
+  modelLabel,
+  modelOptions,
+  normalizeEffort,
+  prefill,
+  resolveModel,
+  validateChoice,
 } from "./catalog";
 
 // L26/L27: no real model names anywhere in src/logic, fixtures included.
 const m = (p: Partial<CatalogModel> & { id: string }): CatalogModel => ({
-  label: p.id, efforts: [], default_effort: "", effort_encoding: "flag", advisor_capable: false, ...p,
+  label: p.id,
+  efforts: [],
+  default_effort: "",
+  effort_encoding: "flag",
+  advisor_capable: false,
+  ...p,
 });
 
 describe("advisor split (menubar parity)", () => {
   it("offers enabled agents followed by No advisor", () => {
     expect(advisorAgentOptions(["claude", "codex"], catalog)).toEqual([
-      { value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "none", label: "No advisor" },
+      { value: "claude", label: "Claude" },
+      { value: "codex", label: "Codex" },
+      { value: "none", label: "No advisor" },
     ]);
   });
 
   it("leaves out an agent whose catalog entry says it has no advisor yet", () => {
-    const withMuse = [...catalog, entry({ kind: "muse", models: [m({ id: "muse-1" })], advisor_enabled: false })];
-    expect(advisorAgentOptions(["claude", "muse"], withMuse).map((o) => o.value)).toEqual(["claude", "none"]);
-    expect(advisorOptions(withMuse, ["claude", "muse"]).map((o) => o.value)).not.toContain("muse:muse-1");
+    const withMuse = [
+      ...catalog,
+      entry({ kind: "muse", models: [m({ id: "muse-1" })], advisor_enabled: false }),
+    ];
+    expect(advisorAgentOptions(["claude", "muse"], withMuse).map((o) => o.value)).toEqual([
+      "claude",
+      "none",
+    ]);
+    expect(advisorOptions(withMuse, ["claude", "muse"]).map((o) => o.value)).not.toContain(
+      "muse:muse-1",
+    );
     expect(agentOptions(["claude", "muse"]).map((o) => o.value)).toContain("muse");
   });
 
   it("lists only advisor-capable Claude models", () => {
-    expect(advisorModelOptions(catalog, "claude").map((o) => o.value)).toEqual(["alpha", "delta", "model-1", "model-2"]);
+    expect(advisorModelOptions(catalog, "claude").map((o) => o.value)).toEqual([
+      "alpha",
+      "delta",
+      "model-1",
+      "model-2",
+    ]);
     expect(advisorModelOptions(catalog, "codex").map((o) => o.value)).toEqual(["model-5"]);
   });
 
   it("keeps the saved model for its agent and otherwise picks the first model", () => {
-    expect(changeAdvisorAgent("claude", settings, catalog)).toEqual({ agent: "claude", model: "model-2" });
-    expect(changeAdvisorAgent("codex", settings, catalog)).toEqual({ agent: "codex", model: "model-5" });
+    expect(changeAdvisorAgent("claude", settings, catalog)).toEqual({
+      agent: "claude",
+      model: "model-2",
+    });
+    expect(changeAdvisorAgent("codex", settings, catalog)).toEqual({
+      agent: "codex",
+      model: "model-5",
+    });
     expect(changeAdvisorAgent("none", settings, catalog)).toBe("none");
   });
 });
 
-const entry = (p: Partial<AgentCatalogEntry> & Pick<AgentCatalogEntry, "kind" | "models">): AgentCatalogEntry => ({
-  installed: true, version: "1", auth_ok: true, auth_error: "", superpowers: true, default_model: "",
-  catalog_source: "test", catalog_fetched_at: 0, catalog_stale: false, catalog_error: "", ...p,
+const entry = (
+  p: Partial<AgentCatalogEntry> & Pick<AgentCatalogEntry, "kind" | "models">,
+): AgentCatalogEntry => ({
+  installed: true,
+  version: "1",
+  auth_ok: true,
+  auth_error: "",
+  superpowers: true,
+  default_model: "",
+  catalog_source: "test",
+  catalog_fetched_at: 0,
+  catalog_stale: false,
+  catalog_error: "",
+  ...p,
 });
 
 const catalog: AgentCatalogEntry[] = [
   entry({
     kind: "claude",
     models: [
-      m({ id: "model-1", label: "Model One", aliases: ["alpha"], efforts: ["low", "medium", "high", "xhigh", "max"], advisor_capable: true }),
-      m({ id: "model-2", label: "Model Two", efforts: ["low", "medium", "high"], advisor_capable: true }),
+      m({
+        id: "model-1",
+        label: "Model One",
+        aliases: ["alpha"],
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        advisor_capable: true,
+      }),
+      m({
+        id: "model-2",
+        label: "Model Two",
+        efforts: ["low", "medium", "high"],
+        advisor_capable: true,
+      }),
       m({ id: "model-3", label: "Model Three", aliases: ["gamma"] }),
       m({ id: "model-4", label: "Model Four", hidden: true }),
       // The offline alias fallback (§6.7) ships models whose id IS their alias.
-      m({ id: "delta", label: "Delta (latest)", aliases: ["delta"], efforts: ["low", "high"], advisor_capable: true }),
+      m({
+        id: "delta",
+        label: "Delta (latest)",
+        aliases: ["delta"],
+        efforts: ["low", "high"],
+        advisor_capable: true,
+      }),
     ],
   }),
   entry({
     kind: "codex",
-    models: [m({ id: "model-5", label: "Model Five", efforts: ["low", "medium", "high"], default_effort: "medium" })],
+    models: [
+      m({
+        id: "model-5",
+        label: "Model Five",
+        efforts: ["low", "medium", "high"],
+        default_effort: "medium",
+      }),
+    ],
   }),
   // Slug-encoded agent (§6.7): "default" is the bare slug's level and the daemon lists it first.
   entry({
     kind: "cursor",
     models: [
       m({
-        id: "model-6", label: "Model Six", efforts: ["default", "low", "high"], default_effort: "high",
-        effort_encoding: "slug", launch_ids: { default: "model-6", low: "model-6-low", high: "model-6-high" },
+        id: "model-6",
+        label: "Model Six",
+        efforts: ["default", "low", "high"],
+        default_effort: "high",
+        effort_encoding: "slug",
+        launch_ids: { default: "model-6", low: "model-6-low", high: "model-6-high" },
       }),
       m({
-        id: "model-7", label: "Model Seven", efforts: ["default", "medium"], default_effort: "medium",
-        effort_encoding: "slug", launch_ids: { default: "model-7", medium: "model-7-medium" },
+        id: "model-7",
+        label: "Model Seven",
+        efforts: ["default", "medium"],
+        default_effort: "medium",
+        effort_encoding: "slug",
+        launch_ids: { default: "model-7", medium: "model-7-medium" },
       }),
       // D2 fell through to the bare slug, so "" and "default" resolve to the same launch id.
       m({
-        id: "model-8", label: "Model Eight", efforts: ["default", "none", "minimal"], default_effort: "default",
-        effort_encoding: "slug", launch_ids: { default: "model-8", none: "model-8-none", minimal: "model-8-minimal" },
+        id: "model-8",
+        label: "Model Eight",
+        efforts: ["default", "none", "minimal"],
+        default_effort: "default",
+        effort_encoding: "slug",
+        launch_ids: { default: "model-8", none: "model-8-none", minimal: "model-8-minimal" },
       }),
       // No bare slug beside its suffixed siblings, so it has no "default" level at all.
       m({
-        id: "model-10", label: "Model Ten", efforts: ["low", "high"], default_effort: "high",
-        effort_encoding: "slug", launch_ids: { low: "model-10-low", high: "model-10-high" },
+        id: "model-10",
+        label: "Model Ten",
+        efforts: ["low", "high"],
+        default_effort: "high",
+        effort_encoding: "slug",
+        launch_ids: { low: "model-10-low", high: "model-10-high" },
       }),
     ],
   }),
@@ -99,17 +194,32 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     expect(modelLabel(catalog[0], "model-3")).toBe("Model Three");
     expect(modelLabel(undefined, "zzz")).toBe("zzz");
     expect(modelOptions(catalog[0]).map((o) => o.label)).toEqual([
-      "Alpha (latest)", "Gamma (latest)", "Delta (latest)", "Model One", "Model Two", "Model Three",
+      "Alpha (latest)",
+      "Gamma (latest)",
+      "Delta (latest)",
+      "Model One",
+      "Model Two",
+      "Model Three",
     ]);
-    expect(modelOptions(catalog[0], true).map((o) => o.value)).toEqual(["alpha", "delta", "model-1", "model-2"]);
+    expect(modelOptions(catalog[0], true).map((o) => o.value)).toEqual([
+      "alpha",
+      "delta",
+      "model-1",
+      "model-2",
+    ]);
     expect(modelOptions(undefined)).toEqual([]);
-    expect(agentOptions(["claude", "agy"])).toEqual([{ value: "claude", label: "Claude" }, { value: "agy", label: "Antigravity" }]);
+    expect(agentOptions(["claude", "agy"])).toEqual([
+      { value: "claude", label: "Claude" },
+      { value: "agy", label: "Antigravity" },
+    ]);
   });
 
   it("offers a model whose id is its own alias exactly once", () => {
     // §6.7 ClaudeAliasFallback: the alias pass and the full-name pass emit the same launch id.
     const rows = modelOptions(catalog[0]);
-    expect(rows.filter((o) => o.value === "delta")).toEqual([{ value: "delta", label: "Delta (latest)" }]);
+    expect(rows.filter((o) => o.value === "delta")).toEqual([
+      { value: "delta", label: "Delta (latest)" },
+    ]);
     expect(new Set(rows.map((o) => o.value)).size).toBe(rows.length);
     const advisor = advisorOptions(catalog, ["claude"]);
     expect(new Set(advisor.map((o) => o.value)).size).toBe(advisor.length);
@@ -117,16 +227,38 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
 
   it("labels the default effort", () => {
     // The daemon sets default_effort for Claude too (high when supported, else the top level); the label reads it.
-    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "high"], default_effort: "high" }))).toBe("Default (high)");
-    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "medium"], default_effort: "medium" }))).toBe("Default (medium)");
-    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "medium"] }))).toBe("Default (medium)");
-    expect(defaultEffortLabel("codex", m({ id: "model-8", efforts: ["low", "medium"], default_effort: "medium" }))).toBe("Default (medium)");
-    expect(defaultEffortLabel("agy", m({ id: "model-8", efforts: ["low", "high"] }))).toBe("Default (high)");
+    expect(
+      defaultEffortLabel(
+        "claude",
+        m({ id: "model-8", efforts: ["low", "high"], default_effort: "high" }),
+      ),
+    ).toBe("Default (high)");
+    expect(
+      defaultEffortLabel(
+        "claude",
+        m({ id: "model-8", efforts: ["low", "medium"], default_effort: "medium" }),
+      ),
+    ).toBe("Default (medium)");
+    expect(defaultEffortLabel("claude", m({ id: "model-8", efforts: ["low", "medium"] }))).toBe(
+      "Default (medium)",
+    );
+    expect(
+      defaultEffortLabel(
+        "codex",
+        m({ id: "model-8", efforts: ["low", "medium"], default_effort: "medium" }),
+      ),
+    ).toBe("Default (medium)");
+    expect(defaultEffortLabel("agy", m({ id: "model-8", efforts: ["low", "high"] }))).toBe(
+      "Default (high)",
+    );
   });
 
   it("offers effort levels or null for models without effort", () => {
     expect(effortOptions("codex", resolveModel(catalog[1], "model-5"))).toEqual([
-      { value: "", label: "Default (medium)" }, { value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" },
+      { value: "", label: "Default (medium)" },
+      { value: "low", label: "low" },
+      { value: "medium", label: "medium" },
+      { value: "high", label: "high" },
     ]);
     expect(effortOptions("claude", resolveModel(catalog[0], "gamma"))).toBeNull();
     expect(effortOptions("claude", undefined)).toBeNull();
@@ -134,9 +266,17 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
 
   it("names the bare `default` level after the agent and drops it when it is the model's default", () => {
     // Worked example 1: the level is a real, distinct choice, so it stays and reads "Default (<Agent>)".
-    expect(effortOptions("cursor", m({
-      id: "model-9", efforts: ["default", "low", "medium", "high"], default_effort: "medium", effort_encoding: "slug",
-    }))).toEqual([
+    expect(
+      effortOptions(
+        "cursor",
+        m({
+          id: "model-9",
+          efforts: ["default", "low", "medium", "high"],
+          default_effort: "medium",
+          effort_encoding: "slug",
+        }),
+      ),
+    ).toEqual([
       { value: "", label: "Default (medium)" },
       { value: "default", label: "Default (Cursor)" },
       { value: "low", label: "low" },
@@ -152,23 +292,31 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
   });
 
   it("normalises a stored `default` that the model no longer offers", () => {
-    const stored = (model: string) => ({
-      enabled_agents: ["cursor"],
-      roles: { orchestrator: { agent: "cursor", model, effort: "default" } },
-    } as unknown as Settings);
+    const stored = (model: string) =>
+      ({
+        enabled_agents: ["cursor"],
+        roles: { orchestrator: { agent: "cursor", model, effort: "default" } },
+      }) as unknown as Settings;
     expect(prefill(stored("model-8"), "orchestrator", catalog).choice.effort).toBe("");
     expect(prefill(stored("model-6"), "orchestrator", catalog).choice.effort).toBe("default");
     // The merged level launches exactly as "" does, so there is no note to show.
-    expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-8", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-8", catalog),
+    ).toEqual({
       choice: { agent: "cursor", model: "model-8", effort: "" },
     });
     // The target has no bare level at all, so this really is a lost choice — and the note names the
     // level the way the menu spelled it, not the raw wire value.
-    expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-10", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-10", catalog),
+    ).toEqual({
       choice: { agent: "cursor", model: "model-10", effort: "" },
       note: "Default (Cursor) isn't available for Model Ten; using the default.",
     });
-    expect(changeAgent({ agent: "claude", model: "model-8", effort: "default" }, "cursor", catalog).choice.effort).toBe("");
+    expect(
+      changeAgent({ agent: "claude", model: "model-8", effort: "default" }, "cursor", catalog)
+        .choice.effort,
+    ).toBe("");
   });
 
   it("normalises a level against the model's own menu", () => {
@@ -192,16 +340,22 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
       { value: "low", label: "low" },
       { value: "high", label: "high" },
     ]);
-    expect(changeModel({ agent: "cursor", model: "model-7", effort: "default" }, "model-6", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "cursor", model: "model-7", effort: "default" }, "model-6", catalog),
+    ).toEqual({
       choice: { agent: "cursor", model: "model-6", effort: "default" },
     });
-    expect(changeModel({ agent: "cursor", model: "model-6", effort: "high" }, "model-7", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "cursor", model: "model-6", effort: "high" }, "model-7", catalog),
+    ).toEqual({
       choice: { agent: "cursor", model: "model-7", effort: "" },
       note: "high isn't available for Model Seven; using the default.",
     });
     // The level travels to the daemon untouched; launch_ids resolution is the daemon's job.
     expect(choicePayload({ agent: "cursor", model: "model-6", effort: "default" })).toEqual({
-      agent: "cursor", model: "model-6", effort: "default",
+      agent: "cursor",
+      model: "model-6",
+      effort: "default",
     });
   });
 
@@ -211,8 +365,14 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
       advisor: { agent: "claude", model: "model-2" },
     });
     const bare = { enabled_agents: ["codex"], roles: {} } as unknown as Settings;
-    expect(prefill(bare)).toEqual({ choice: { agent: "codex", model: "", effort: "" }, advisor: "none" });
-    const noAdvisor = { ...settings, roles: { ...settings.roles, advisor: { agent: "claude", model: "none" } } } as Settings;
+    expect(prefill(bare)).toEqual({
+      choice: { agent: "codex", model: "", effort: "" },
+      advisor: "none",
+    });
+    const noAdvisor = {
+      ...settings,
+      roles: { ...settings.roles, advisor: { agent: "claude", model: "none" } },
+    } as Settings;
     expect(prefill(noAdvisor).advisor).toBe("none");
   });
 
@@ -231,22 +391,37 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
 
   it("changing agent re-checks the model and never substitutes", () => {
     const r = changeAgent({ agent: "claude", model: "alpha", effort: "high" }, "codex", catalog);
-    expect(r).toEqual({ choice: { agent: "codex", model: "", effort: "" }, errors: { model: "Choose a model available for this agent." } });
-    expect(changeAgent({ agent: "codex", model: "model-1", effort: "max" }, "claude", catalog)).toEqual({
-      choice: { agent: "claude", model: "model-1", effort: "max" }, errors: {},
+    expect(r).toEqual({
+      choice: { agent: "codex", model: "", effort: "" },
+      errors: { model: "Choose a model available for this agent." },
     });
-    expect(changeAgent({ agent: "codex", model: "model-2", effort: "xhigh" }, "claude", catalog).choice.effort).toBe("");
+    expect(
+      changeAgent({ agent: "codex", model: "model-1", effort: "max" }, "claude", catalog),
+    ).toEqual({
+      choice: { agent: "claude", model: "model-1", effort: "max" },
+      errors: {},
+    });
+    expect(
+      changeAgent({ agent: "codex", model: "model-2", effort: "xhigh" }, "claude", catalog).choice
+        .effort,
+    ).toBe("");
   });
 
   it("changing model keeps a supported level and otherwise resets with a note", () => {
-    expect(changeModel({ agent: "claude", model: "model-1", effort: "high" }, "model-2", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "claude", model: "model-1", effort: "high" }, "model-2", catalog),
+    ).toEqual({
       choice: { agent: "claude", model: "model-2", effort: "high" },
     });
-    expect(changeModel({ agent: "claude", model: "model-1", effort: "xhigh" }, "model-2", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "claude", model: "model-1", effort: "xhigh" }, "model-2", catalog),
+    ).toEqual({
       choice: { agent: "claude", model: "model-2", effort: "" },
       note: "xhigh isn't available for Model Two; using the default.",
     });
-    expect(changeModel({ agent: "claude", model: "model-1", effort: "" }, "model-3", catalog)).toEqual({
+    expect(
+      changeModel({ agent: "claude", model: "model-1", effort: "" }, "model-3", catalog),
+    ).toEqual({
       choice: { agent: "claude", model: "model-3", effort: "" },
     });
   });
@@ -255,63 +430,119 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     const ok = { agent: "claude", model: "alpha", effort: "" } as const;
     expect(validateChoice(ok, "none", catalog, ["claude"], "orchestrator")).toEqual({});
     expect(isValid({})).toBe(true);
-    expect(validateChoice({ ...ok, model: "" }, "none", catalog, ["claude"], "orchestrator")).toEqual({ model: "Choose a model available for this agent." });
-    expect(validateChoice({ ...ok, model: "gone-1" }, "none", catalog, ["claude"], "orchestrator")).toEqual({ model: "gone-1 is no longer offered by Claude." });
-    expect(validateChoice(ok, { agent: "claude", model: "gone-2" }, catalog, ["claude"], "orchestrator")).toEqual({ advisor: "gone-2 is no longer offered by Claude." });
+    expect(
+      validateChoice({ ...ok, model: "" }, "none", catalog, ["claude"], "orchestrator"),
+    ).toEqual({ model: "Choose a model available for this agent." });
+    expect(
+      validateChoice({ ...ok, model: "gone-1" }, "none", catalog, ["claude"], "orchestrator"),
+    ).toEqual({ model: "gone-1 is no longer offered by Claude." });
+    expect(
+      validateChoice(ok, { agent: "claude", model: "gone-2" }, catalog, ["claude"], "orchestrator"),
+    ).toEqual({ advisor: "gone-2 is no longer offered by Claude." });
     const broken = [entry({ kind: "claude", models: catalog[0]!.models, installed: false })];
-    expect(validateChoice(ok, "none", broken, ["claude"], "orchestrator")).toEqual({ agent: "Claude isn't installed on this Mac." });
+    expect(validateChoice(ok, "none", broken, ["claude"], "orchestrator")).toEqual({
+      agent: "Claude isn't installed on this Mac.",
+    });
     const signedOut = [entry({ kind: "claude", models: catalog[0]!.models, auth_ok: false })];
-    expect(validateChoice(ok, "none", signedOut, ["claude"], "orchestrator")).toEqual({ agent: "Claude isn't signed in. Run `claude` in a terminal." });
+    expect(validateChoice(ok, "none", signedOut, ["claude"], "orchestrator")).toEqual({
+      agent: "Claude isn't signed in. Run `claude` in a terminal.",
+    });
     const noSp = [entry({ kind: "claude", models: catalog[0]!.models, superpowers: false })];
-    expect(validateChoice(ok, "none", noSp, ["claude"], "orchestrator")).toEqual({ agent: "Install the superpowers plugin for Claude to run orchestrators." });
+    expect(validateChoice(ok, "none", noSp, ["claude"], "orchestrator")).toEqual({
+      agent: "Install the superpowers plugin for Claude to run orchestrators.",
+    });
     expect(validateChoice(ok, "none", noSp, ["claude"], "coder")).toEqual({});
     // Ruling (fix round 2): the invalid-agent sentinel carries a message the form can show.
-    expect(validateChoice({ agent: "", model: "", effort: "" }, "none", catalog, ["claude"], "orchestrator"))
-      .toEqual({ agent: "Choose an agent." });
-    expect(validateChoice({ ...ok, agent: "codex" }, "none", catalog, ["claude"], "orchestrator"))
-      .toEqual({ agent: "Choose an agent." });
+    expect(
+      validateChoice(
+        { agent: "", model: "", effort: "" },
+        "none",
+        catalog,
+        ["claude"],
+        "orchestrator",
+      ),
+    ).toEqual({ agent: "Choose an agent." });
+    expect(
+      validateChoice({ ...ok, agent: "codex" }, "none", catalog, ["claude"], "orchestrator"),
+    ).toEqual({ agent: "Choose an agent." });
     expect(isValid({ agent: "Choose an agent." })).toBe(false);
   });
 
   it("notes a stale catalog", () => {
     const stale = entry({
-      kind: "claude", models: [], catalog_stale: true, catalog_error: "timeout", catalog_fetched_at: 3_600_000,
+      kind: "claude",
+      models: [],
+      catalog_stale: true,
+      catalog_error: "timeout",
+      catalog_fetched_at: 3_600_000,
     });
-    expect(catalogNote(stale, 4 * 3_600_000)).toBe("Model list from 3h ago. Couldn't refresh: timeout");
+    expect(catalogNote(stale, 4 * 3_600_000)).toBe(
+      "Model list from 3h ago. Couldn't refresh: timeout",
+    );
     expect(catalogNote(catalog[0])).toBeUndefined();
   });
 
   it("says never fetched instead of an age when the catalog has no timestamp", () => {
     // Ruling (fix round 2): catalog_fetched_at 0 means never fetched.
-    const never = entry({ kind: "claude", models: [], catalog_stale: true, catalog_error: "timeout", catalog_fetched_at: 0 });
+    const never = entry({
+      kind: "claude",
+      models: [],
+      catalog_stale: true,
+      catalog_error: "timeout",
+      catalog_fetched_at: 0,
+    });
     expect(catalogNote(never, 3 * 3_600_000)).toBe("Never fetched. Couldn't refresh: timeout");
-    expect(catalogNote({ ...never, catalog_fetched_at: -1 }, 3 * 3_600_000)).toBe("Never fetched. Couldn't refresh: timeout");
+    expect(catalogNote({ ...never, catalog_fetched_at: -1 }, 3 * 3_600_000)).toBe(
+      "Never fetched. Couldn't refresh: timeout",
+    );
     expect(catalogNote({ ...never, catalog_error: "" }, 3 * 3_600_000)).toBe("Never fetched");
   });
 
   it("re-checks the Settings advisor effort against the chosen advisor model", () => {
     // Settings guarantees the level only for the Settings model; the user may pick another pair.
-    expect(advisorPayload({ agent: "claude", model: "gamma" }, settings, catalog)).toEqual({ agent: "claude", model: "gamma" });
+    expect(advisorPayload({ agent: "claude", model: "gamma" }, settings, catalog)).toEqual({
+      agent: "claude",
+      model: "gamma",
+    });
     // Ruling (fix round 2): send no effort at all — the daemon substitutes its own default before
     // the launch-id lookup, so the launch id is identical and the payload is smaller.
     expect(advisorPayload({ agent: "cursor", model: "model-7" }, settings, catalog)).toEqual({
-      agent: "cursor", model: "model-7",
+      agent: "cursor",
+      model: "model-7",
     });
-    expect(advisorPayload({ agent: "claude", model: "gone-2" }, settings, catalog)).toEqual({ agent: "claude", model: "gone-2" });
+    expect(advisorPayload({ agent: "claude", model: "gone-2" }, settings, catalog)).toEqual({
+      agent: "claude",
+      model: "gone-2",
+    });
   });
 
   it("builds advisor options, codecs and payloads", () => {
     expect(advisorOptions(catalog, ["claude", "codex"]).map((o) => o.label)).toEqual([
-      "Claude · Alpha (latest)", "Claude · Delta (latest)", "Claude · Model One", "Claude · Model Two",
-      "Codex · Model Five", "No advisor",
+      "Claude · Alpha (latest)",
+      "Claude · Delta (latest)",
+      "Claude · Model One",
+      "Claude · Model Two",
+      "Codex · Model Five",
+      "No advisor",
     ]);
     expect(encodeAdvisor({ agent: "claude", model: "alpha" })).toBe("claude:alpha");
     expect(encodeAdvisor("none")).toBe("none");
     expect(decodeAdvisor("codex:model-5")).toEqual({ agent: "codex", model: "model-5" });
     expect(decodeAdvisor("none")).toBe("none");
-    expect(advisorPayload({ agent: "claude", model: "alpha" }, settings, catalog)).toEqual({ agent: "claude", model: "alpha", effort: "high" });
+    expect(advisorPayload({ agent: "claude", model: "alpha" }, settings, catalog)).toEqual({
+      agent: "claude",
+      model: "alpha",
+      effort: "high",
+    });
     expect(advisorPayload("none", settings, catalog)).toBe("none");
-    expect(choicePayload({ agent: "claude", model: "alpha", effort: "" })).toEqual({ agent: "claude", model: "alpha" });
-    expect(choicePayload({ agent: "codex", model: "model-5", effort: "high" })).toEqual({ agent: "codex", model: "model-5", effort: "high" });
+    expect(choicePayload({ agent: "claude", model: "alpha", effort: "" })).toEqual({
+      agent: "claude",
+      model: "alpha",
+    });
+    expect(choicePayload({ agent: "codex", model: "model-5", effort: "high" })).toEqual({
+      agent: "codex",
+      model: "model-5",
+      effort: "high",
+    });
   });
 });

@@ -12,7 +12,14 @@ describe("local storage helpers", () => {
   });
 
   it("survives a throwing storage", () => {
-    const broken = { getItem: vi.fn(() => { throw new Error("denied"); }), setItem: vi.fn(() => { throw new Error("denied"); }) } as unknown as Storage;
+    const broken = {
+      getItem: vi.fn(() => {
+        throw new Error("denied");
+      }),
+      setItem: vi.fn(() => {
+        throw new Error("denied");
+      }),
+    } as unknown as Storage;
     expect(readJson(broken, "k", 5)).toBe(5);
     expect(() => writeJson(broken, "k", 1)).not.toThrow();
   });

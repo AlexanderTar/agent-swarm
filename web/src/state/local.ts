@@ -26,8 +26,13 @@ export function writeJson(store: Storage | null, key: string, value: unknown): v
   }
 }
 
-export function useLocalSet(key: string, initial: readonly string[]): [Set<string>, (id: string) => void] {
-  const [set, setSet] = useState(() => new Set(readJson<string[]>(storage("localStorage"), key, [...initial])));
+export function useLocalSet(
+  key: string,
+  initial: readonly string[],
+): [Set<string>, (id: string) => void] {
+  const [set, setSet] = useState(
+    () => new Set(readJson<string[]>(storage("localStorage"), key, [...initial])),
+  );
   const toggle = useCallback(
     (id: string) =>
       setSet((prev) => {

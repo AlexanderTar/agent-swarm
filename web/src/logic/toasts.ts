@@ -3,14 +3,24 @@ import type { AgentEndpoint, AgentNode } from "../types";
 
 export type AgentVerb = AgentEndpoint;
 
-export function agentActionToast(verb: AgentVerb, name: string, scope?: "session" | "subtree"): string {
+export function agentActionToast(
+  verb: AgentVerb,
+  name: string,
+  scope?: "session" | "subtree",
+): string {
   switch (verb) {
-    case "pause": return scope === "subtree" ? T.toastPausedGroup(name) : T.toastPaused(name);
-    case "resume": return T.toastResumed(name);
-    case "cancel": return T.toastCancelled(name);
-    case "ack": return T.toastAcked(name);
-    case "retry": return T.toastRetrying(name);
-    case "terminal": return T.toastTerminal(name);
+    case "pause":
+      return scope === "subtree" ? T.toastPausedGroup(name) : T.toastPaused(name);
+    case "resume":
+      return T.toastResumed(name);
+    case "cancel":
+      return T.toastCancelled(name);
+    case "ack":
+      return T.toastAcked(name);
+    case "retry":
+      return T.toastRetrying(name);
+    case "terminal":
+      return T.toastTerminal(name);
   }
 }
 

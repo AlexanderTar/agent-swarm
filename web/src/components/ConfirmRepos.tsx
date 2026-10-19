@@ -8,25 +8,43 @@ import { knownRepos, toggleRepo } from "../logic/repos";
 import type { ConfirmReposBody, Request } from "../types";
 import { RepoPicker } from "./RepoPicker";
 import { useToast } from "./Toast";
+import { Alert } from "./ui/alert";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { Badge } from "./ui/badge";
-import { Alert } from "./ui/alert";
 
-function Rows({ title, rows, checked, onToggle }: { title: string; rows: ConfirmRow[]; checked: string[]; onToggle(id: string): void }) {
+function Rows({
+  title,
+  rows,
+  checked,
+  onToggle,
+}: { title: string; rows: ConfirmRow[]; checked: string[]; onToggle(id: string): void }) {
   if (rows.length === 0) return null;
   return (
     <fieldset className="space-y-1">
       <legend className="font-medium">{title}</legend>
       {rows.map((r) => (
         <Label key={r.id} className="flex items-start gap-2">
-          <Checkbox checked={checked.includes(r.id)} disabled={r.repo?.missing} onCheckedChange={() => onToggle(r.id)} />
+          <Checkbox
+            checked={checked.includes(r.id)}
+            disabled={r.repo?.missing}
+            onCheckedChange={() => onToggle(r.id)}
+          />
           <span>
-            <span className="font-medium">{r.name}</span> <span className="text-muted-foreground">{r.subtitle}</span>
-            {r.youSelected && <Badge variant="outline" className="ml-2">{C.youSelected}</Badge>}
-            {r.reason && <span className="block leading-normal text-muted-foreground">{T.reason(r.reason)}</span>}
+            <span className="font-medium">{r.name}</span>{" "}
+            <span className="text-muted-foreground">{r.subtitle}</span>
+            {r.youSelected && (
+              <Badge variant="outline" className="ml-2">
+                {C.youSelected}
+              </Badge>
+            )}
+            {r.reason && (
+              <span className="block leading-normal text-muted-foreground">
+                {T.reason(r.reason)}
+              </span>
+            )}
           </span>
         </Label>
       ))}
@@ -43,7 +61,10 @@ export function ConfirmRepos({ request, connected }: { request: Request; connect
   const [error, setError] = useState("");
   const [stale, setStale] = useState(false);
   const invalidate = useInvalidate();
-  const confirm = useMutation((api, body: ConfirmReposBody) => api.confirmRepos(request.id, body), ["requests", "items", "item:"]);
+  const confirm = useMutation(
+    (api, body: ConfirmReposBody) => api.confirmRepos(request.id, body),
+    ["requests", "items", "item:"],
+  );
   const toggle = (id: string) => setChecked((c) => toggleRepo(c, id));
 
   const submit = async () => {
@@ -66,11 +87,21 @@ export function ConfirmRepos({ request, connected }: { request: Request; connect
       {stale && <Alert variant="destructive">{C.staleApproval}</Alert>}
       <p className="italic">{`“${request.prompt}”`}</p>
       <Rows title={C.proposed} rows={model.proposed} checked={checked} onToggle={toggle} />
-      <Rows title={C.suggestedAdditions} rows={model.additions} checked={checked} onToggle={toggle} />
+      <Rows
+        title={C.suggestedAdditions}
+        rows={model.additions}
+        checked={checked}
+        onToggle={toggle}
+      />
       <RepoPicker label={C.addAnother} selected={checked} onChange={setChecked} />
       <label className="block">
         <span>{C.commentOptional}</span>
-        <Input aria-label={C.commentOptional} value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1" />
+        <Input
+          aria-label={C.commentOptional}
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          className="mt-1"
+        />
       </label>
       {error && <p className="text-destructive">{error}</p>}
       <Button type="button" disabled={!connected || confirm.pending} onClick={() => void submit()}>

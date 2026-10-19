@@ -6,28 +6,42 @@ import { ArtifactViewer } from "../components/ArtifactViewer";
 import { CheckpointList } from "../components/CheckpointList";
 import { MergeList } from "../components/MergeList";
 import { MoveToMenu } from "../components/MoveToMenu";
-import { TodoList } from "../components/TodoList";
 import { useToast } from "../components/Toast";
+import { TodoList } from "../components/TodoList";
 import { WorkflowSection } from "../components/WorkflowSection";
 import { Alert } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useConnection, useInvalidate, useMutation } from "../data/hooks";
-import { useSession } from "../state/session";
 import { qk, useItemDetail } from "../data/queries";
 import { displayState, flattenAgents, isFinished } from "../logic/agentActions";
-import { agentActionToast } from "../logic/toasts";
 import { ARTIFACT_LABEL, requestTitle } from "../logic/requestTitle";
+import { agentActionToast } from "../logic/toasts";
 import { checkMove, failureMessage } from "../logic/transitions";
+import { useSession } from "../state/session";
 import type { Item, ItemStatus, PatchItemBody, Priority } from "../types";
 import type { DetailsProps } from "../views/props";
 
-function Editable(p: { label: string; value: string; multiline?: boolean; maxLength?: number; disabled: boolean; onSave(v: string): Promise<boolean>; className?: string }) {
+function Editable(p: {
+  label: string;
+  value: string;
+  multiline?: boolean;
+  maxLength?: number;
+  disabled: boolean;
+  onSave(v: string): Promise<boolean>;
+  className?: string;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(p.value);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -35,7 +49,10 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
   // apart from "freshly mounted" (both look like `editing === false`).
   const wasEditing = useRef(editing);
   const save = async () => {
-    if (draft === p.value) { setEditing(false); return; }
+    if (draft === p.value) {
+      setEditing(false);
+      return;
+    }
     // Keep the editor open (and the typed draft) until the save actually settles. A failed PATCH
     // must not discard what the user typed or fall back to the server's stale copy — only a
     // success closes the editor.
@@ -63,7 +80,10 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
         variant="ghost"
         aria-label={p.multiline ? p.label : undefined}
         disabled={p.disabled}
-        onClick={() => { setDraft(p.value); setEditing(true); }}
+        onClick={() => {
+          setDraft(p.value);
+          setEditing(true);
+        }}
         className={`h-auto max-md:h-auto min-h-8 max-md:min-h-11 w-full justify-start whitespace-pre-wrap [overflow-wrap:anywhere] p-1 text-left ${p.className ?? ""}`}
       >
         {p.value || <span className="text-muted-foreground">—</span>}
@@ -81,7 +101,11 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
   return p.multiline ? (
     <Textarea {...common} rows={4} onChange={(e) => setDraft(e.target.value)} />
   ) : (
-    <Input {...common} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+    <Input
+      {...common}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => e.key === "Enter" && save()}
+    />
   );
 }
 
@@ -96,7 +120,10 @@ export function Details(p: DetailsProps) {
   const agentsNode = useRef<HTMLElement | null>(null);
   const [stale, setStale] = useState(false);
   const [viewing, setViewing] = useState<{ id: string; revision: number } | null>(null);
-  const patch = useMutation((api, key: string, body: PatchItemBody) => api.patchItem(key, body), ["items", "item:", "graph:"]);
+  const patch = useMutation(
+    (api, key: string, body: PatchItemBody) => api.patchItem(key, body),
+    ["items", "item:", "graph:"],
+  );
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
 
   useEffect(() => {
@@ -112,7 +139,10 @@ export function Details(p: DetailsProps) {
   const setAgentsRef = (node: HTMLElement | null) => {
     agentsNode.current = node;
     if (!node || pendingAgentScroll.current === null) return;
-    if (pendingAgentScroll.current) node.querySelector<HTMLElement>(`#agent-${pendingAgentScroll.current}`)?.scrollIntoView?.({ block: "center" });
+    if (pendingAgentScroll.current)
+      node
+        .querySelector<HTMLElement>(`#agent-${pendingAgentScroll.current}`)
+        ?.scrollIntoView?.({ block: "center" });
     else node.scrollIntoView?.({ block: "start" });
     pendingAgentScroll.current = null;
   };
@@ -129,7 +159,14 @@ export function Details(p: DetailsProps) {
       </Alert>
     );
   }
-  if (!d) return <div className="space-y-3 p-4" aria-label={C.openDetails}>{[1, 2, 3].map((n) => <div key={n} className="h-3 animate-pulse rounded bg-muted motion-reduce:animate-none" />)}</div>;
+  if (!d)
+    return (
+      <div className="space-y-3 p-4" aria-label={C.openDetails}>
+        {[1, 2, 3].map((n) => (
+          <div key={n} className="h-3 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+        ))}
+      </div>
+    );
   const item = d.item;
 
   const save = async (body: Omit<PatchItemBody, "revision">): Promise<boolean> => {
@@ -167,7 +204,10 @@ export function Details(p: DetailsProps) {
   const topLevel = item.parent_key === null;
   const open = item.status !== "done" && item.status !== "cancelled";
   const orchestrator = flattenAgents(d.agents).find(
-    (a) => a.role === "orchestrator" && a.item_key === item.key && (a.state === "active" || a.state === "queued"),
+    (a) =>
+      a.role === "orchestrator" &&
+      a.item_key === item.key &&
+      (a.state === "active" || a.state === "queued"),
   );
   const crumbs = [...d.ancestors.map((a) => a.key), item.key].join(" › ");
 
@@ -179,12 +219,21 @@ export function Details(p: DetailsProps) {
           <span className="key text-muted-foreground">{crumbs}</span>
           <Badge variant="outline">{TYPE_LABEL[item.type]}</Badge>
         </div>
-        <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
+        <MoveToMenu
+          item={item}
+          buttonLabel={STATUS_LABEL[item.status]}
+          disabled={!p.connected || patch.pending}
+          onMove={onMove}
+        />
       </div>
       {(item.waivers?.length || item.override) && (
         <ul className="space-y-0.5 text-warning/80">
-          {item.waivers?.map((w) => <li key={w.gate}>{C.waivedRow(w.gate, w.reason)}</li>)}
-          {item.override && <li>{C.overrideRow(STATUS_LABEL[item.override.status], item.override.reason)}</li>}
+          {item.waivers?.map((w) => (
+            <li key={w.gate}>{C.waivedRow(w.gate, w.reason)}</li>
+          ))}
+          {item.override && (
+            <li>{C.overrideRow(STATUS_LABEL[item.override.status], item.override.reason)}</li>
+          )}
         </ul>
       )}
       <Editable
@@ -198,16 +247,31 @@ export function Details(p: DetailsProps) {
       <div className="flex items-center justify-between gap-2">
         <label className="flex items-center gap-1">
           {C.priority}
-          <Select value={String(item.priority)} disabled={!p.connected || patch.pending} onValueChange={(value) => void save({ priority: Number(value) as Priority })}>
-            <SelectTrigger aria-label={C.priority} size="sm"><SelectValue /></SelectTrigger>
-            <SelectContent>{[0, 1, 2, 3].map((n) => <SelectItem key={n} value={String(n)}>{`P${n}`}</SelectItem>)}</SelectContent>
+          <Select
+            value={String(item.priority)}
+            disabled={!p.connected || patch.pending}
+            onValueChange={(value) => void save({ priority: Number(value) as Priority })}
+          >
+            <SelectTrigger aria-label={C.priority} size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[0, 1, 2, 3].map((n) => (
+                <SelectItem key={n} value={String(n)}>{`P${n}`}</SelectItem>
+              ))}
+            </SelectContent>
           </Select>
         </label>
       </div>
 
-      {d.merges?.length && (item.status === "in_review" || d.merges.some((m) => m.kind === "kept")) ? <MergeList merges={d.merges} /> : null}
+      {d.merges?.length &&
+      (item.status === "in_review" || d.merges.some((m) => m.kind === "kept")) ? (
+        <MergeList merges={d.merges} />
+      ) : null}
       {item.status === "in_review" && d.merges?.length === 0 && (
-        <p className="border-t border-border pt-3 text-muted-foreground">{C.awaitingOrchestrator}</p>
+        <p className="border-t border-border pt-3 text-muted-foreground">
+          {C.awaitingOrchestrator}
+        </p>
       )}
       {d.todos && <TodoList todos={d.todos} onSelect={p.onSelect} />}
 
@@ -221,43 +285,83 @@ export function Details(p: DetailsProps) {
         <TabsContent value="overview" className="space-y-3">
           <div>
             <h4 className="text-muted-foreground">{C.brief}</h4>
-            <Editable label={C.brief} value={item.brief} multiline disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
+            <Editable
+              label={C.brief}
+              value={item.brief}
+              multiline
+              disabled={!p.connected || patch.pending}
+              onSave={(brief) => save({ brief })}
+            />
           </div>
           {item.acceptance.length > 0 && (
             <div>
               <h4 className="text-muted-foreground">{C.acceptance}</h4>
-              <ul className="list-disc pl-5">{item.acceptance.map((a) => <li key={a}>{a}</li>)}</ul>
+              <ul className="list-disc pl-5">
+                {item.acceptance.map((a) => (
+                  <li key={a}>{a}</li>
+                ))}
+              </ul>
             </div>
           )}
-          <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={remote ? undefined : (name) => {
-            if (!live.connected) return;
-            const epoch = live.epoch;
-            void terminal.run(name).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", name)); })
-              .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast({ message: errorText(e) }); });
-          }} />
+          <WorkflowSection
+            workflow={item.workflow}
+            state={d.workflow_state}
+            connected={p.connected}
+            onOpenTerminal={
+              remote
+                ? undefined
+                : (name) => {
+                    if (!live.connected) return;
+                    const epoch = live.epoch;
+                    void terminal
+                      .run(name)
+                      .then(() => {
+                        if (live.connected && live.epoch === epoch)
+                          toast.success(agentActionToast("terminal", name));
+                      })
+                      .catch((e: unknown) => {
+                        if (live.connected && live.epoch === epoch)
+                          toast({ message: errorText(e) });
+                      });
+                  }
+            }
+          />
           <section aria-label={C.agents} className="border-t border-border pt-3">
             <h3 className="mb-1 font-semibold">{C.agents}</h3>
             <ul className="space-y-1 text-sm">
-              {flattenAgents(d.agents).filter((agent) => !isFinished(agent)).map((agent) => (
-                <li key={agent.id} className="flex justify-between gap-2">
-                  <span className="truncate">{agent.name}</span>
-                  <span className="shrink-0 text-muted-foreground">{displayState(agent)}</span>
-                </li>
-              ))}
+              {flattenAgents(d.agents)
+                .filter((agent) => !isFinished(agent))
+                .map((agent) => (
+                  <li key={agent.id} className="flex justify-between gap-2">
+                    <span className="truncate">{agent.name}</span>
+                    <span className="shrink-0 text-muted-foreground">{displayState(agent)}</span>
+                  </li>
+                ))}
             </ul>
           </section>
           {d.artifacts.length > 0 && (
             <div>
               <h4 className="text-muted-foreground">{C.artifacts}</h4>
               {d.artifacts.map((a) => (
-                <Button key={a.id} type="button" variant="link" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block h-auto p-0">
+                <Button
+                  key={a.id}
+                  type="button"
+                  variant="link"
+                  onClick={() => setViewing({ id: a.id, revision: a.head_revision })}
+                  className="block h-auto p-0"
+                >
                   {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
                 </Button>
               ))}
             </div>
           )}
           {item.origin_spike_key && (
-            <Button type="button" variant="link" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="h-auto p-0">
+            <Button
+              type="button"
+              variant="link"
+              onClick={() => p.onSelect(item.origin_spike_key ?? "")}
+              className="h-auto p-0"
+            >
               {T.startedFrom(item.origin_spike_key)}
             </Button>
           )}
@@ -265,12 +369,21 @@ export function Details(p: DetailsProps) {
             <section aria-label={C.needsYou} className="border-t border-border pt-3">
               <h3 className="mb-1 font-semibold">{C.needsYou}</h3>
               <ul className="space-y-1">
-                {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
-                  <li key={r.id} className="flex items-center justify-between gap-2">
-                    <span className="truncate">{requestTitle(r)}</span>
-                    <Button type="button" variant="link" onClick={() => p.onReview(r.id)} className="h-auto p-0">{C.review}</Button>
-                  </li>
-                ))}
+                {[...d.requests]
+                  .sort((a, b) => a.created_at - b.created_at)
+                  .map((r) => (
+                    <li key={r.id} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{requestTitle(r)}</span>
+                      <Button
+                        type="button"
+                        variant="link"
+                        onClick={() => p.onReview(r.id)}
+                        className="h-auto p-0"
+                      >
+                        {C.review}
+                      </Button>
+                    </li>
+                  ))}
               </ul>
             </section>
           )}
@@ -281,14 +394,25 @@ export function Details(p: DetailsProps) {
           </section>
         </TabsContent>
         <TabsContent value="checkpoints">
-          <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
+          <CheckpointList
+            itemKey={item.key}
+            agentNames={flattenAgents(d.agents).map((a) => a.name)}
+          />
         </TabsContent>
         <TabsContent value="deps" className="space-y-3">
           {d.deps.blocked_by.length > 0 && (
             <p>
               {`${C.blockedBy}: `}
               {d.deps.blocked_by.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<Button type="button" variant="link" onClick={() => p.onSelect(b.key)} className="h-auto p-0">{`${b.key} (${STATUS_LABEL[b.status]})`}</Button></span>
+                <span key={b.key}>
+                  {i > 0 && ", "}
+                  <Button
+                    type="button"
+                    variant="link"
+                    onClick={() => p.onSelect(b.key)}
+                    className="h-auto p-0"
+                  >{`${b.key} (${STATUS_LABEL[b.status]})`}</Button>
+                </span>
               ))}
             </p>
           )}
@@ -296,7 +420,17 @@ export function Details(p: DetailsProps) {
             <p>
               {`${C.blocks}: `}
               {d.deps.blocks.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<Button type="button" variant="link" onClick={() => p.onSelect(b.key)} className="h-auto p-0">{b.key}</Button></span>
+                <span key={b.key}>
+                  {i > 0 && ", "}
+                  <Button
+                    type="button"
+                    variant="link"
+                    onClick={() => p.onSelect(b.key)}
+                    className="h-auto p-0"
+                  >
+                    {b.key}
+                  </Button>
+                </span>
               ))}
             </p>
           )}
@@ -311,21 +445,37 @@ export function Details(p: DetailsProps) {
               type="button"
               variant="outline"
               onClick={() => {
-                if (tab === "agents") document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" });
-                else { pendingAgentScroll.current = orchestrator.name; setTab("agents"); }
+                if (tab === "agents")
+                  document
+                    .getElementById(`agent-${orchestrator.name}`)
+                    ?.scrollIntoView?.({ block: "center" });
+                else {
+                  pendingAgentScroll.current = orchestrator.name;
+                  setTab("agents");
+                }
               }}
             >
               {C.viewOrchestrator}
             </Button>
           ) : (
-            <Button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)}>
+            <Button
+              type="button"
+              disabled={!p.connected}
+              onClick={() => p.onStartOrchestrator(item)}
+            >
               {C.startOrchestrator}
             </Button>
           )}
         </div>
       )}
 
-      {viewing && <ArtifactViewer artifactId={viewing.id} revision={viewing.revision} onClose={() => setViewing(null)} />}
+      {viewing && (
+        <ArtifactViewer
+          artifactId={viewing.id}
+          revision={viewing.revision}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   );
 }

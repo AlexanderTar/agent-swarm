@@ -1,6 +1,10 @@
 import type { BoardEvent, ConnState } from "./types";
 
-export interface SseMessage { id: string | null; event: string; data: string }
+export interface SseMessage {
+  id: string | null;
+  event: string;
+  data: string;
+}
 
 export function createSseParser(): (chunk: string) => SseMessage[] {
   let buf = "";
@@ -15,7 +19,8 @@ export function createSseParser(): (chunk: string) => SseMessage[] {
     for (const rawLine of lines) {
       const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
       if (line === "") {
-        if (data.length > 0 || event !== "") out.push({ id, event: event || "message", data: data.join("\n") });
+        if (data.length > 0 || event !== "")
+          out.push({ id, event: event || "message", data: data.join("\n") });
         event = "";
         data = [];
         continue;
@@ -55,7 +60,11 @@ export interface EventsOptions {
   backoffMs?: readonly number[];
 }
 
-export interface EventsHandle { close(): void; retryNow(): void; lastEventId(): string | null }
+export interface EventsHandle {
+  close(): void;
+  retryNow(): void;
+  lastEventId(): string | null;
+}
 
 export function connectEvents(o: EventsOptions): EventsHandle {
   const fetchFn = o.fetchFn ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -73,9 +82,16 @@ export function connectEvents(o: EventsOptions): EventsHandle {
     running = true;
     ctrl = new AbortController();
     try {
-      const headers: Record<string, string> = { ...(await o.headers()), Accept: "text/event-stream" };
+      const headers: Record<string, string> = {
+        ...(await o.headers()),
+        Accept: "text/event-stream",
+      };
       if (lastId !== null) headers["Last-Event-ID"] = lastId;
-      const res = await fetchFn(o.url, { headers, credentials: "same-origin", signal: ctrl.signal });
+      const res = await fetchFn(o.url, {
+        headers,
+        credentials: "same-origin",
+        signal: ctrl.signal,
+      });
       if (res.status === 401) o.onUnauthorized?.();
       if (!res.ok || !res.body) throw new Error(`events: HTTP ${res.status}`);
       failures = 0;
@@ -88,7 +104,11 @@ export function connectEvents(o: EventsOptions): EventsHandle {
         if (done) break;
         for (const m of parse(decoder.decode(value, { stream: true }))) {
           // the cursor advances only once the handler has taken the event, so a throw replays it
-          o.onEvent({ seq: m.id === null ? null : Number(m.id), type: m.event, data: parseData(m.data) });
+          o.onEvent({
+            seq: m.id === null ? null : Number(m.id),
+            type: m.event,
+            data: parseData(m.data),
+          });
           if (m.id !== null) lastId = m.id;
         }
       }

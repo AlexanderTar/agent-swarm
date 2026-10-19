@@ -6,20 +6,28 @@ import { Markdown } from "../components/Markdown";
 import { QuestionView } from "../components/QuestionView";
 import { RequestChanges } from "../components/RequestChanges";
 import { useToast } from "../components/Toast";
-import { Button } from "../components/ui/button";
 import { Alert } from "../components/ui/alert";
+import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation, useQuery } from "../data/hooks";
 import { useArtifact, useCheckpoints, useItemDetail } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
-import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
+import {
+  SCOPE_LABEL,
+  agentOptions,
+  approveBody,
+  closeResolution,
+  gitBindingLine,
+  isApprovalKind,
+  reviewHeader,
+} from "../logic/review";
 import { verifyLine } from "../logic/timeline";
 import type { AcceptBinding, MergeChoice, Request } from "../types";
 
 function Snapshot({ r }: { r: Request }) {
   const [full, setFull] = useState(false);
-  const section = r.kind === "approve_section" && !full ? r.section_id ?? undefined : undefined;
+  const section = r.kind === "approve_section" && !full ? (r.section_id ?? undefined) : undefined;
   const art = useArtifact(r.artifact_id, r.artifact_revision ?? undefined, section);
   // Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder.
   if (art.error) {
@@ -37,12 +45,22 @@ function Snapshot({ r }: { r: Request }) {
       {r.kind === "approve_plan" && art.data?.warnings && art.data.warnings.length > 0 && (
         <Alert aria-label="Plan warnings" className="border-warning text-warning">
           <h3 className="font-semibold">Plan warnings</h3>
-          <ul className="list-disc pl-5">{art.data.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>
+          <ul className="list-disc pl-5">
+            {art.data.warnings.map((warning, i) => (
+              <li key={i}>{warning}</li>
+            ))}
+          </ul>
         </Alert>
       )}
-      {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted-foreground">…</p>}
+      {art.data ? (
+        <Markdown>{art.data.markdown}</Markdown>
+      ) : (
+        <p className="text-muted-foreground">…</p>
+      )}
       {r.kind === "approve_section" && !full && (
-        <Button type="button" variant="link" size="sm" onClick={() => setFull(true)}>{C.viewFullSpec}</Button>
+        <Button type="button" variant="link" size="sm" onClick={() => setFull(true)}>
+          {C.viewFullSpec}
+        </Button>
       )}
     </div>
   );
@@ -82,24 +100,45 @@ function AcceptBody({ r }: { r: Request }) {
   const plan = detail.data?.artifacts.find((a) => a.kind === "plan");
   return (
     <div className="space-y-3">
-      <ul className="key space-y-0.5">{binding.git.map((g) => <li key={`${g.repo}${g.sha}`}>{gitBindingLine(g)}</li>)}</ul>
+      <ul className="key space-y-0.5">
+        {binding.git.map((g) => (
+          <li key={`${g.repo}${g.sha}`}>{gitBindingLine(g)}</li>
+        ))}
+      </ul>
       {integrated && (
-        <ul className="space-y-0.5">{integrated.verification.map((v) => <li key={v.cmd}>{verifyLine(v)}</li>)}</ul>
+        <ul className="space-y-0.5">
+          {integrated.verification.map((v) => (
+            <li key={v.cmd}>{verifyLine(v)}</li>
+          ))}
+        </ul>
       )}
       <ul aria-label="Children" className="space-y-1">
         {children.map((c, i) => (
           <li key={c.key}>
             {`${c.key} ${c.title} — ${STATUS_LABEL[c.status]}`}
-            {finals.data?.[i] && <span className="text-muted-foreground">{` · ${finals.data[i]?.summary}`}</span>}
+            {finals.data?.[i] && (
+              <span className="text-muted-foreground">{` · ${finals.data[i]?.summary}`}</span>
+            )}
           </li>
         ))}
       </ul>
       {plan && (
-        <Button type="button" variant="link" size="sm" onClick={() => setViewing({ id: plan.id, revision: plan.head_revision })}>
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          onClick={() => setViewing({ id: plan.id, revision: plan.head_revision })}
+        >
           {`${ARTIFACT_LABEL.plan} · rev ${plan.head_revision} · ${C.view}`}
         </Button>
       )}
-      {viewing && <ArtifactViewer artifactId={viewing.id} revision={viewing.revision} onClose={() => setViewing(null)} />}
+      {viewing && (
+        <ArtifactViewer
+          artifactId={viewing.id}
+          revision={viewing.revision}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   );
 }
@@ -126,13 +165,17 @@ export function Review({ request: r, connected }: { request: Request; connected:
   const toast = useToast();
   const decide = useMutation(
     (api, a: { kind: "approve" | "close"; merge?: MergeChoice; choice?: string }) =>
-      a.kind === "approve" ? api.approve(r.id, approveBody(r, a.merge, a.choice, comment)) : api.closeSpike(r.id),
+      a.kind === "approve"
+        ? api.approve(r.id, approveBody(r, a.merge, a.choice, comment))
+        : api.closeSpike(r.id),
     ["requests", "items", "item:"],
   );
   const run = async (kind: "approve" | "close", merge?: MergeChoice, choice?: string) => {
     try {
       await decide.run({ kind, merge, choice });
-      toast.success(kind === "close" ? T.toastSpikeClosed(r.item_key) : T.toastApproved(r.item_key));
+      toast.success(
+        kind === "close" ? T.toastSpikeClosed(r.item_key) : T.toastApproved(r.item_key),
+      );
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
@@ -151,9 +194,13 @@ export function Review({ request: r, connected }: { request: Request; connected:
       {stale && <Alert variant="destructive">{C.staleApproval}</Alert>}
       {tree && <p className="text-warning">{C.waiversInTree(tree.waivers, tree.overrides)}</p>}
 
-      {(r.kind === "question" || r.kind === "prompt" || r.kind === "blocker") && <QuestionView request={r} connected={connected} />}
+      {(r.kind === "question" || r.kind === "prompt" || r.kind === "blocker") && (
+        <QuestionView request={r} connected={connected} />
+      )}
       {r.kind === "confirm_repos" && <ConfirmRepos key={r.id} request={r} connected={connected} />}
-      {(r.kind === "approve_section" || r.kind === "approve_plan" || r.kind === "approve_report") && <Snapshot r={r} />}
+      {(r.kind === "approve_section" ||
+        r.kind === "approve_plan" ||
+        r.kind === "approve_report") && <Snapshot r={r} />}
       {(r.kind === "accept_epic" || r.kind === "accept_fix") && <AcceptBody r={r} />}
       {r.kind === "close_spike" && <CloseBody r={r} />}
 
@@ -163,7 +210,12 @@ export function Review({ request: r, connected }: { request: Request; connected:
             <div className="w-full space-y-2">
               {options.map((o, i) => (
                 <div key={o.label} className="flex flex-col items-start gap-0.5">
-                  <Button type="button" variant={i === 0 ? "default" : "outline"} disabled={!connected || decide.pending} onClick={() => void run("approve", isFinish ? "custom" : undefined, o.label)}>
+                  <Button
+                    type="button"
+                    variant={i === 0 ? "default" : "outline"}
+                    disabled={!connected || decide.pending}
+                    onClick={() => void run("approve", isFinish ? "custom" : undefined, o.label)}
+                  >
                     {o.label}
                   </Button>
                   {o.description && <span className="text-muted-foreground">{o.description}</span>}
@@ -172,28 +224,57 @@ export function Review({ request: r, connected }: { request: Request; connected:
             </div>
           ) : isFinish ? (
             r.finish_local ? (
-              <Button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "local")}>
+              <Button
+                type="button"
+                disabled={!connected || decide.pending}
+                onClick={() => void run("approve", "local")}
+              >
                 {C.mergeLocally}
               </Button>
             ) : (
               <>
-                <Button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "auto")}>
+                <Button
+                  type="button"
+                  disabled={!connected || decide.pending}
+                  onClick={() => void run("approve", "auto")}
+                >
                   {C.createPrAutoMerge}
                 </Button>
-                <Button type="button" variant="outline" disabled={!connected || decide.pending} onClick={() => void run("approve", "manual")}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!connected || decide.pending}
+                  onClick={() => void run("approve", "manual")}
+                >
                   {C.createPr}
                 </Button>
               </>
             )
           ) : (
-            <Button type="button" disabled={!connected || decide.pending} onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}>
+            <Button
+              type="button"
+              disabled={!connected || decide.pending}
+              onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}
+            >
               {SCOPE_LABEL[r.kind]}
             </Button>
           )}
           {isApprovalKind(r.kind) && (
-            <Textarea className="w-full" aria-label={C.approveComment} placeholder={C.approveComment} rows={2} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
+            <Textarea
+              className="w-full"
+              aria-label={C.approveComment}
+              placeholder={C.approveComment}
+              rows={2}
+              maxLength={2000}
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+            />
           )}
-          <RequestChanges requestId={r.id} agentName={r.agent_name ?? r.item_key} connected={connected} />
+          <RequestChanges
+            requestId={r.id}
+            agentName={r.agent_name ?? r.item_key}
+            connected={connected}
+          />
         </footer>
       )}
     </article>

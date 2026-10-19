@@ -1,7 +1,14 @@
 import { C, SESSION_LABEL, T } from "../copy";
 import type { AgentEndpoint, AgentNode, SessionState } from "../types";
 
-export type DisplayState = SessionState | "queued" | "waiting" | "stale" | "preflight_failed" | "capacity_paused" | "resume_queued";
+export type DisplayState =
+  | SessionState
+  | "queued"
+  | "waiting"
+  | "stale"
+  | "preflight_failed"
+  | "capacity_paused"
+  | "resume_queued";
 export type Tone = "green" | "green-hollow" | "grey" | "grey-pulse" | "amber" | "hollow" | "red";
 export interface AgentAction {
   endpoint: AgentEndpoint;
@@ -16,7 +23,8 @@ export function displayState(a: AgentNode): DisplayState {
   const s = a.session;
   if (!s) return a.preflight_error !== null ? "preflight_failed" : "queued";
   const r = a.replacement;
-  if (r?.reason && r.phase !== "starting") return r.reason === "capacity" ? "capacity_paused" : "resume_queued";
+  if (r?.reason && r.phase !== "starting")
+    return r.reason === "capacity" ? "capacity_paused" : "resume_queued";
   if (a.state === "queued") return "queued";
   if (s.state === "running") return s.waiting ? "waiting" : s.stale ? "stale" : "running";
   return s.state;
@@ -47,18 +55,21 @@ export const stateTone = (s: DisplayState): Tone => TONE[s];
 
 export const isFinished = (a: AgentNode) => a.state === "finished" || a.state === "acknowledged";
 
-export const countLive = (a: AgentNode): number => a.children.reduce((n, c) => n + 1 + countLive(c), 0);
+export const countLive = (a: AgentNode): number =>
+  a.children.reduce((n, c) => n + 1 + countLive(c), 0);
 
-export const flattenAgents = (nodes: AgentNode[]): AgentNode[] => nodes.flatMap((n) => [n, ...flattenAgents(n.children)]);
+export const flattenAgents = (nodes: AgentNode[]): AgentNode[] =>
+  nodes.flatMap((n) => [n, ...flattenAgents(n.children)]);
 
 export function agentActions(a: AgentNode): AgentAction[] {
   if (isFinished(a)) return [];
   const orch = a.role === "orchestrator";
   const live = countLive(a);
   const terminal: AgentAction = { endpoint: "terminal", label: C.terminal };
-  const cancel: AgentAction = orch && live > 0
-    ? { endpoint: "cancel", label: C.cancel, confirm: T.cancelOrchestrator(a.name, live) }
-    : { endpoint: "cancel", label: C.cancel };
+  const cancel: AgentAction =
+    orch && live > 0
+      ? { endpoint: "cancel", label: C.cancel, confirm: T.cancelOrchestrator(a.name, live) }
+      : { endpoint: "cancel", label: C.cancel };
   const ack: AgentAction = { endpoint: "ack", label: C.acknowledge };
   const retry: AgentAction = { endpoint: "retry", label: C.retry };
   const resume: AgentAction = { endpoint: "resume", label: C.resume };
@@ -72,14 +83,22 @@ export function agentActions(a: AgentNode): AgentAction[] {
     case "stale":
       return [
         terminal,
-        { endpoint: "pause", label: orch ? C.pauseGroup : C.pause, body: { scope: orch ? "subtree" : "session" } },
+        {
+          endpoint: "pause",
+          label: orch ? C.pauseGroup : C.pause,
+          body: { scope: orch ? "subtree" : "session" },
+        },
         cancel,
       ];
     case "pause_requested":
     case "quiescing":
       return [terminal, { endpoint: "pause", label: C.pausing, disabled: true }, cancel];
     case "stopping":
-      return [terminal, { endpoint: "pause", label: C.pausing, disabled: true }, { ...cancel, disabled: true }];
+      return [
+        terminal,
+        { endpoint: "pause", label: C.pausing, disabled: true },
+        { ...cancel, disabled: true },
+      ];
     case "paused":
       return [resume, cancel];
     case "interrupted":
@@ -115,8 +134,15 @@ export function makeAgent(p: Partial<AgentNode> = {}): AgentNode {
     advisor: null,
     state: "active",
     session: {
-      id: `ses_${seq}`, state: "running", attempt: 1, generation: 1, waiting: false, stale: false,
-      tmux_alive: true, started_at: 0, ended_at: null,
+      id: `ses_${seq}`,
+      state: "running",
+      attempt: 1,
+      generation: 1,
+      waiting: false,
+      stale: false,
+      tmux_alive: true,
+      started_at: 0,
+      ended_at: null,
     },
     preflight_error: null,
     kind_reason: null,

@@ -191,7 +191,9 @@ describe("RequestImages", () => {
         onRemove={vi.fn()}
       />,
     );
-    expect(container.querySelector('p[aria-live="polite"]')).toHaveTextContent("Up to 10 attachments.");
+    expect(container.querySelector('p[aria-live="polite"]')).toHaveTextContent(
+      "Up to 10 attachments.",
+    );
     expect(container.querySelector('p[aria-live="polite"]')).toBe(p);
   });
 

@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
 import { toast as sonner } from "sonner";
+import { describe, expect, it, vi } from "vitest";
 import { C } from "../copy";
 import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
@@ -11,15 +11,30 @@ import { RepoPicker } from "./RepoPicker";
 
 function Host({ initial = [] as string[] }) {
   const [sel, setSel] = useState(initial);
-  return <RepoPicker label="Repositories (optional)" caption="The spike suggests repositories and asks you to confirm them." selected={sel} onChange={setSel} />;
+  return (
+    <RepoPicker
+      label="Repositories (optional)"
+      caption="The spike suggests repositories and asks you to confirm them."
+      selected={sel}
+      onChange={setSel}
+    />
+  );
 }
 
 function ReconnectHost() {
   const { retry } = useConnection();
-  return <><Host /><button type="button" onClick={retry}>Reconnect stream</button></>;
+  return (
+    <>
+      <Host />
+      <button type="button" onClick={retry}>
+        Reconnect stream
+      </button>
+    </>
+  );
 }
 
-const rows = () => within(screen.getByRole("listbox", { name: "Repositories (optional)" })).getAllByRole("option");
+const rows = () =>
+  within(screen.getByRole("listbox", { name: "Repositories (optional)" })).getAllByRole("option");
 
 describe("RepoPicker (§16.3)", () => {
   it("lists each present repo once, sorted, with its path and dirty state", async () => {
@@ -33,7 +48,9 @@ describe("RepoPicker (§16.3)", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(screen.getAllByText(/^~\/GitHub\//).length).toBeGreaterThan(0);
     expect(screen.getByText("Scanned 2h ago")).toBeInTheDocument();
-    expect(screen.getByText("The spike suggests repositories and asks you to confirm them.")).toBeInTheDocument();
+    expect(
+      screen.getByText("The spike suggests repositories and asks you to confirm them."),
+    ).toBeInTheDocument();
     expect(rows().some((r) => within(r).queryByLabelText(C.repoDirty))).toBe(true);
     expect(screen.getAllByRole("img", { name: C.repoDirty }).length).toBeGreaterThan(0);
   });
@@ -56,15 +73,27 @@ describe("RepoPicker (§16.3)", () => {
     await screen.findByRole("listbox");
     daemon.db.repos.all = daemon.db.repos.all.filter((r) => r.id !== "repo_chat");
     await user.click(screen.getByRole("button", { name: "Rescan" }));
-    expect(await screen.findByText("1 selected repository is no longer available.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("1 selected repository is no longer available."),
+    ).toBeInTheDocument();
   });
 
   it("shows a failed refresh instead of stale rows and restores selection on Retry", async () => {
     const daemon = createMockDaemon();
     const { user } = renderWithDaemon(<Host initial={["repo_chat"]} />, { daemon, events: false });
-    expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute("aria-selected", "true");
-    const recovered = daemon.handle({ method: "GET", url: "/api/repos", headers: { authorization: `Bearer ${daemon.db.token}` } });
-    daemon.override("GET /api/repos", { status: 500, body: { error: { code: "internal", message: "Refresh failed." } } });
+    expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    const recovered = daemon.handle({
+      method: "GET",
+      url: "/api/repos",
+      headers: { authorization: `Bearer ${daemon.db.token}` },
+    });
+    daemon.override("GET /api/repos", {
+      status: 500,
+      body: { error: { code: "internal", message: "Refresh failed." } },
+    });
 
     await user.click(screen.getByRole("button", { name: C.rescan }));
     expect(await screen.findByRole("alert")).toHaveTextContent(C.reposUnavailable);
@@ -74,10 +103,19 @@ describe("RepoPicker (§16.3)", () => {
     daemon.override("GET /api/repos", recovered);
     const release = daemon.hold("GET /api/repos");
     await user.click(screen.getByRole("button", { name: C.retry }));
-    await waitFor(() => expect(daemon.calls.filter((c) => c.method === "GET" && c.path === "/api/repos")).toHaveLength(3));
+    await waitFor(() =>
+      expect(
+        daemon.calls.filter((c) => c.method === "GET" && c.path === "/api/repos"),
+      ).toHaveLength(3),
+    );
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    await act(async () => { release(); });
-    expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute("aria-selected", "true");
+    await act(async () => {
+      release();
+    });
+    expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.queryByText(C.reposUnavailable)).not.toBeInTheDocument();
   });
 
@@ -89,7 +127,9 @@ describe("RepoPicker (§16.3)", () => {
     daemon.db.repos.all = daemon.db.repos.all.filter((r) => r.id !== "repo_chat");
     await user.click(screen.getByRole("button", { name: "Rescan" }));
     expect(screen.getByText("Selected: endurio-chat")).toBeInTheDocument();
-    expect(screen.queryByText("1 selected repository is no longer available.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("1 selected repository is no longer available."),
+    ).not.toBeInTheDocument();
     release();
     const notice = await screen.findByText("1 selected repository is no longer available.");
     expect(notice).toHaveAttribute("aria-live", "polite");
@@ -113,21 +153,34 @@ describe("RepoPicker (§16.3)", () => {
     await user.type(screen.getByRole("textbox", { name: "Add folder…" }), "/tmp/not-a-repo{Enter}");
     expect(await screen.findByText("No git repository found in this folder.")).toBeInTheDocument();
     await user.clear(screen.getByRole("textbox", { name: "Add folder…" }));
-    await user.type(screen.getByRole("textbox", { name: "Add folder…" }), "/Users/alex/code/newrepo{Enter}");
+    await user.type(
+      screen.getByRole("textbox", { name: "Add folder…" }),
+      "/Users/alex/code/newrepo{Enter}",
+    );
     expect(await screen.findByText("Selected: newrepo")).toBeInTheDocument();
     expect(await screen.findByText("Added newrepo")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Rescan" }));
-    await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/repos/rescan")).toBe(true));
+    await waitFor(() =>
+      expect(daemon.calls.some((c) => c.path === "/api/repos/rescan")).toBe(true),
+    );
     expect(await screen.findByText(/^Found \d+ repositories/)).toBeInTheDocument();
   });
 
   it("shows the daemon's reason on a failed add", async () => {
     const daemon = createMockDaemon();
-    daemon.override("POST /api/repos", { status: 422, body: { error: { code: "bad_request", message: "x", reason: "That folder has no .git directory." } } });
+    daemon.override("POST /api/repos", {
+      status: 422,
+      body: {
+        error: { code: "bad_request", message: "x", reason: "That folder has no .git directory." },
+      },
+    });
     const { user } = renderWithDaemon(<Host />, { daemon, events: false });
     await screen.findByRole("listbox");
     await user.click(screen.getByRole("button", { name: "Add folder…" }));
-    await user.type(screen.getByRole("textbox", { name: "Add folder…" }), "/Users/alex/code/whatever{Enter}");
+    await user.type(
+      screen.getByRole("textbox", { name: "Add folder…" }),
+      "/Users/alex/code/whatever{Enter}",
+    );
     expect(await screen.findByText("That folder has no .git directory.")).toBeInTheDocument();
   });
 
@@ -147,96 +200,145 @@ describe("RepoPicker (§16.3)", () => {
     expect(screen.getByRole("button", { name: C.addFolder })).toBeDisabled();
     expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled();
     await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/tmp/repo{Enter}");
-    expect(daemon.calls.filter((c) => c.method === "POST" && c.path.startsWith("/api/repos"))).toHaveLength(0);
+    expect(
+      daemon.calls.filter((c) => c.method === "POST" && c.path.startsWith("/api/repos")),
+    ).toHaveLength(0);
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
-  it.each(["add", "rescan"])("shows no toast when disconnected during pending %s", async (action) => {
-    const daemon = createMockDaemon();
-    const { user } = renderWithDaemon(<Host />, { daemon });
-    await screen.findByRole("listbox");
-    const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
-    if (action === "add") {
-      await user.click(screen.getByRole("button", { name: C.addFolder }));
-      await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/Users/alex/code/newrepo");
-    }
-    const release = daemon.hold(route);
-    await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
-    expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(false);
-    daemon.disconnect();
-    await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
-    await act(async () => { release(); });
-    await waitFor(() => expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true));
-    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
-    expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true);
-  });
-
-  it.each(["add", "rescan"])("shows no toast when %s settles before the disconnect render", async (action) => {
-    const success = vi.spyOn(sonner, "success");
-    const daemon = createMockDaemon();
-    let live: ReturnType<typeof useConnection>["live"] | undefined;
-    function LiveHost() {
-      const connection = useConnection();
-      live = connection.live;
-      return <><Host /><span data-testid="connection">{connection.connected ? "online" : "offline"}</span></>;
-    }
-    const { user } = renderWithDaemon(<LiveHost />, { daemon });
-    await screen.findByRole("listbox");
-    const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
-    if (action === "add") {
-      await user.click(screen.getByRole("button", { name: C.addFolder }));
-      await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/Users/alex/code/newrepo");
-    }
-    const baseFetch = fetch;
-    let release = () => {};
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-      if (`${init?.method ?? "GET"} ${new URL(String(input), "http://mock.test").pathname}` !== route) return baseFetch(input, init);
-      return held.then(() => {
-        const response = daemon.handle({ method: init!.method!, url: new URL(String(input), "http://mock.test").pathname,
-          headers: Object.fromEntries(new Headers(init?.headers).entries()), body: JSON.parse(String(init?.body)) });
-        return { ok: response.status < 400, status: response.status, json: () => Promise.resolve(response.body) } as Response;
+  it.each(["add", "rescan"])(
+    "shows no toast when disconnected during pending %s",
+    async (action) => {
+      const daemon = createMockDaemon();
+      const { user } = renderWithDaemon(<Host />, { daemon });
+      await screen.findByRole("listbox");
+      const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
+      if (action === "add") {
+        await user.click(screen.getByRole("button", { name: C.addFolder }));
+        await user.type(
+          screen.getByRole("textbox", { name: C.addFolder }),
+          "/Users/alex/code/newrepo",
+        );
+      }
+      const release = daemon.hold(route);
+      await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+      expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(false);
+      daemon.disconnect();
+      await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
+      await act(async () => {
+        release();
       });
-    });
-    await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
-    await act(async () => {
-      // Model the provider's synchronous transport update before its setConn render.
-      live!.connected = false;
-      live!.epoch++;
-      expect(screen.getByTestId("connection")).toHaveTextContent("online");
-      expect(live?.connected).toBe(false);
-      release();
-      for (let i = 0; i < 20; i++) await Promise.resolve();
-    });
-    expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true);
-    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
-    expect(success).not.toHaveBeenCalled();
-    success.mockRestore();
-  });
+      await waitFor(() =>
+        expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true),
+      );
+      expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+      expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true);
+    },
+  );
+
+  it.each(["add", "rescan"])(
+    "shows no toast when %s settles before the disconnect render",
+    async (action) => {
+      const success = vi.spyOn(sonner, "success");
+      const daemon = createMockDaemon();
+      let live: ReturnType<typeof useConnection>["live"] | undefined;
+      function LiveHost() {
+        const connection = useConnection();
+        live = connection.live;
+        return (
+          <>
+            <Host />
+            <span data-testid="connection">{connection.connected ? "online" : "offline"}</span>
+          </>
+        );
+      }
+      const { user } = renderWithDaemon(<LiveHost />, { daemon });
+      await screen.findByRole("listbox");
+      const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
+      if (action === "add") {
+        await user.click(screen.getByRole("button", { name: C.addFolder }));
+        await user.type(
+          screen.getByRole("textbox", { name: C.addFolder }),
+          "/Users/alex/code/newrepo",
+        );
+      }
+      const baseFetch = fetch;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+        if (
+          `${init?.method ?? "GET"} ${new URL(String(input), "http://mock.test").pathname}` !==
+          route
+        )
+          return baseFetch(input, init);
+        return held.then(() => {
+          const response = daemon.handle({
+            method: init!.method!,
+            url: new URL(String(input), "http://mock.test").pathname,
+            headers: Object.fromEntries(new Headers(init?.headers).entries()),
+            body: JSON.parse(String(init?.body)),
+          });
+          return {
+            ok: response.status < 400,
+            status: response.status,
+            json: () => Promise.resolve(response.body),
+          } as Response;
+        });
+      });
+      await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+      await act(async () => {
+        // Model the provider's synchronous transport update before its setConn render.
+        live!.connected = false;
+        live!.epoch++;
+        expect(screen.getByTestId("connection")).toHaveTextContent("online");
+        expect(live?.connected).toBe(false);
+        release();
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      });
+      expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true);
+      expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+      expect(success).not.toHaveBeenCalled();
+      success.mockRestore();
+    },
+  );
 
   it.each([
     { action: "add", failed: false },
     { action: "rescan", failed: false },
     { action: "rescan", failed: true },
-  ])("shows no toast when pending $action crosses disconnect and reconnect (failed: $failed)", async ({ action, failed }) => {
-    const daemon = createMockDaemon();
-    const { user } = renderWithDaemon(<ReconnectHost />, { daemon });
-    await screen.findByRole("listbox");
-    const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
-    if (action === "add") {
-      await user.click(screen.getByRole("button", { name: C.addFolder }));
-      await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/Users/alex/code/newrepo");
-    }
-    if (failed) daemon.override(route, { status: 500, body: { error: { code: "internal", message: "Rescan failed." } } });
-    const release = daemon.hold(route);
-    await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
-    act(() => daemon.disconnect());
-    await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
-    daemon.reconnect();
-    await user.click(screen.getByRole("button", { name: "Reconnect stream" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: C.addFolder })).toBeEnabled());
-    await act(async () => { release(); });
-    await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeEnabled());
-    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
-  });
+  ])(
+    "shows no toast when pending $action crosses disconnect and reconnect (failed: $failed)",
+    async ({ action, failed }) => {
+      const daemon = createMockDaemon();
+      const { user } = renderWithDaemon(<ReconnectHost />, { daemon });
+      await screen.findByRole("listbox");
+      const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
+      if (action === "add") {
+        await user.click(screen.getByRole("button", { name: C.addFolder }));
+        await user.type(
+          screen.getByRole("textbox", { name: C.addFolder }),
+          "/Users/alex/code/newrepo",
+        );
+      }
+      if (failed)
+        daemon.override(route, {
+          status: 500,
+          body: { error: { code: "internal", message: "Rescan failed." } },
+        });
+      const release = daemon.hold(route);
+      await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+      act(() => daemon.disconnect());
+      await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
+      daemon.reconnect();
+      await user.click(screen.getByRole("button", { name: "Reconnect stream" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: C.addFolder })).toBeEnabled());
+      await act(async () => {
+        release();
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeEnabled());
+      expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+    },
+  );
 });

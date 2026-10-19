@@ -16,7 +16,13 @@ export const PARENT_TYPES: Record<NewType, ItemType[]> = {
 };
 export const TITLE_MAX = 200;
 
-export interface NewItemForm { type: NewType; parentKey: string; title: string; brief: string; acceptance: string[] }
+export interface NewItemForm {
+  type: NewType;
+  parentKey: string;
+  title: string;
+  brief: string;
+  acceptance: string[];
+}
 
 export const parentOptions = (items: Item[], type: NewType) =>
   items

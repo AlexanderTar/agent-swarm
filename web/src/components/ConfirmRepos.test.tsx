@@ -6,7 +6,10 @@ import { ConfirmRepos } from "./ConfirmRepos";
 
 const setup = (d = createMockDaemon()) => {
   const request = d.db.requests.find((r) => r.id === "req_repos")!;
-  return renderWithDaemon(<ConfirmRepos request={request} connected />, { daemon: d, events: false });
+  return renderWithDaemon(<ConfirmRepos request={request} connected />, {
+    daemon: d,
+    events: false,
+  });
 };
 
 describe("ConfirmRepos (§16.11)", () => {
@@ -16,12 +19,18 @@ describe("ConfirmRepos (§16.11)", () => {
     expect(await within(proposed).findByRole("checkbox", { name: /endurio-chat/ })).toBeChecked();
     expect(within(proposed).getByRole("checkbox", { name: /endurio-app/ })).toBeChecked();
     expect(within(proposed).getByText("You selected")).toBeInTheDocument();
-    expect(within(proposed).getByText("Reason: the sync queue lives in the app's data layer.")).toBeInTheDocument();
+    expect(
+      within(proposed).getByText("Reason: the sync queue lives in the app's data layer."),
+    ).toBeInTheDocument();
     // ui/label sets leading-none, which would pack wrapped reason lines together.
-    expect(within(proposed).getByText("Reason: the sync queue lives in the app's data layer.")).toHaveClass("leading-normal");
+    expect(
+      within(proposed).getByText("Reason: the sync queue lives in the app's data layer."),
+    ).toHaveClass("leading-normal");
     const additions = screen.getByRole("group", { name: "Suggested additions" });
     expect(within(additions).getByRole("checkbox", { name: /endurio-landing/ })).not.toBeChecked();
-    expect(screen.getByText("“Offline sync needs the chat API and the app client.”")).toBeInTheDocument();
+    expect(
+      screen.getByText("“Offline sync needs the chat API and the app client.”"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Add another" })).toBeInTheDocument();
   });
 
@@ -37,24 +46,43 @@ describe("ConfirmRepos (§16.11)", () => {
 
   it("sends the checked set with additions, picker choices and the comment", async () => {
     const { user, daemon } = setup();
-    await user.click(await within(screen.getByRole("group", { name: "Suggested additions" })).findByRole("checkbox", { name: /endurio-landing/ }));
+    await user.click(
+      await within(screen.getByRole("group", { name: "Suggested additions" })).findByRole(
+        "checkbox",
+        { name: /endurio-landing/ },
+      ),
+    );
     const picker = screen.getByRole("group", { name: "Add another" });
     await user.click(await within(picker).findByRole("option", { name: /agent-swarm/ }));
     await user.type(screen.getByRole("textbox", { name: "Comment (optional)" }), "Landing too");
     await user.click(screen.getByRole("button", { name: "Confirm repositories" }));
-    await waitFor(() => expect(daemon.calls.at(-1)).toMatchObject({
-      path: "/api/requests/req_repos/confirm-repos",
-      body: { repos: ["repo_chat", "repo_app", "repo_landing", "repo_swarm"], comment: "Landing too", repos_version: 0, via: "board" },
-    }));
+    await waitFor(() =>
+      expect(daemon.calls.at(-1)).toMatchObject({
+        path: "/api/requests/req_repos/confirm-repos",
+        body: {
+          repos: ["repo_chat", "repo_app", "repo_landing", "repo_swarm"],
+          comment: "Landing too",
+          repos_version: 0,
+          via: "board",
+        },
+      }),
+    );
     expect(await screen.findByText("Confirmed 4 repositories")).toBeInTheDocument();
   });
 
   it("shows the stale-version banner", async () => {
     const d = createMockDaemon();
-    d.override("POST /api/requests/req_repos/confirm-repos", { status: 409, body: { error: { code: "conflict", message: "This request changed. Review the latest version." } } });
+    d.override("POST /api/requests/req_repos/confirm-repos", {
+      status: 409,
+      body: {
+        error: { code: "conflict", message: "This request changed. Review the latest version." },
+      },
+    });
     const { user } = setup(d);
     await user.click(await screen.findByRole("button", { name: "Confirm repositories" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("This request changed. Review the latest version.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This request changed. Review the latest version.",
+    );
     expect(screen.queryByText(/Confirmed \d+ repositories/)).not.toBeInTheDocument();
   });
 });

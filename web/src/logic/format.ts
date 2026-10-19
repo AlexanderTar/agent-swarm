@@ -14,8 +14,12 @@ export function ageCompact(ms: number, now = Date.now()): string {
 // someone else's sentence ("Scanned Never scanned ago"). This is a trust boundary — the wire can
 // send 0, a negative, or junk that decodes to NaN — so anything that isn't a positive, finite
 // number is "never" rather than an age measured from the epoch.
-export const ageLine = (ms: number, never: string, line: (age: string) => string, now = Date.now()): string =>
-  !Number.isFinite(ms) || ms <= 0 ? never : line(ageCompact(ms, now));
+export const ageLine = (
+  ms: number,
+  never: string,
+  line: (age: string) => string,
+  now = Date.now(),
+): string => (!Number.isFinite(ms) || ms <= 0 ? never : line(ageCompact(ms, now)));
 
 export function ageAgo(ms: number, now = Date.now()): string {
   const d = Math.max(0, now - ms);
@@ -44,4 +48,5 @@ export function formatTokens(n: number): string {
 
 export const formatCost = (usd: number) => `$${usd.toFixed(2)}`;
 export const sha7 = (sha: string) => sha.slice(0, 7);
-export const truncate = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max - 1)}…`);
+export const truncate = (s: string, max: number) =>
+  s.length <= max ? s : `${s.slice(0, max - 1)}…`;

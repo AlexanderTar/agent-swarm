@@ -5,21 +5,43 @@
 
 export type ItemType = "epic" | "story" | "task" | "bug" | "spike" | "chore";
 export type ItemStatus =
-  | "draft" | "ready" | "in_progress" | "blocked" | "in_review" | "awaiting_approval" | "done" | "cancelled";
+  | "draft"
+  | "ready"
+  | "in_progress"
+  | "blocked"
+  | "in_review"
+  | "awaiting_approval"
+  | "done"
+  | "cancelled";
 export const ITEM_STATUSES: readonly ItemStatus[] = [
-  "draft", "ready", "in_progress", "blocked", "in_review", "awaiting_approval", "done", "cancelled",
+  "draft",
+  "ready",
+  "in_progress",
+  "blocked",
+  "in_review",
+  "awaiting_approval",
+  "done",
+  "cancelled",
 ];
 export type Priority = 0 | 1 | 2 | 3;
 export type TddExempt = "docs" | "config" | "mechanical-rename" | "spike-research";
 
-export interface Progress { done: number; total: number; unit: "tasks" | "stories" }
+export interface Progress {
+  done: number;
+  total: number;
+  unit: "tasks" | "stories";
+}
 
 // Workflow/Unit mirror internal/workflow.Spec and items.Unit (spec B2/C1);
 // the board's own workflow UI lands in a later package, so these are just
 // enough shape for Item to round-trip the field. Optional here (rather than
 // `| null`) so existing fixtures.ts item literals keep typechecking without
 // every one of them naming these five new wire fields.
-export interface WorkflowLoop { fix: string; max_rounds?: number; on_exhausted?: string }
+export interface WorkflowLoop {
+  fix: string;
+  max_rounds?: number;
+  on_exhausted?: string;
+}
 export interface WorkflowStep {
   id: string;
   run?: string;
@@ -28,7 +50,11 @@ export interface WorkflowStep {
   of?: string;
   loop?: WorkflowLoop;
 }
-export interface WorkflowIntegration { merge_order?: string[]; verify?: string[]; final_review?: string[] }
+export interface WorkflowIntegration {
+  merge_order?: string[];
+  verify?: string[];
+  final_review?: string[];
+}
 export interface Workflow {
   template?: string;
   steps?: WorkflowStep[];
@@ -37,10 +63,23 @@ export interface Workflow {
   after_tasks?: WorkflowStep;
   integration?: WorkflowIntegration;
 }
-export interface Unit { title: string; steps: string[] }
+export interface Unit {
+  title: string;
+  steps: string[];
+}
 
-export interface Waiver { gate: string; reason: string; agent: string; at: string }
-export interface Override { status: ItemStatus; reason: string; agent: string; at: string }
+export interface Waiver {
+  gate: string;
+  reason: string;
+  agent: string;
+  at: string;
+}
+export interface Override {
+  status: ItemStatus;
+  reason: string;
+  agent: string;
+  at: string;
+}
 
 export interface Item {
   id: string;
@@ -66,8 +105,8 @@ export interface Item {
   units?: Unit[];
   solo?: string | null;
   verify?: string[];
-  repos: string[];                 // top-level: confirmed repo ids; children: repo hints
-  repos_version: number;           // top-level only (I13); 0 elsewhere
+  repos: string[]; // top-level: confirmed repo ids; children: repo hints
+  repos_version: number; // top-level only (I13); 0 elsewhere
   suggested_repos: string[];
   spike_intent: "feature" | "debug" | null;
   origin_spike_id: string | null;
@@ -79,46 +118,88 @@ export interface Item {
   created_at: number;
   updated_at: number;
   // computed by the daemon
-  blocked_by: string[];            // keys of unresolved dependencies
-  progress: Progress | null;       // direct children
-  active_agents: number;           // live sessions in the subtree
-  open_requests: number;           // open requests on this item
-  context: boolean;                // view=tree context ancestor; always false for view=flat
+  blocked_by: string[]; // keys of unresolved dependencies
+  progress: Progress | null; // direct children
+  active_agents: number; // live sessions in the subtree
+  open_requests: number; // open requests on this item
+  context: boolean; // view=tree context ancestor; always false for view=flat
 }
 
-export interface ItemsResponse { items: Item[]; matches: number }
+export interface ItemsResponse {
+  items: Item[];
+  matches: number;
+}
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
-export interface Todo { id: string; label: string; status: TodoStatus; item_key?: string }
+export interface Todo {
+  id: string;
+  label: string;
+  status: TodoStatus;
+  item_key?: string;
+}
 
 export interface ItemDetail {
   item: Item;
-  ancestors: Item[];               // root first
+  ancestors: Item[]; // root first
   children: Item[];
   deps: { blocked_by: Item[]; blocks: Item[] };
-  agents: AgentNode[];             // agents working on this item or its subtree (tree form)
-  requests: Request[];             // open requests on this item
+  agents: AgentNode[]; // agents working on this item or its subtree (tree form)
+  requests: Request[]; // open requests on this item
   artifacts: Artifact[];
   workflow_state?: WorkflowState;
   crew?: WorkflowCrewMember[];
-  todos?: Todo[];                  // root items with a progress list only
-  merges?: ItemMerge[];            // root in review with an approved finish only
+  todos?: Todo[]; // root items with a progress list only
+  merges?: ItemMerge[]; // root in review with an approved finish only
 }
 
 export type MergeChoice = "auto" | "manual" | "local" | "custom";
 export interface ItemMerge {
-  repo: string; kind: "pr" | "local" | "kept"; url?: string; number?: number; base: string; head: string;
-  auto_merge: boolean; state: "open" | "merged" | "closed"; checks: "" | "pending" | "passing" | "failing"; merged_sha?: string; note?: string;
+  repo: string;
+  kind: "pr" | "local" | "kept";
+  url?: string;
+  number?: number;
+  base: string;
+  head: string;
+  auto_merge: boolean;
+  state: "open" | "merged" | "closed";
+  checks: "" | "pending" | "passing" | "failing";
+  merged_sha?: string;
+  note?: string;
 }
 
-export interface WorkflowFinding { severity: string; file: string; line?: number; unit?: number; summary: string; reviewer?: string }
-export interface WorkflowRun {
-  id?: string; step: string; role: string; agent_id?: string; agent: string;
-  state: string; verdict: "" | "pass" | "changes_requested" | "blocked";
-  sha: string; round: number; auto_retries?: number; findings: WorkflowFinding[];
+export interface WorkflowFinding {
+  severity: string;
+  file: string;
+  line?: number;
+  unit?: number;
+  summary: string;
+  reviewer?: string;
 }
-export interface WorkflowState { state: string; round: number; escalation: string; runs: WorkflowRun[] }
-export interface WorkflowCrewMember { agent: string; role: string; step: string; state: string }
+export interface WorkflowRun {
+  id?: string;
+  step: string;
+  role: string;
+  agent_id?: string;
+  agent: string;
+  state: string;
+  verdict: "" | "pass" | "changes_requested" | "blocked";
+  sha: string;
+  round: number;
+  auto_retries?: number;
+  findings: WorkflowFinding[];
+}
+export interface WorkflowState {
+  state: string;
+  round: number;
+  escalation: string;
+  runs: WorkflowRun[];
+}
+export interface WorkflowCrewMember {
+  agent: string;
+  role: string;
+  step: string;
+  state: string;
+}
 
 export interface CreateItemBody {
   request_id: string;
@@ -139,13 +220,43 @@ export interface PatchItemBody {
 }
 
 export type GraphScope = "root" | "neighbourhood";
-export interface GraphNode { key: string; type: ItemType; title: string; status: ItemStatus; root_key: string; external: boolean }
-export interface GraphEdge { from: string; to: string } // B waits for A when from=A, to=B
-export interface Graph { nodes: GraphNode[]; edges: GraphEdge[] }
+export interface GraphNode {
+  key: string;
+  type: ItemType;
+  title: string;
+  status: ItemStatus;
+  root_key: string;
+  external: boolean;
+}
+export interface GraphEdge {
+  from: string;
+  to: string;
+} // B waits for A when from=A, to=B
+export interface Graph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
 
-export type CheckpointKind = "accepted" | "progress" | "blocked" | "handoff" | "completed" | "failed" | "integrated";
-export interface GitRef { repo: string; branch: string; sha: string; dirty?: boolean }
-export interface VerifyEntry { cmd: string; phase: "red" | "green"; ok: boolean; note?: string }
+export type CheckpointKind =
+  | "accepted"
+  | "progress"
+  | "blocked"
+  | "handoff"
+  | "completed"
+  | "failed"
+  | "integrated";
+export interface GitRef {
+  repo: string;
+  branch: string;
+  sha: string;
+  dirty?: boolean;
+}
+export interface VerifyEntry {
+  cmd: string;
+  phase: "red" | "green";
+  ok: boolean;
+  note?: string;
+}
 export interface Checkpoint {
   id: string;
   item_key: string;
@@ -164,11 +275,28 @@ export interface Checkpoint {
 }
 
 export type AgentKind = "claude" | "codex" | "agy" | "cursor" | "muse" | "grok" | "fake";
-export type Role = "orchestrator" | "coder" | "reviewer" | "ui_reviewer" | "researcher" | "debugger" | "mechanical" | "designer";
+export type Role =
+  | "orchestrator"
+  | "coder"
+  | "reviewer"
+  | "ui_reviewer"
+  | "researcher"
+  | "debugger"
+  | "mechanical"
+  | "designer";
 export type AgentState = "queued" | "active" | "finished" | "acknowledged";
 export type SessionState =
-  | "spawning" | "running" | "pause_requested" | "quiescing" | "stopping" | "paused"
-  | "interrupted" | "completed" | "failed" | "crashed" | "cancelled";
+  | "spawning"
+  | "running"
+  | "pause_requested"
+  | "quiescing"
+  | "stopping"
+  | "paused"
+  | "interrupted"
+  | "completed"
+  | "failed"
+  | "crashed"
+  | "cancelled";
 
 export interface SessionInfo {
   id: string;
@@ -176,13 +304,18 @@ export interface SessionInfo {
   attempt: number;
   generation: number;
   waiting: boolean;
-  stale: boolean;          // A1: no hook call or sync for 30 min while not waiting
-  tmux_alive: boolean;     // the tmux session exists
+  stale: boolean; // A1: no hook call or sync for 30 min while not waiting
+  tmux_alive: boolean; // the tmux session exists
   started_at: number;
   ended_at: number | null;
 }
 
-export interface AdvisorInfo { kind: AgentKind; model: string; effort: string | null; mode: "native" | "simulated" }
+export interface AdvisorInfo {
+  kind: AgentKind;
+  model: string;
+  effort: string | null;
+  mode: "native" | "simulated";
+}
 
 // The in-flight replacement operation (GET /api/state node.replacement).
 // reason: "capacity" = paused to fit the agent limit; "resume" = a manual
@@ -210,24 +343,49 @@ export interface AgentNode {
   parent_name: string | null;
   advisor: AdvisorInfo | null;
   state: AgentState;
-  session: SessionInfo | null;     // latest generation; null when never spawned
-  preflight_error: string | null;  // set when spawn preflight failed (never spawned)
-  kind_reason: string | null;     // why kind/model isn't the user's role default; null = settings
+  session: SessionInfo | null; // latest generation; null when never spawned
+  preflight_error: string | null; // set when spawn preflight failed (never spawned)
+  kind_reason: string | null; // why kind/model isn't the user's role default; null = settings
   replacement?: AgentReplacement; // omitted when no operation is in flight
-  low_token_effective?: boolean;  // low-token mode resolves on for this agent; the board marks orchestrators only
+  low_token_effective?: boolean; // low-token mode resolves on for this agent; the board marks orchestrators only
   created_at: number;
   finished_at: number | null;
-  children: AgentNode[];           // live and unacknowledged children
-  finished: AgentNode[];           // completed, cancelled and acknowledged children
+  children: AgentNode[]; // live and unacknowledged children
+  finished: AgentNode[]; // completed, cancelled and acknowledged children
 }
 
 export type RequestKind =
-  | "question" | "prompt" | "blocker" | "confirm_repos" | "approve_section" | "approve_plan" | "approve_report"
-  | "accept_epic" | "accept_fix" | "close_spike";
-export type RequestState = "open" | "approved" | "changes_requested" | "answered" | "withdrawn" | "stale";
-export interface RepoProposal { repo: string; reason: string; source: "user" | "agent" }
-export interface ConfirmReposOptions { proposed: RepoProposal[]; expansion: { repo: string; reason: string }[] | null }
-export interface AcceptBinding { item_revision: number; integrated_checkpoint: string; git: GitRef[] }
+  | "question"
+  | "prompt"
+  | "blocker"
+  | "confirm_repos"
+  | "approve_section"
+  | "approve_plan"
+  | "approve_report"
+  | "accept_epic"
+  | "accept_fix"
+  | "close_spike";
+export type RequestState =
+  | "open"
+  | "approved"
+  | "changes_requested"
+  | "answered"
+  | "withdrawn"
+  | "stale";
+export interface RepoProposal {
+  repo: string;
+  reason: string;
+  source: "user" | "agent";
+}
+export interface ConfirmReposOptions {
+  proposed: RepoProposal[];
+  expansion: { repo: string; reason: string }[] | null;
+}
+export interface AcceptBinding {
+  item_revision: number;
+  integrated_checkpoint: string;
+  git: GitRef[];
+}
 export type RequestBinding = AcceptBinding | { repos_version: number } | { resolution: string };
 
 export interface Request {
@@ -246,7 +404,7 @@ export interface Request {
   section_sha256: string | null;
   prompt: string;
   options: string[] | ConfirmReposOptions;
-  option_descriptions?: string[] | null;  // parallel to options for approval/finish kinds
+  option_descriptions?: string[] | null; // parallel to options for approval/finish kinds
   choice?: string | null;
   state: RequestState;
   confirmed: string[] | null;
@@ -257,23 +415,31 @@ export interface Request {
   created_at: number;
   // True while an approval's native prompt is open in the asking agent's terminal (spec 2.2.1).
   native_pending: boolean;
-  finish_local?: boolean;          // finish request whose repos have no GitHub remote
-  waiver_history?: { waivers: number; overrides: number };  // finish request: every waiver/override ever applied under its root
+  finish_local?: boolean; // finish request whose repos have no GitHub remote
+  waiver_history?: { waivers: number; overrides: number }; // finish request: every waiver/override ever applied under its root
   approval_evidence: "observed" | "agent_reported" | "auto_empty" | null;
 }
 
-export interface ArtifactSection { id: string; title: string; sha256: string }
+export interface ArtifactSection {
+  id: string;
+  title: string;
+  sha256: string;
+}
 export interface Artifact {
   id: string;
   item_key: string;
   kind: "spec" | "plan" | "debug_report" | "note";
   path: string;
   head_revision: number;
-  revision: number;                // the revision this object describes
+  revision: number; // the revision this object describes
   sections: ArtifactSection[];
   created_at: number;
 }
-export interface ArtifactResponse { artifact: Artifact; markdown: string; warnings?: string[] }
+export interface ArtifactResponse {
+  artifact: Artifact;
+  markdown: string;
+  warnings?: string[];
+}
 
 export interface Advice {
   id: string;
@@ -298,7 +464,11 @@ export interface Advice {
 }
 
 export type SettingsRole = Role | "advisor";
-export interface RoleDefault { agent: AgentKind; model: string; effort?: string }
+export interface RoleDefault {
+  agent: AgentKind;
+  model: string;
+  effort?: string;
+}
 export interface Settings {
   enabled_agents: AgentKind[];
   roles: Partial<Record<SettingsRole, RoleDefault>>;
@@ -363,8 +533,18 @@ export interface Repo {
   last_used_at: number | null;
 }
 export type RepoGroupSource = "remote_owner" | "workspace_dir" | "code_workspace";
-export interface RepoGroup { name: string; source: RepoGroupSource; repos: Repo[] }
-export interface ReposResponse { recent: Repo[]; groups: RepoGroup[]; all: Repo[]; scanned_at: number; scanning: boolean }
+export interface RepoGroup {
+  name: string;
+  source: RepoGroupSource;
+  repos: Repo[];
+}
+export interface ReposResponse {
+  recent: Repo[];
+  groups: RepoGroup[];
+  all: Repo[];
+  scanned_at: number;
+  scanning: boolean;
+}
 
 export type AdvisorPayload = { agent: AgentKind; model: string; effort?: string } | "none";
 export interface StartOrchestratorBody {
@@ -393,22 +573,48 @@ export interface CreateSpikeBody {
   roles?: Partial<Record<SettingsRole, RoleDefault>>;
   attachments?: { name: string; data: string }[];
 }
-export interface CreateSpikeResponse { item: Item; agent: AgentNode; queued: boolean; attachments_failed?: boolean }
+export interface CreateSpikeResponse {
+  item: Item;
+  agent: AgentNode;
+  queued: boolean;
+  attachments_failed?: boolean;
+}
 
 export type AgentEndpoint = "pause" | "resume" | "cancel" | "ack" | "retry" | "terminal";
 export interface ApproveBody {
-  section_sha256?: string; artifact_revision?: number; binding?: AcceptBinding; merge?: MergeChoice;
-  choice?: string; comment?: string;
+  section_sha256?: string;
+  artifact_revision?: number;
+  binding?: AcceptBinding;
+  merge?: MergeChoice;
+  choice?: string;
+  comment?: string;
 }
-export interface ConfirmReposBody { repos: string[]; comment?: string; repos_version: number }
+export interface ConfirmReposBody {
+  repos: string[];
+  comment?: string;
+  repos_version: number;
+}
 
 export type ApiErrorCode =
-  | "bad_request" | "unauthorized" | "not_found" | "conflict" | "transition_denied"
-  | "limit_reached" | "preflight_failed" | "rate_limited" | "internal";
-export interface ApiErrorBody { error: { code: ApiErrorCode; message: string; reason?: string } }
+  | "bad_request"
+  | "unauthorized"
+  | "not_found"
+  | "conflict"
+  | "transition_denied"
+  | "limit_reached"
+  | "preflight_failed"
+  | "rate_limited"
+  | "internal";
+export interface ApiErrorBody {
+  error: { code: ApiErrorCode; message: string; reason?: string };
+}
 
 // SSE
-export interface BoardEvent { seq: number | null; type: string; data: unknown }
+export interface BoardEvent {
+  seq: number | null;
+  type: string;
+  data: unknown;
+}
 export type ConnState = "connecting" | "open" | "closed";
 
 // Board UI state
@@ -416,4 +622,8 @@ export type View = "hierarchy" | "kanban" | "dependencies" | "inbox";
 export type CardLevel = "tasks" | "stories" | "top";
 export type Grouping = "root" | "flat";
 export type InboxFilter = "all" | "questions" | "approvals";
-export interface Filter { q: string; type: ItemType | ""; status: ItemStatus | "" }
+export interface Filter {
+  q: string;
+  type: ItemType | "";
+  status: ItemStatus | "";
+}

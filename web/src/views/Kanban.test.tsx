@@ -62,7 +62,11 @@ describe("Kanban view (§16.7)", () => {
   it("shows active workflow crew and a badge after round one", async () => {
     const d = createMockDaemon();
     const task = d.db.items.find((i) => i.key === "TASK-101")!;
-    task.workflow = { template: "tdd-reviewed", steps: [{ id: "build", run: "coder" }], max_rounds: 3 };
+    task.workflow = {
+      template: "tdd-reviewed",
+      steps: [{ id: "build", run: "coder" }],
+      max_rounds: 3,
+    };
     task.workflow_state = { state: "running", round: 2 };
     const coder = d.db.agents[0]?.children.find((a) => a.item_key === "TASK-101");
     if (!coder) throw new Error("TASK-101 coder fixture missing");
@@ -80,7 +84,9 @@ describe("Kanban view (§16.7)", () => {
     renderWithDaemon(<Host />, { events: false });
     const lane = await screen.findByTestId("lane-EPIC-12");
     expect(lane).toHaveTextContent("4 tasks · 1 need you · 1 blocked");
-    expect(screen.getByTestId("lane-EPIC-30")).toHaveTextContent("All 2 tasks finished · 1 done, 1 cancelled.");
+    expect(screen.getByTestId("lane-EPIC-30")).toHaveTextContent(
+      "All 2 tasks finished · 1 done, 1 cancelled.",
+    );
     expect(screen.getByTestId("lane-orphans")).toHaveTextContent("Unassigned · Parent missing");
     expect(screen.getByTestId("col-ready")).toHaveTextContent("Ready · 3");
     expect(screen.getByTestId("col-draft")).toHaveAttribute("data-collapsed", "true");
@@ -104,9 +110,18 @@ describe("Kanban view (§16.7)", () => {
     expect(cell("EPIC-12", "done")).toHaveClass("max-sm:w-[132px]");
     expect(card("TASK-101")).toHaveClass("max-sm:w-full");
     const lane = within(screen.getByTestId("lane-EPIC-12")).getAllByRole("button")[0]!;
-    expect(lane).toHaveClass("max-sm:max-w-[100vw]", "max-sm:flex-wrap", "max-sm:whitespace-normal", "max-md:h-auto", "max-md:min-h-11");
+    expect(lane).toHaveClass(
+      "max-sm:max-w-[100vw]",
+      "max-sm:flex-wrap",
+      "max-sm:whitespace-normal",
+      "max-md:h-auto",
+      "max-md:min-h-11",
+    );
     expect(screen.getByTestId("lane-EPIC-12")).toHaveClass("max-md:min-w-full"); // spans the scroll width so the sticky header can travel
-    expect(screen.getByTestId("col-ready").parentElement!.parentElement).toHaveClass("max-md:w-max", "max-md:min-w-full");
+    expect(screen.getByTestId("col-ready").parentElement!.parentElement).toHaveClass(
+      "max-md:w-max",
+      "max-md:min-w-full",
+    );
   });
 
   it("names a collapsed header 'Done 2' without the middle dot", async () => {
@@ -163,7 +178,9 @@ describe("Kanban view (§16.7)", () => {
     expect(await screen.findByTestId("col-awaiting_approval")).toBeInTheDocument();
     expect(screen.queryByTestId("lane-EPIC-12")).not.toBeInTheDocument();
     expect(card("EPIC-12")).toHaveTextContent("0 of 2 stories done");
-    expect(within(cell("flat", "awaiting_approval")).getByTestId("card-SPIKE-3")).toBeInTheDocument();
+    expect(
+      within(cell("flat", "awaiting_approval")).getByTestId("card-SPIKE-3"),
+    ).toBeInTheDocument();
   });
 
   it("expands a collapsed column targeted by the status filter and remembers collapse", async () => {
@@ -173,12 +190,16 @@ describe("Kanban view (§16.7)", () => {
     a.unmount();
     const b = renderWithDaemon(<Host />, { events: false });
     await b.user.click(await screen.findByRole("button", { name: /^Ready · 3/ }));
-    await b.user.click(within(screen.getByTestId("lane-EPIC-12")).getByRole("button", { name: /EPIC-12/ }));
+    await b.user.click(
+      within(screen.getByTestId("lane-EPIC-12")).getByRole("button", { name: /EPIC-12/ }),
+    );
     b.unmount();
     renderWithDaemon(<Host />, { events: false });
     expect(await screen.findByTestId("col-ready")).toHaveAttribute("data-collapsed", "true");
     expect(screen.getByTestId("lane-EPIC-12")).toHaveAttribute("data-collapsed", "true");
-    expect(screen.getByTestId("lane-EPIC-12")).toHaveTextContent("4 tasks · 1 need you · 1 blocked");
+    expect(screen.getByTestId("lane-EPIC-12")).toHaveTextContent(
+      "4 tasks · 1 need you · 1 blocked",
+    );
   });
 
   it("moves a card, shows Updating… and settles", async () => {
@@ -188,14 +209,23 @@ describe("Kanban view (§16.7)", () => {
     const d = createMockDaemon();
     const release = d.hold("PATCH /api/items/TASK-103");
     const { user, daemon } = renderWithDaemon(<Host />, { daemon: d });
-    await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
+    await user.click(
+      within(await screen.findByTestId("card-TASK-103")).getByRole("button", {
+        name: "Move to… TASK-103",
+      }),
+    );
     await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
-    expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toHaveTextContent("Updating…");
+    expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toHaveTextContent(
+      "Updating…",
+    );
     release();
     await waitFor(() => expect(card("TASK-103")).not.toHaveTextContent("Updating…"));
     expect(await screen.findByText("Moved TASK-103 to Blocked")).toBeInTheDocument();
     expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toBeInTheDocument();
-    expect(daemon.calls.find((c) => c.method === "PATCH")).toMatchObject({ path: "/api/items/TASK-103", body: { status: "blocked" } });
+    expect(daemon.calls.find((c) => c.method === "PATCH")).toMatchObject({
+      path: "/api/items/TASK-103",
+      body: { status: "blocked" },
+    });
   });
 
   it("clears the pending marker even when the item settles at a different status than requested (Important 1)", async () => {
@@ -213,7 +243,11 @@ describe("Kanban view (§16.7)", () => {
       return { status: 200, body: it };
     });
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
-    await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
+    await user.click(
+      within(await screen.findByTestId("card-TASK-103")).getByRole("button", {
+        name: "Move to… TASK-103",
+      }),
+    );
     await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
     await waitFor(() => expect(card("TASK-103")).not.toHaveTextContent("Updating…"));
     expect(within(cell("EPIC-12", "in_review")).getByTestId("card-TASK-103")).toBeInTheDocument();
@@ -223,9 +257,16 @@ describe("Kanban view (§16.7)", () => {
   it("clears the pending marker on a refusal so the card isn't left stuck disabled (Important 1)", async () => {
     const d = createMockDaemon();
     const reason = "Couldn't update status. The item remains Ready.";
-    d.override("PATCH /api/items/TASK-103", { status: 422, body: { error: { code: "transition_denied", message: reason, reason } } });
+    d.override("PATCH /api/items/TASK-103", {
+      status: 422,
+      body: { error: { code: "transition_denied", message: reason, reason } },
+    });
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
-    await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
+    await user.click(
+      within(await screen.findByTestId("card-TASK-103")).getByRole("button", {
+        name: "Move to… TASK-103",
+      }),
+    );
     await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
     expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(card("TASK-103")).not.toHaveTextContent("Updating…");
@@ -235,9 +276,16 @@ describe("Kanban view (§16.7)", () => {
   it("returns a refused card with the exact toast", async () => {
     const d = createMockDaemon();
     const reason = "Couldn't update status. The item remains Ready.";
-    d.override("PATCH /api/items/TASK-103", { status: 422, body: { error: { code: "transition_denied", message: reason, reason } } });
+    d.override("PATCH /api/items/TASK-103", {
+      status: 422,
+      body: { error: { code: "transition_denied", message: reason, reason } },
+    });
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
-    await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
+    await user.click(
+      within(await screen.findByTestId("card-TASK-103")).getByRole("button", {
+        name: "Move to… TASK-103",
+      }),
+    );
     await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
     expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(within(cell("EPIC-12", "ready")).getByTestId("card-TASK-103")).toBeInTheDocument();
@@ -287,22 +335,38 @@ describe("Kanban view (§16.7)", () => {
   it("routes an epic on Done to acceptance and explains a spike on Done", async () => {
     const onReview = vi.fn();
     const onSelect = vi.fn();
-    const { user } = renderWithDaemon(<Host level="top" onReview={onReview} onSelect={onSelect} />, { events: false });
-    await user.click(within(await screen.findByTestId("card-EPIC-12")).getByRole("button", { name: "Move to… EPIC-12" }));
+    const { user } = renderWithDaemon(
+      <Host level="top" onReview={onReview} onSelect={onSelect} />,
+      { events: false },
+    );
+    await user.click(
+      within(await screen.findByTestId("card-EPIC-12")).getByRole("button", {
+        name: "Move to… EPIC-12",
+      }),
+    );
     await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
     expect(onReview).toHaveBeenCalledWith("req_accept");
     expect(within(cell("flat", "in_progress")).getByTestId("card-EPIC-12")).toBeInTheDocument();
     await user.click(within(card("SPIKE-3")).getByRole("button", { name: "Move to… SPIKE-3" }));
     await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
-    expect(await screen.findByText("This spike reaches Done after materialization.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("This spike reaches Done after materialization."),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View spike" }));
     expect(onSelect).toHaveBeenCalledWith("SPIKE-3");
   });
 
   it("shows the type-filter hint and switches card level", async () => {
     const onLevel = vi.fn();
-    const { user } = renderWithDaemon(<Host filter={{ ...none, type: "spike" }} onLevel={onLevel} />, { events: false });
-    expect(await screen.findByText("Spikes have no task cards yet. Switch Card level to Top-level items to see them.")).toBeInTheDocument();
+    const { user } = renderWithDaemon(
+      <Host filter={{ ...none, type: "spike" }} onLevel={onLevel} />,
+      { events: false },
+    );
+    expect(
+      await screen.findByText(
+        "Spikes have no task cards yet. Switch Card level to Top-level items to see them.",
+      ),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show top-level items" }));
     expect(onLevel).toHaveBeenCalledWith("top");
   });
@@ -316,10 +380,25 @@ describe("Kanban view (§16.7)", () => {
     // before Space is pressed (not after) so both captures see real, distinguishable positions: one
     // column per 25px step, so 2 ArrowRight presses move exactly from "ready" to "blocked".
     const colX = { ready: 25, in_progress: 50, blocked: 75, in_review: 100 } as const;
-    const stubRect = (x: number) => ({ x, y: 0, width: 24, height: 20, top: 0, left: x, right: x + 24, bottom: 20, toJSON: () => ({}) }) as DOMRect;
-    const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const stubRect = (x: number) =>
+      ({
+        x,
+        y: 0,
+        width: 24,
+        height: 20,
+        top: 0,
+        left: x,
+        right: x + 24,
+        bottom: 20,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
       const testid = this.getAttribute("data-testid") ?? "";
-      const col = /^cell-EPIC-12-(ready|in_progress|blocked|in_review)$/.exec(testid)?.[1] as keyof typeof colX | undefined;
+      const col = /^cell-EPIC-12-(ready|in_progress|blocked|in_review)$/.exec(testid)?.[1] as
+        | keyof typeof colX
+        | undefined;
       if (col) return stubRect(colX[col]);
       if (testid === "card-TASK-103") return stubRect(colX.ready);
       return stubRect(9999);
@@ -337,11 +416,20 @@ describe("Kanban view (§16.7)", () => {
       // `lockFor` renders a refused column's reason purely from the `dragging` state dnd-kit's own
       // onDragStart sets — no coordinates or collision detection involved — so a lock hint appearing
       // here is direct proof Space started a keyboard drag via the composed listeners (F8).
-      expect(within(cell("EPIC-12", "in_progress")).getByText("Couldn't update status. The item remains Ready.")).toBeInTheDocument();
+      expect(
+        within(cell("EPIC-12", "in_progress")).getByText(
+          "Couldn't update status. The item remains Ready.",
+        ),
+      ).toBeInTheDocument();
       fireEvent.keyDown(el, { code: "ArrowRight" });
       fireEvent.keyDown(el, { code: "ArrowRight" });
       fireEvent.keyDown(el, { code: "Enter" });
-      await waitFor(() => expect(daemon.calls.find((c) => c.method === "PATCH")).toMatchObject({ path: "/api/items/TASK-103", body: { status: "blocked" } }));
+      await waitFor(() =>
+        expect(daemon.calls.find((c) => c.method === "PATCH")).toMatchObject({
+          path: "/api/items/TASK-103",
+          body: { status: "blocked" },
+        }),
+      );
       expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toBeInTheDocument();
     } finally {
       spy.mockRestore();
@@ -353,18 +441,26 @@ describe("Kanban view (§16.7)", () => {
     const btn = await screen.findByRole("button", { name: "Move to… TASK-103" });
     expect(btn).toBeEnabled();
     daemon.disconnect();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Move to… TASK-103" })).toBeDisabled());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Move to… TASK-103" })).toBeDisabled(),
+    );
     expect(card("TASK-103")).toHaveAttribute("aria-disabled", "true");
   });
 
   it("only mouse and pen pointers can start a drag; touch never does (Move to… replaces it)", () => {
     const { handler } = MousePenSensor.activators[0]!;
-    for (const [pointerType, starts] of [["mouse", true], ["pen", true], ["touch", false]] as const) {
+    for (const [pointerType, starts] of [
+      ["mouse", true],
+      ["pen", true],
+      ["touch", false],
+    ] as const) {
       const onActivation = vi.fn();
-      const ok = handler({ nativeEvent: { pointerType, isPrimary: true, button: 0 } } as never, { onActivation } as never);
+      const ok = handler(
+        { nativeEvent: { pointerType, isPrimary: true, button: 0 } } as never,
+        { onActivation } as never,
+      );
       expect(ok, pointerType).toBe(starts);
       expect(onActivation.mock.calls.length, pointerType).toBe(starts ? 1 : 0);
     }
   });
-
 });

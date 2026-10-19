@@ -1,8 +1,13 @@
-import { ChevronDown, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChevronDown, Lock } from "lucide-react";
 import { C } from "../copy";
-import { type MoveCheck, type Movable, moveOptions } from "../logic/transitions";
+import { type Movable, type MoveCheck, moveOptions } from "../logic/transitions";
 import type { ItemStatus } from "../types";
 
 export function MoveToMenu(p: {
@@ -23,12 +28,19 @@ export function MoveToMenu(p: {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
         {moveOptions(p.item).map((o) => (
-          <DropdownMenuItem key={o.status} disabled={p.disabled || !enabled(o.check)} onSelect={() => p.onMove(o.status, o.check)} className={`flex-col items-start gap-0.5 ${!enabled(o.check) ? "data-[disabled]:opacity-100" : ""}`}>
+          <DropdownMenuItem
+            key={o.status}
+            disabled={p.disabled || !enabled(o.check)}
+            onSelect={() => p.onMove(o.status, o.check)}
+            className={`flex-col items-start gap-0.5 ${!enabled(o.check) ? "data-[disabled]:opacity-100" : ""}`}
+          >
             <span className="flex items-center gap-1.5">
               {!enabled(o.check) && <Lock aria-hidden className="size-3" />}
               {o.label}
             </span>
-            {!o.check.ok && enabled(o.check) && <span className="text-xs text-muted-foreground">{o.check.reason}</span>}
+            {!o.check.ok && enabled(o.check) && (
+              <span className="text-xs text-muted-foreground">{o.check.reason}</span>
+            )}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

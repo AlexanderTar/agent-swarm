@@ -1,6 +1,14 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { ITEM_STATUSES } from "../types";
-import type { CardLevel, Filter, Grouping, InboxFilter, ItemStatus, ItemType, View } from "../types";
+import type {
+  CardLevel,
+  Filter,
+  Grouping,
+  InboxFilter,
+  ItemStatus,
+  ItemType,
+  View,
+} from "../types";
 
 export interface BoardUrl {
   view: View;
@@ -15,7 +23,15 @@ export interface BoardUrl {
 }
 
 export const DEFAULT_URL: BoardUrl = {
-  view: "hierarchy", q: "", type: "", status: "", level: "tasks", group: "root", item: "", req: "", filter: "all",
+  view: "hierarchy",
+  q: "",
+  type: "",
+  status: "",
+  level: "tasks",
+  group: "root",
+  item: "",
+  req: "",
+  filter: "all",
 };
 
 const VIEWS: readonly View[] = ["hierarchy", "kanban", "dependencies", "inbox"];
@@ -45,7 +61,16 @@ export function parseHash(hash: string): BoardUrl {
   };
 }
 
-const ORDER: (keyof BoardUrl)[] = ["q", "type", "status", "level", "group", "item", "req", "filter"];
+const ORDER: (keyof BoardUrl)[] = [
+  "q",
+  "type",
+  "status",
+  "level",
+  "group",
+  "item",
+  "req",
+  "filter",
+];
 
 export function formatHash(u: BoardUrl): string {
   const p = new URLSearchParams();

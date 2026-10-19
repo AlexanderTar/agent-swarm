@@ -36,7 +36,9 @@ describe("Login", () => {
   });
 
   it("shows the wrong-password copy and keeps the form", async () => {
-    const login = vi.fn(async () => { throw new ApiError(401, "unauthorized", "Wrong email or password."); });
+    const login = vi.fn(async () => {
+      throw new ApiError(401, "unauthorized", "Wrong email or password.");
+    });
     const { onSignedIn, user, fill } = setup(login);
     await fill();
     await user.click(screen.getByRole("button", { name: "Sign in" }));
@@ -50,7 +52,15 @@ describe("Login", () => {
     [61, "Too many attempts. Try again in 2 minutes."],
     [30, "Too many attempts. Try again in 1 minute."],
   ])("shows the rate-limit copy for Retry-After %i s", async (retryAfter, copy) => {
-    const login = vi.fn(async () => { throw new ApiError(429, "rate_limited", "Too many login attempts. Try again later.", undefined, retryAfter); });
+    const login = vi.fn(async () => {
+      throw new ApiError(
+        429,
+        "rate_limited",
+        "Too many login attempts. Try again later.",
+        undefined,
+        retryAfter,
+      );
+    });
     const { user, fill } = setup(login);
     await fill();
     await user.click(screen.getByRole("button", { name: "Sign in" }));
@@ -58,7 +68,9 @@ describe("Login", () => {
   });
 
   it("falls back to the server message for any other failure", async () => {
-    const login = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const login = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
     const { user, fill } = setup(login);
     await fill();
     await user.click(screen.getByRole("button", { name: "Sign in" }));
@@ -67,7 +79,12 @@ describe("Login", () => {
 
   it("disables the button while the request is in flight", async () => {
     let done!: () => void;
-    const login = vi.fn(() => new Promise<void>((r) => { done = r; }));
+    const login = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          done = r;
+        }),
+    );
     const { user, fill } = setup(login);
     await fill();
     await user.click(screen.getByRole("button", { name: "Sign in" }));

@@ -5,7 +5,9 @@ import { flattenAgents } from "./agentActions";
 // Every request waiting on the user, minus an approval whose native prompt is already open in a
 // terminal (spec 2.2.1): the bound question row already represents it.
 export const needsYou = (reqs: Request[]): Request[] =>
-  reqs.filter((r) => r.state === "open" && !r.native_pending).sort((a, b) => a.created_at - b.created_at);
+  reqs
+    .filter((r) => r.state === "open" && !r.native_pending)
+    .sort((a, b) => a.created_at - b.created_at);
 
 const QUESTIONS = new Set(["question", "prompt", "blocker"]);
 
@@ -24,9 +26,12 @@ export const needsYouRow = (r: Request): [string, string, string] => [
   C.needsYouMessage,
 ];
 
-export const pickRequest = (reqs: Request[], id: string) => reqs.find((r) => r.id === id) ?? reqs[0];
+export const pickRequest = (reqs: Request[], id: string) =>
+  reqs.find((r) => r.id === id) ?? reqs[0];
 
-export type RequestTarget = { kind: "terminal"; agent: string } | { kind: "unavailable"; hint: string };
+export type RequestTarget =
+  | { kind: "terminal"; agent: string }
+  | { kind: "unavailable"; hint: string };
 
 // What a Needs-you row's click does. null for a request with no terminal_agent, of any kind
 // (21-D5 amended: the is_hitl guard is dropped).

@@ -1,20 +1,40 @@
 import {
-  Background, Handle, type Node, type NodeProps, Position, ReactFlow, ReactFlowProvider, useReactFlow,
+  Background,
+  Handle,
+  type Node,
+  type NodeProps,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { NARROW, useMediaQuery } from "../state/media";
 import { errorText } from "../api";
-import { Key } from "../components/icons";
 import { Segmented } from "../components/Segmented";
 import { StatusPill } from "../components/StatusLabel";
+import { Key } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { C } from "../copy";
 import { useGraph } from "../data/queries";
-import { type ItemNodeData, LayoutCache, type StoryNodeData, dimmedKeys, storyOfFn, toFlow } from "../logic/graphLayout";
+import {
+  type ItemNodeData,
+  LayoutCache,
+  type StoryNodeData,
+  dimmedKeys,
+  storyOfFn,
+  toFlow,
+} from "../logic/graphLayout";
 import { buildIndex } from "../logic/tree";
+import { NARROW, useMediaQuery } from "../state/media";
 import type { GraphNode, GraphScope, Item } from "../types";
 import type { DependenciesProps } from "./props";
 
@@ -31,7 +51,13 @@ function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
       <div className="flex items-center gap-1">
         <Key>{n.key}</Key>
         {n.external && <span className="text-[11px] text-muted-foreground">{n.root_key}</span>}
-        {data.needsYou && <span role="img" aria-label={C.needsYou} className="ml-auto size-2 rounded-full bg-warning" />}
+        {data.needsYou && (
+          <span
+            role="img"
+            aria-label={C.needsYou}
+            className="ml-auto size-2 rounded-full bg-warning"
+          />
+        )}
       </div>
       <p className="line-clamp-2 text-[12px]">{n.title}</p>
       <StatusPill status={n.status} />
@@ -41,7 +67,9 @@ function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
 }
 
 const StoryNode = ({ data }: NodeProps<Node<StoryNodeData>>) => (
-  <div className="h-full rounded-lg border border-border bg-muted/40 px-2 py-1 text-[12px] text-muted-foreground">{data.label}</div>
+  <div className="h-full rounded-lg border border-border bg-muted/40 px-2 py-1 text-[12px] text-muted-foreground">
+    {data.label}
+  </div>
 );
 
 const nodeTypes = { item: ItemNode, story: StoryNode };
@@ -100,7 +128,9 @@ function Graph(p: DependenciesProps) {
 
   const onFind = () => {
     const q = find.trim().toLowerCase();
-    const hit = g?.nodes.find((n) => n.key.toLowerCase().includes(q) || n.title.toLowerCase().includes(q));
+    const hit = g?.nodes.find(
+      (n) => n.key.toLowerCase().includes(q) || n.title.toLowerCase().includes(q),
+    );
     if (!hit) return;
     p.onSelect(hit.key);
     const n = rf.getNode(hit.key);
@@ -115,7 +145,9 @@ function Graph(p: DependenciesProps) {
     return (
       <div className="p-8 text-center">
         <p className="text-destructive">{errorText(graph.error)}</p>
-        <Button type="button" variant="link" onClick={graph.reload} className="mt-2">{C.retry}</Button>
+        <Button type="button" variant="link" onClick={graph.reload} className="mt-2">
+          {C.retry}
+        </Button>
       </div>
     );
   }
@@ -127,20 +159,73 @@ function Graph(p: DependenciesProps) {
         <Segmented
           label={C.scope}
           value={scope}
-          onChange={(s) => { setScope(s); setHops(1); }}
-          options={[{ value: "root", label: C.root }, { value: "neighbourhood", label: C.neighbourhood }]}
+          onChange={(s) => {
+            setScope(s);
+            setHops(1);
+          }}
+          options={[
+            { value: "root", label: C.root },
+            { value: "neighbourhood", label: C.neighbourhood },
+          ]}
         />
-        <label className="flex items-center gap-1.5">{C.hops}
-          <Select value={String(hops)} disabled={scope !== "neighbourhood"} onValueChange={(v) => setHops(Number(v))}>
-            <SelectTrigger aria-label={C.hops}><SelectValue /></SelectTrigger>
-            <SelectContent>{Array.from({ length: Math.max(3, hops) }, (_, i) => i + 1).map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
+        <label className="flex items-center gap-1.5">
+          {C.hops}
+          <Select
+            value={String(hops)}
+            disabled={scope !== "neighbourhood"}
+            onValueChange={(v) => setHops(Number(v))}
+          >
+            <SelectTrigger aria-label={C.hops}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Array.from({ length: Math.max(3, hops) }, (_, i) => i + 1).map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  {n}
+                </SelectItem>
+              ))}
+            </SelectContent>
           </Select>
         </label>
-        <Button type="button" variant="outline" disabled={scope !== "neighbourhood"} onClick={() => setHops((n) => n + 1)}>{C.expandHop}</Button>
-        <Button type="button" variant="outline" onClick={() => void rf.fitView()}>{C.fit}</Button>
-        <Button type="button" variant="outline" className="max-md:size-11" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
-        <Button type="button" variant="outline" className="max-md:size-11" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>
-        <Button type="button" variant="outline" onClick={() => { setHops(1); void rf.fitView(); }}>{C.reset}</Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={scope !== "neighbourhood"}
+          onClick={() => setHops((n) => n + 1)}
+        >
+          {C.expandHop}
+        </Button>
+        <Button type="button" variant="outline" onClick={() => void rf.fitView()}>
+          {C.fit}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="max-md:size-11"
+          aria-label="−"
+          onClick={() => void rf.zoomOut()}
+        >
+          −
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="max-md:size-11"
+          aria-label="+"
+          onClick={() => void rf.zoomIn()}
+        >
+          +
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => {
+            setHops(1);
+            void rf.fitView();
+          }}
+        >
+          {C.reset}
+        </Button>
         <Input
           type="search"
           placeholder={C.find}
@@ -151,14 +236,22 @@ function Graph(p: DependenciesProps) {
           className="h-8 w-40"
         />
         {picked && (
-          <Button type="button" variant="link" onClick={() => p.onSelect(picked.root_key)}>{C.openRoot}</Button>
+          <Button type="button" variant="link" onClick={() => p.onSelect(picked.root_key)}>
+            {C.openRoot}
+          </Button>
         )}
       </div>
-      <p className="py-1 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] text-muted-foreground">{C.depLegend}</p>
+      <p className="py-1 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] text-muted-foreground">
+        {C.depLegend}
+      </p>
       {g && !touching ? (
         <div className="p-8 text-center">
           <p>{C.noDeps}</p>
-          {phone && idx.byKey.get(anchor) && <p className="mt-1 text-muted-foreground"><Key>{anchor}</Key> {idx.byKey.get(anchor)!.title}</p>}
+          {phone && idx.byKey.get(anchor) && (
+            <p className="mt-1 text-muted-foreground">
+              <Key>{anchor}</Key> {idx.byKey.get(anchor)!.title}
+            </p>
+          )}
         </div>
       ) : (
         <div className="min-h-[400px] flex-1">

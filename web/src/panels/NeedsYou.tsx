@@ -1,15 +1,15 @@
 import { type ReactNode, useRef } from "react";
 import { errorText } from "../api";
 import { Segmented } from "../components/Segmented";
-import { C } from "../copy";
-import { useConnection, useMutation } from "../data/hooks";
-import { agentActionToast } from "../logic/toasts";
-import { useSession } from "../state/session";
-import { useAgents, useRequests } from "../data/queries";
-import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
-import type { InboxFilter, Request } from "../types";
 import { useToast } from "../components/Toast";
 import { Button } from "../components/ui/button";
+import { C } from "../copy";
+import { useConnection, useMutation } from "../data/hooks";
+import { useAgents, useRequests } from "../data/queries";
+import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
+import { agentActionToast } from "../logic/toasts";
+import { useSession } from "../state/session";
+import type { InboxFilter, Request } from "../types";
 
 export function NeedsYou(p: {
   filter: InboxFilter;
@@ -44,17 +44,25 @@ export function NeedsYou(p: {
   }
 
   const filtered = filterRequests(requests.data ?? [], p.filter);
-  const selectedReq = p.selected ? (requests.data ?? []).find((r) => r.id === p.selected) : undefined;
-  const list = (p.filter === "all" && selectedReq && !filtered.some((r) => r.id === selectedReq.id))
-    ? [selectedReq, ...filtered]
-    : filtered;
-  const current = (p.filter === "all" ? selectedReq : undefined) ?? list.find((r) => r.id === p.selected) ?? pickRequest(list, "");
+  const selectedReq = p.selected
+    ? (requests.data ?? []).find((r) => r.id === p.selected)
+    : undefined;
+  const list =
+    p.filter === "all" && selectedReq && !filtered.some((r) => r.id === selectedReq.id)
+      ? [selectedReq, ...filtered]
+      : filtered;
+  const current =
+    (p.filter === "all" ? selectedReq : undefined) ??
+    list.find((r) => r.id === p.selected) ??
+    pickRequest(list, "");
   const resolved = p.selected !== "" && !selectedReq && requests.data !== undefined;
   const known = seen.current.get(p.selected);
 
   return (
     <div className="flex h-full min-h-0 flex-col md:flex-row">
-      <div className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border py-3 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-1 md:w-[calc(280px_+_env(safe-area-inset-left))] md:pr-3 md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}>
+      <div
+        className={`w-full shrink-0 space-y-2 overflow-y-auto border-b border-border py-3 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] max-md:flex-1 md:w-[calc(280px_+_env(safe-area-inset-left))] md:pr-3 md:border-b-0 md:border-r ${p.selected !== "" ? "max-md:hidden" : ""}`}
+      >
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -66,7 +74,9 @@ export function NeedsYou(p: {
             { value: "approvals", label: C.approvals },
           ]}
         />
-        {requests.data && list.length === 0 && <p className="text-muted-foreground">{C.inboxEmpty}</p>}
+        {requests.data && list.length === 0 && (
+          <p className="text-muted-foreground">{C.inboxEmpty}</p>
+        )}
         <ul aria-label={C.needsYou} className="space-y-1">
           {list.map((r) => {
             const [line1, line2, line3] = needsYouRow(r);
@@ -96,11 +106,20 @@ export function NeedsYou(p: {
                       size="icon"
                       aria-label={C.openAgentTerminal}
                       disabled={!p.connected || target.kind === "unavailable"}
-                      onClick={() => { if (target.kind === "terminal" && live.connected) {
-                        const epoch = live.epoch;
-                        void terminal.run(target.agent).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", target.agent)); })
-                          .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast.error(errorText(e)); });
-                      } }}
+                      onClick={() => {
+                        if (target.kind === "terminal" && live.connected) {
+                          const epoch = live.epoch;
+                          void terminal
+                            .run(target.agent)
+                            .then(() => {
+                              if (live.connected && live.epoch === epoch)
+                                toast.success(agentActionToast("terminal", target.agent));
+                            })
+                            .catch((e: unknown) => {
+                              if (live.connected && live.epoch === epoch) toast.error(errorText(e));
+                            });
+                        }
+                      }}
                     >
                       ▶
                     </Button>
@@ -111,13 +130,32 @@ export function NeedsYou(p: {
           })}
         </ul>
       </div>
-      <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto p-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] md:pl-4 ${p.selected === "" ? "max-md:hidden" : ""}`}>
-        {p.selected !== "" && <Button type="button" variant="ghost" size="sm" onClick={() => p.onSelectRequest("")} className="mb-2 max-md:-ml-3 md:hidden">{C.back}</Button>}
+      <div
+        className={`min-h-0 min-w-0 flex-1 overflow-y-auto p-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] md:pl-4 ${p.selected === "" ? "max-md:hidden" : ""}`}
+      >
+        {p.selected !== "" && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => p.onSelectRequest("")}
+            className="mb-2 max-md:-ml-3 md:hidden"
+          >
+            {C.back}
+          </Button>
+        )}
         {resolved ? (
           <div className="space-y-2">
             <p>{C.resolved}</p>
             {known && (
-              <Button type="button" variant="link" size="sm" onClick={() => p.onViewItem(known.item_key)}>{C.viewItem}</Button>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => p.onViewItem(known.item_key)}
+              >
+                {C.viewItem}
+              </Button>
             )}
           </div>
         ) : current ? (

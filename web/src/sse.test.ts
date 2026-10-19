@@ -6,7 +6,9 @@ describe("createSseParser", () => {
   it("parses events split across chunks", () => {
     const parse = createSseParser();
     expect(parse("id: 1\nevent: item.changed\nda")).toEqual([]);
-    expect(parse('ta: {"key":"TASK-1"}\n\n')).toEqual([{ id: "1", event: "item.changed", data: '{"key":"TASK-1"}' }]);
+    expect(parse('ta: {"key":"TASK-1"}\n\n')).toEqual([
+      { id: "1", event: "item.changed", data: '{"key":"TASK-1"}' },
+    ]);
   });
 
   it("joins multi-line data, skips comments, strips CR and keeps the last id", () => {
@@ -25,7 +27,11 @@ describe("createSseParser", () => {
 
 function streamResponse(status = 200) {
   let ctrl!: ReadableStreamDefaultController<Uint8Array>;
-  const body = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctrl = c;
+    },
+  });
   const enc = new TextEncoder();
   return {
     res: new Response(body, { status, headers: { "Content-Type": "text/event-stream" } }),
@@ -74,7 +80,11 @@ describe("connectEvents", () => {
     expect(h.requests[0]).toMatchObject({ Authorization: "Bearer t", Accept: "text/event-stream" });
     expect(h.requests[0]).not.toHaveProperty("Last-Event-ID");
     h.streams[0]?.push('id: 7\nevent: agent.changed\ndata: {"name":"a","root_key":"EPIC-1"}\n\n');
-    await vi.waitFor(() => expect(h.events).toEqual([{ seq: 7, type: "agent.changed", data: { name: "a", root_key: "EPIC-1" } }]));
+    await vi.waitFor(() =>
+      expect(h.events).toEqual([
+        { seq: 7, type: "agent.changed", data: { name: "a", root_key: "EPIC-1" } },
+      ]),
+    );
     h.handle.close();
   });
 
@@ -86,8 +96,18 @@ describe("connectEvents", () => {
 
   it("reports a 401 so the board can go back to Login", async () => {
     const onUnauthorized = vi.fn();
-    const fetchFn = vi.fn(async () => new Response("no", { status: 401 })) as unknown as typeof fetch;
-    const handle = connectEvents({ url: "/e", headers: async () => ({}), fetchFn, onEvent: () => {}, onState: () => {}, onUnauthorized, backoffMs: [60_000] });
+    const fetchFn = vi.fn(
+      async () => new Response("no", { status: 401 }),
+    ) as unknown as typeof fetch;
+    const handle = connectEvents({
+      url: "/e",
+      headers: async () => ({}),
+      fetchFn,
+      onEvent: () => {},
+      onState: () => {},
+      onUnauthorized,
+      backoffMs: [60_000],
+    });
     await vi.waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
     handle.close();
   });
@@ -116,8 +136,17 @@ describe("connectEvents", () => {
   it("treats an HTTP error as closed and retries after the backoff", async () => {
     let n = 0;
     const states: ConnState[] = [];
-    const fetchFn = vi.fn(async () => (++n === 1 ? new Response("no", { status: 503 }) : streamResponse().res)) as unknown as typeof fetch;
-    const handle = connectEvents({ url: "/e", headers: async () => ({}), fetchFn, onEvent: () => {}, onState: (s) => states.push(s), backoffMs: [0] });
+    const fetchFn = vi.fn(async () =>
+      ++n === 1 ? new Response("no", { status: 503 }) : streamResponse().res,
+    ) as unknown as typeof fetch;
+    const handle = connectEvents({
+      url: "/e",
+      headers: async () => ({}),
+      fetchFn,
+      onEvent: () => {},
+      onState: (s) => states.push(s),
+      backoffMs: [0],
+    });
     await vi.waitFor(() => expect(states).toEqual(["connecting", "closed", "open"]));
     handle.close();
   });
@@ -128,7 +157,14 @@ describe("connectEvents", () => {
       n++;
       return new Response("no", { status: 503 });
     }) as unknown as typeof fetch;
-    const handle = connectEvents({ url: "/e", headers: async () => ({}), fetchFn, onEvent: () => {}, onState: () => {}, backoffMs: [60_000] });
+    const handle = connectEvents({
+      url: "/e",
+      headers: async () => ({}),
+      fetchFn,
+      onEvent: () => {},
+      onState: () => {},
+      backoffMs: [60_000],
+    });
     await vi.waitFor(() => expect(n).toBe(1));
     handle.retryNow();
     await vi.waitFor(() => expect(n).toBe(2));

@@ -1,6 +1,15 @@
 import {
-  type ReactElement, type ReactNode, createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef,
-  useState, useSyncExternalStore,
+  type ReactElement,
+  type ReactNode,
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
 } from "react";
 import type { Api } from "../api";
 import { type EventsHandle, connectEvents } from "../sse";
@@ -8,7 +17,13 @@ import type { ConnState } from "../types";
 import { keysForEvent } from "./invalidate";
 import { QueryStore } from "./store";
 
-interface DataCtx { api: Api; store: QueryStore; conn: ConnState; live: { connected: boolean; epoch: number }; retry: () => void }
+interface DataCtx {
+  api: Api;
+  store: QueryStore;
+  conn: ConnState;
+  live: { connected: boolean; epoch: number };
+  retry: () => void;
+}
 const Ctx = createContext<DataCtx | null>(null);
 
 function useData(): DataCtx {
@@ -17,7 +32,12 @@ function useData(): DataCtx {
   return c;
 }
 
-export function DataProvider(p: { api: Api; children: ReactNode; events?: boolean; backoffMs?: readonly number[] }): ReactElement {
+export function DataProvider(p: {
+  api: Api;
+  children: ReactNode;
+  events?: boolean;
+  backoffMs?: readonly number[];
+}): ReactElement {
   const { api, events = true, backoffMs } = p;
   const store = useMemo(() => new QueryStore(), []);
   const [conn, setConn] = useState<ConnState>(events ? "connecting" : "open");
@@ -72,7 +92,12 @@ export function useInvalidate(): (prefixes: string[]) => void {
   return useCallback((prefixes: string[]) => store.invalidate(prefixes), [store]);
 }
 
-export interface QueryResult<T> { data: T | undefined; error: unknown; loading: boolean; reload(): void }
+export interface QueryResult<T> {
+  data: T | undefined;
+  error: unknown;
+  loading: boolean;
+  reload(): void;
+}
 
 const noop = () => () => {};
 
@@ -81,7 +106,10 @@ export function useQuery<T>(key: string | null, load: (api: Api) => Promise<T>):
   const { api, store } = useData();
   const loadRef = useRef(load);
   loadRef.current = load;
-  const subscribe = useCallback((fn: () => void) => (k ? store.subscribe(k, fn) : noop()), [store, k]);
+  const subscribe = useCallback(
+    (fn: () => void) => (k ? store.subscribe(k, fn) : noop()),
+    [store, k],
+  );
   const entry = useSyncExternalStore(subscribe, () => (k ? store.get(k) : undefined));
   useEffect(() => {
     if (k) void store.fetch(k, () => loadRef.current(api));
@@ -97,7 +125,12 @@ export function useQuery<T>(key: string | null, load: (api: Api) => Promise<T>):
   };
 }
 
-export interface Mutation<A extends unknown[], R> { run(...a: A): Promise<R>; pending: boolean; error: unknown; reset(): void }
+export interface Mutation<A extends unknown[], R> {
+  run(...a: A): Promise<R>;
+  pending: boolean;
+  error: unknown;
+  reset(): void;
+}
 
 export function useMutation<A extends unknown[], R>(
   fn: (api: Api, ...a: A) => Promise<R>,

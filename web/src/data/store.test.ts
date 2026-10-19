@@ -20,12 +20,25 @@ describe("QueryStore", () => {
     s.subscribe("a", () => {});
     await s.fetch("a", async () => 1);
     let release!: () => void;
-    const p = s.fetch("a", () => new Promise((r) => { release = () => r(2); }), true);
+    const p = s.fetch(
+      "a",
+      () =>
+        new Promise((r) => {
+          release = () => r(2);
+        }),
+      true,
+    );
     expect(s.get("a")).toEqual({ data: 1, error: undefined, loading: true });
     release();
     await p;
     expect(s.get("a")?.data).toBe(2);
-    await s.fetch("a", async () => { throw new Error("boom"); }, true);
+    await s.fetch(
+      "a",
+      async () => {
+        throw new Error("boom");
+      },
+      true,
+    );
     expect(s.get("a")).toMatchObject({ data: 2, loading: false });
     expect((s.get("a")?.error as Error).message).toBe("boom");
   });
@@ -49,7 +62,14 @@ describe("QueryStore", () => {
     s.subscribe("k", () => {});
     let n = 0;
     let release!: () => void;
-    const first = s.fetch("k", () => new Promise<number>((r) => { n++; release = () => r(n); }));
+    const first = s.fetch(
+      "k",
+      () =>
+        new Promise<number>((r) => {
+          n++;
+          release = () => r(n);
+        }),
+    );
     s.invalidate(["k"]);
     release();
     await first;
@@ -62,7 +82,13 @@ describe("QueryStore", () => {
     const s = new QueryStore();
     const unsub = s.subscribe("k", () => {});
     let release!: () => void;
-    const first = s.fetch("k", () => new Promise<number>((r) => { release = () => r(1); }));
+    const first = s.fetch(
+      "k",
+      () =>
+        new Promise<number>((r) => {
+          release = () => r(1);
+        }),
+    );
     unsub(); // the view unmounts while the read is still in flight: zero subscribers left
     s.invalidate(["k"]);
     release(); // the pre-invalidate response lands

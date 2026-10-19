@@ -1,9 +1,10 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { type Page, type TestInfo, expect, test } from "@playwright/test";
 import { noHorizontalOverflow, settled } from "./helpers";
 
 // Desktop-only checks (32px density, mouse drag, side-by-side inbox) skip on the touch projects, which
 // cover the same flows through Move to…, the Filters popover and the no-overflow checks below.
-const desktopOnly = (testInfo: TestInfo, why: string) => test.skip(testInfo.project.name !== "mock", why);
+const desktopOnly = (testInfo: TestInfo, why: string) =>
+  test.skip(testInfo.project.name !== "mock", why);
 
 // Below sm the header has no New orchestrator button; it lives in the New item menu.
 // Decided by the viewport, not by isVisible(): isVisible() does not wait, so on a slow runner it ran before the
@@ -36,38 +37,41 @@ test("Details and form sheets use their separate narrow breakpoints", async ({ p
   }
 });
 
-for (const width of [375, 390]) test(`form sheet controls fit a narrow viewport at ${width}px`, async ({ page }) => {
-  await page.setViewportSize({ width, height: 844 });
-  await page.goto("/");
-  const newItem = await page.getByRole("button", { name: "New item" }).boundingBox();
-  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(width);
-  await openNewOrchestrator(page);
-  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
-  await page.screenshot({ animations: "disabled" });
-  const model = sheet.getByRole("combobox", { name: "Model", exact: true });
-  const modelBox = await model.boundingBox();
-  const rescanBox = await sheet.getByRole("button", { name: "Rescan" }).boundingBox();
-  expect(modelBox?.width).toBeGreaterThanOrEqual(160);
-  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(width);
-  // Intent: label above the control, every option inside the sheet.
-  const sheetBox = (await sheet.boundingBox())!;
-  const label = await sheet.getByText("Intent", { exact: true }).boundingBox();
-  const group = sheet.getByRole("radiogroup", { name: "Intent" });
-  const groupBox = (await group.boundingBox())!;
-  expect(groupBox.y).toBeGreaterThanOrEqual(label!.y + label!.height - 1);
-  expect(groupBox.x).toBeLessThanOrEqual(label!.x + 1);
-  for (const radio of await group.getByRole("radio").all()) {
-    const box = (await radio.boundingBox())!;
-    expect(box.x + box.width).toBeLessThanOrEqual(sheetBox.x + sheetBox.width - 8);
-  }
-  // Footer: helper text on its own line, buttons full width and stacked.
-  const cancel = (await sheet.getByRole("button", { name: "Cancel", exact: true }).boundingBox())!;
-  const submit = (await sheet.getByRole("button", { name: /^(Start|Queue)/ }).boundingBox())!;
-  expect(cancel.width).toBeGreaterThan(300);
-  expect(submit.width).toBeGreaterThan(300);
-  // Primary action first, Cancel last in the stack.
-  expect(cancel.y).toBeGreaterThanOrEqual(submit.y + submit.height - 1);
-});
+for (const width of [375, 390])
+  test(`form sheet controls fit a narrow viewport at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/");
+    const newItem = await page.getByRole("button", { name: "New item" }).boundingBox();
+    expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(width);
+    await openNewOrchestrator(page);
+    const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+    await page.screenshot({ animations: "disabled" });
+    const model = sheet.getByRole("combobox", { name: "Model", exact: true });
+    const modelBox = await model.boundingBox();
+    const rescanBox = await sheet.getByRole("button", { name: "Rescan" }).boundingBox();
+    expect(modelBox?.width).toBeGreaterThanOrEqual(160);
+    expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(width);
+    // Intent: label above the control, every option inside the sheet.
+    const sheetBox = (await sheet.boundingBox())!;
+    const label = await sheet.getByText("Intent", { exact: true }).boundingBox();
+    const group = sheet.getByRole("radiogroup", { name: "Intent" });
+    const groupBox = (await group.boundingBox())!;
+    expect(groupBox.y).toBeGreaterThanOrEqual(label!.y + label!.height - 1);
+    expect(groupBox.x).toBeLessThanOrEqual(label!.x + 1);
+    for (const radio of await group.getByRole("radio").all()) {
+      const box = (await radio.boundingBox())!;
+      expect(box.x + box.width).toBeLessThanOrEqual(sheetBox.x + sheetBox.width - 8);
+    }
+    // Footer: helper text on its own line, buttons full width and stacked.
+    const cancel = (await sheet
+      .getByRole("button", { name: "Cancel", exact: true })
+      .boundingBox())!;
+    const submit = (await sheet.getByRole("button", { name: /^(Start|Queue)/ }).boundingBox())!;
+    expect(cancel.width).toBeGreaterThan(300);
+    expect(submit.width).toBeGreaterThan(300);
+    // Primary action first, Cancel last in the stack.
+    expect(cancel.y).toBeGreaterThanOrEqual(submit.y + submit.height - 1);
+  });
 
 test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
@@ -82,15 +86,21 @@ test("checkpoint rows stack below sm", async ({ page }, testInfo) => {
   expect(s.y).toBeGreaterThanOrEqual(t.y + t.height - 1);
   // Every part stays inside the bordered group, and the advice title wraps instead of clipping.
   const group = (await details.getByRole("group").first().boundingBox())!;
-  for (const box of [t, s, (await row.locator("span").nth(2).boundingBox())!]) expect(box.y + box.height).toBeLessThanOrEqual(group.y + group.height);
+  for (const box of [t, s, (await row.locator("span").nth(2).boundingBox())!])
+    expect(box.y + box.height).toBeLessThanOrEqual(group.y + group.height);
   for (const advice of await details.getByRole("button", { name: /^Advice/ }).all()) {
-    const { scrollWidth, clientWidth } = await advice.evaluate((e) => ({ scrollWidth: e.scrollWidth, clientWidth: e.clientWidth }));
+    const { scrollWidth, clientWidth } = await advice.evaluate((e) => ({
+      scrollWidth: e.scrollWidth,
+      clientWidth: e.clientWidth,
+    }));
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
   }
   await noHorizontalOverflow(page);
 });
 
-test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }, testInfo) => {
+test("foundation controls keep dark palette, contrast and density under a light OS", async ({
+  page,
+}, testInfo) => {
   desktopOnly(testInfo, "32px density is desktop-only");
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");
@@ -136,22 +146,32 @@ test("foundation controls keep dark palette, contrast and density under a light 
   await expect(fixture.getByTestId("button-destructive")).toHaveCSS("color", "rgb(11, 11, 14)");
   await expect(fixture.getByTestId("badge-destructive")).toHaveCSS("color", "rgb(11, 11, 14)");
   await expect(fixture.getByTestId("button-link")).toHaveCSS("color", "rgb(162, 152, 255)");
-  await expect(fixture.getByTestId("button-outline")).toHaveCSS("background-color", /^oklab\(.* \/ 0\.3\)$/);
+  await expect(fixture.getByTestId("button-outline")).toHaveCSS(
+    "background-color",
+    /^oklab\(.* \/ 0\.3\)$/,
+  );
   await expect(fixture.getByTestId("input")).toHaveCSS("background-color", /^oklab\(.* \/ 0\.3\)$/);
   await expect(fixture.getByTestId("button-default")).not.toHaveCSS("transition-property", "all");
   await expect(fixture.getByTestId("tab")).not.toHaveCSS("transition-property", "all");
-  const lightColors = await fixture.locator("[data-testid]").evaluateAll((nodes) =>
-    nodes.map((node) => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]),
-  );
+  const lightColors = await fixture
+    .locator("[data-testid]")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]),
+    );
   await page.emulateMedia({ colorScheme: "dark" });
-  const darkColors = await fixture.locator("[data-testid]").evaluateAll((nodes) =>
-    nodes.map((node) => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]),
-  );
+  const darkColors = await fixture
+    .locator("[data-testid]")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]),
+    );
   expect(darkColors).toEqual(lightColors);
 });
 
 test("hierarchy, filters and view switching keep the selection", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "Details covers the header on phones; see the Filters popover test");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "Details covers the header on phones; see the Filters popover test",
+  );
   await page.goto("/#/hierarchy?item=TASK-102");
   await expect(page.getByRole("treeitem", { name: /^EPIC-12 / })).toBeVisible();
   await expect(page.getByTestId("details-panel")).toContainText("Persist session");
@@ -167,7 +187,9 @@ test("hierarchy, filters and view switching keep the selection", async ({ page }
     await settled(details);
     const covered = await kanban.evaluate((el) => {
       const r = el.getBoundingClientRect();
-      return !!document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest("[role=dialog]");
+      return !!document
+        .elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
+        ?.closest("[role=dialog]");
     });
     expect(covered, "Details covers the Kanban tab below 1100 px").toBe(true);
     await details.getByRole("button", { name: "Close" }).first().click();
@@ -213,17 +235,27 @@ test("dragging an allowed card shows Updating… and settles", async ({ page }, 
   await expect(page.getByText("Moved TASK-103 to Blocked")).toBeVisible();
 });
 
-test("dragging to a refused column shows the lock, returns the card and toasts", async ({ page }, testInfo) => {
+test("dragging to a refused column shows the lock, returns the card and toasts", async ({
+  page,
+}, testInfo) => {
   desktopOnly(testInfo, "mouse drag; touch uses Move to…");
   await page.goto("/#/kanban");
   const drop = await drag(page, "card-TASK-101", "cell-EPIC-12-ready");
-  await expect(page.getByTestId("cell-EPIC-12-ready")).toContainText("Couldn't update status. The item remains In progress.");
+  await expect(page.getByTestId("cell-EPIC-12-ready")).toContainText(
+    "Couldn't update status. The item remains In progress.",
+  );
   await drop();
-  await expect(page.getByText("Couldn't update status. The item remains In progress.").last()).toBeVisible();
-  await expect(page.getByTestId("cell-EPIC-12-in_progress").getByTestId("card-TASK-101")).toBeVisible();
+  await expect(
+    page.getByText("Couldn't update status. The item remains In progress.").last(),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("cell-EPIC-12-in_progress").getByTestId("card-TASK-101"),
+  ).toBeVisible();
 });
 
-test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px on phones", async ({ page }, testInfo) => {
+test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px on phones", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
   await page.goto("/#/kanban");
   const ready = page.getByTestId("col-ready");
@@ -246,7 +278,9 @@ test("kanban snaps 85vw columns, names collapsed headers and Move to… is 44px 
   await noHorizontalOverflow(page);
 });
 
-test("kanban lane headers wrap inside the screen and collapsed names are not cut on phones", async ({ page }, testInfo) => {
+test("kanban lane headers wrap inside the screen and collapsed names are not cut on phones", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
   await page.goto("/#/kanban");
   const viewport = page.viewportSize()!.width;
@@ -267,7 +301,9 @@ test("kanban lane headers wrap inside the screen and collapsed names are not cut
   expect(cardBox.width).toBeGreaterThan(cell.width - 28);
 });
 
-test("kanban lane header text stays inside its button and every lane header is on screen after load on phones", async ({ page }, testInfo) => {
+test("kanban lane header text stays inside its button and every lane header is on screen after load on phones", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
   await page.goto("/#/kanban");
   await expect(page.getByTestId("lane-EPIC-12")).toBeVisible();
@@ -295,7 +331,9 @@ test("kanban lane header text stays inside its button and every lane header is o
   }
 });
 
-test("kanban lane headers stay on screen at every horizontal scroll offset and after reload below md", async ({ page }, testInfo) => {
+test("kanban lane headers stay on screen at every horizontal scroll offset and after reload below md", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name === "mock", "below md only");
   const onScreen = async (width: number, label: string) => {
     for (const l of await page.locator('[data-testid^="lane-"]').all()) {
@@ -326,7 +364,10 @@ test("Move to… works from the keyboard", async ({ page }) => {
   // the card itself picks up "Move to… TASK-110" in its own accessible name (dnd-kit gives it
   // role="button", and the nested Move-to button's aria-label bleeds into name-from-content), so
   // scope to the card to get the actual Move-to button.
-  await page.getByTestId("card-TASK-110").getByRole("button", { name: "Move to… TASK-110" }).focus();
+  await page
+    .getByTestId("card-TASK-110")
+    .getByRole("button", { name: "Move to… TASK-110" })
+    .focus();
   await page.keyboard.press("Enter");
   await page.getByRole("menuitem", { name: /^Cancelled/ }).focus();
   await page.keyboard.press("Enter");
@@ -352,7 +393,9 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   await expect(page.getByText("Already resolved.")).toBeVisible();
 });
 
-test("phone inbox lists full height, opens a review full-width and Back returns", async ({ page }, testInfo) => {
+test("phone inbox lists full height, opens a review full-width and Back returns", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below md)");
   await page.goto("/#/inbox");
   const list = page.getByRole("list", { name: "Needs you" });
@@ -361,10 +404,17 @@ test("phone inbox lists full height, opens a review full-width and Back returns"
   const listBox = await list.boundingBox();
   expect(listBox!.height).toBeGreaterThan(300);
   // The row button must grow with its three lines instead of squeezing them to nothing.
-  const lines = await list.getByRole("button", { name: /Waiting for your input/ }).first().locator("span").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+  const lines = await list
+    .getByRole("button", { name: /Waiting for your input/ })
+    .first()
+    .locator("span")
+    .evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
   for (const h of lines) expect(h).toBeGreaterThanOrEqual(16);
   await expect(page.getByRole("button", { name: "← Back" })).toBeHidden();
-  await list.getByRole("button", { name: /Waiting for your input/ }).first().click();
+  await list
+    .getByRole("button", { name: /Waiting for your input/ })
+    .first()
+    .click();
   await expect(page).toHaveURL(/req=/);
   await expect(list).toBeHidden();
   const back = page.getByRole("button", { name: "← Back" });
@@ -432,10 +482,14 @@ test("the dependency graph renders and expands a hop", async ({ page }, testInfo
 test("losing the connection shows the banner and disables moves", async ({ page, request }) => {
   await page.goto("/#/kanban");
   // scope to the card, see the note in the keyboard Move-to test above
-  const moveTo = page.getByTestId("card-TASK-103").getByRole("button", { name: "Move to… TASK-103" });
+  const moveTo = page
+    .getByTestId("card-TASK-103")
+    .getByRole("button", { name: "Move to… TASK-103" });
   await expect(moveTo).toBeEnabled();
   await request.get("/__mock/disconnect");
-  await expect(page.getByRole("alert")).toHaveText(/Connection lost\. Status changes are unavailable\./);
+  await expect(page.getByRole("alert")).toHaveText(
+    /Connection lost\. Status changes are unavailable\./,
+  );
   await expect(moveTo).toBeDisabled();
   await request.get("/__mock/reconnect");
   await page.getByRole("alert").getByRole("button", { name: "Retry" }).click();
@@ -474,10 +528,14 @@ test("toast uses the popover surface in the browser", async ({ page }) => {
   await sheet.getByRole("button", { name: "Create item" }).click();
   const toast = page.locator("[data-sonner-toast]").last();
   await expect(toast).toBeVisible();
-  expect(await toast.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(23, 23, 29)");
+  expect(await toast.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+    "rgb(23, 23, 29)",
+  );
 });
 
-test("hierarchy rows fold status under the title and are 44px tall on phones", async ({ page }, testInfo) => {
+test("hierarchy rows fold status under the title and are 44px tall on phones", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout (below sm)");
   await page.goto("/#/hierarchy");
   await expect(page.getByTestId("view")).toBeVisible();
@@ -493,8 +551,14 @@ test("hierarchy rows fold status under the title and are 44px tall on phones", a
   // The folded status pill lines up under the type icon, for leaves and for rows with a chevron.
   for (const k of ["TASK-102", "EPIC-12"]) {
     const r = page.getByRole("treeitem", { name: new RegExp(`^${k} `) });
-    const icon = (await r.getByRole("img", { name: /^(Epic|Story|Task|Bug|Spike|Chore)$/ }).first().boundingBox())!;
-    const pill = (await r.getByText(/^(Blocked|In progress|Ready|Draft|Done|In review)$/).first().boundingBox())!;
+    const icon = (await r
+      .getByRole("img", { name: /^(Epic|Story|Task|Bug|Spike|Chore)$/ })
+      .first()
+      .boundingBox())!;
+    const pill = (await r
+      .getByText(/^(Blocked|In progress|Ready|Draft|Done|In review)$/)
+      .first()
+      .boundingBox())!;
     expect(Math.abs(pill.x - icon.x), k).toBeLessThanOrEqual(4);
   }
   await noHorizontalOverflow(page);
@@ -509,7 +573,9 @@ test("hierarchy rows are at least 44px tall between sm and md too", async ({ pag
   expect(box.height).toBeGreaterThanOrEqual(44);
 });
 
-test("dependencies opens on the graph, not Details, and the toolbar is one scroll row on phones", async ({ page }, testInfo) => {
+test("dependencies opens on the graph, not Details, and the toolbar is one scroll row on phones", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout");
   await page.goto("/#/dependencies");
   const details = page.getByRole("dialog", { name: /^(EPIC|BUG|STORY|TASK)-\d+$/ });
@@ -544,7 +610,10 @@ test("narrow windows show a details sheet above the view", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 800 });
   await page.goto("/#/hierarchy?item=TASK-101");
   await expect(page.getByRole("dialog", { name: "TASK-101" })).toBeVisible();
-  await page.getByRole("dialog", { name: "TASK-101" }).getByRole("button", { name: "Close" }).click();
+  await page
+    .getByRole("dialog", { name: "TASK-101" })
+    .getByRole("button", { name: "Close" })
+    .click();
   await expect(page.getByTestId("view")).toBeVisible();
 });
 
@@ -555,7 +624,19 @@ test("Progress and PR links fit a narrow Details sheet", async ({ page }) => {
     const body = await response.json();
     body.item.status = "in_review";
     body.todos = [{ id: "TASK-101", label, status: "in_progress", item_key: "TASK-101" }];
-    body.merges = [{ repo: "agent-swarm", kind: "pr", url: "https://github.com/o/agent-swarm/pull/412", number: 412, base: "main", head: "swarm/epic-12", auto_merge: true, state: "open", checks: "passing" }];
+    body.merges = [
+      {
+        repo: "agent-swarm",
+        kind: "pr",
+        url: "https://github.com/o/agent-swarm/pull/412",
+        number: 412,
+        base: "main",
+        head: "swarm/epic-12",
+        auto_merge: true,
+        state: "open",
+        checks: "passing",
+      },
+    ];
     await route.fulfill({ response, json: body });
   });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -568,16 +649,24 @@ test("Progress and PR links fit a narrow Details sheet", async ({ page }) => {
   const sheetBox = await details.boundingBox();
   const taskBox = await task.boundingBox();
   const prBox = await pr.boundingBox();
-  expect(taskBox && sheetBox && taskBox.x + taskBox.width).toBeLessThanOrEqual((sheetBox?.x ?? 0) + (sheetBox?.width ?? 0));
+  expect(taskBox && sheetBox && taskBox.x + taskBox.width).toBeLessThanOrEqual(
+    (sheetBox?.x ?? 0) + (sheetBox?.width ?? 0),
+  );
   expect(prBox?.width).toBeGreaterThanOrEqual(32);
   expect(prBox?.height).toBeGreaterThanOrEqual(32);
 });
 
-test("artifact wraps long text in a bounded scroller and keeps close keyboard focus", async ({ page }) => {
+test("artifact wraps long text in a bounded scroller and keeps close keyboard focus", async ({
+  page,
+}) => {
   await page.route("**/api/artifacts/art_epic_spec**", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
-    body.markdown = ('Paragraph ' + 'x'.repeat(500) + '\n\n').repeat(35) + '\n```\n' + 'y'.repeat(800) + '\n```\n\nEND OF ARTIFACT';
+    body.markdown =
+      ("Paragraph " + "x".repeat(500) + "\n\n").repeat(35) +
+      "\n```\n" +
+      "y".repeat(800) +
+      "\n```\n\nEND OF ARTIFACT";
     await route.fulfill({ response, json: body });
   });
   await page.goto("/#/hierarchy?item=EPIC-12");
@@ -587,15 +676,24 @@ test("artifact wraps long text in a bounded scroller and keeps close keyboard fo
   await expect(dialog).toBeVisible();
   const close = dialog.getByRole("button", { name: "Close" });
   await expect(close).not.toBeFocused();
-  expect(await dialog.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(page.viewportSize()!.height);
-  const scroller = dialog.locator('[data-artifact-content]');
+  expect(await dialog.evaluate((el) => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(
+    page.viewportSize()!.height,
+  );
+  const scroller = dialog.locator("[data-artifact-content]");
   await expect(scroller).toBeVisible();
   // The scroller is visible while the body still loads; measure only once the last line is in the DOM.
   await expect(dialog.getByText("END OF ARTIFACT")).toBeAttached();
-  const dimensions = await scroller.evaluate(el => ({ width: el.clientWidth, scrollWidth: el.scrollWidth, height: el.clientHeight, scrollHeight: el.scrollHeight }));
+  const dimensions = await scroller.evaluate((el) => ({
+    width: el.clientWidth,
+    scrollWidth: el.scrollWidth,
+    height: el.clientHeight,
+    scrollHeight: el.scrollHeight,
+  }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
   expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.height);
-  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await scroller.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
   await expect(dialog.getByText("END OF ARTIFACT")).toBeInViewport();
   await page.mouse.move(0, 0);
   await expect(scroller).toHaveCSS("scrollbar-width", "thin");
@@ -603,12 +701,14 @@ test("artifact wraps long text in a bounded scroller and keeps close keyboard fo
   await scroller.hover();
   await expect(scroller).toHaveCSS("scrollbar-color", "rgb(38, 38, 47) rgba(0, 0, 0, 0)");
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(await scroller.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
-  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  expect(await scroller.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+  await scroller.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
   await expect(dialog.getByText("END OF ARTIFACT")).toBeInViewport();
   await page.keyboard.press("Tab");
   await expect(close).toBeFocused();
-  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
+  expect(await close.evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
   await page.screenshot({ path: "test-results/artifact-scroll.png" });
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
@@ -620,46 +720,64 @@ test("details close starts neutral and is visibly focused by keyboard", async ({
   await page.goto("/#/hierarchy?item=TASK-101");
   const close = page.getByRole("dialog").getByRole("button", { name: "Close" });
   await expect(close).toBeVisible();
-  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).toBe("none");
+  expect(await close.evaluate((el) => getComputedStyle(el).boxShadow)).toBe("none");
   await page.keyboard.press("Tab");
   await close.focus();
-  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
+  expect(await close.evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
 });
 
-test("details tabs have no vertical overflow and remain reachable at narrow widths", async ({ page }) => {
+test("details tabs have no vertical overflow and remain reachable at narrow widths", async ({
+  page,
+}) => {
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto("/#/hierarchy?item=TASK-101");
     const tabs = page.getByTestId("details-panel").getByRole("tablist");
     await expect(tabs).toBeVisible();
-    expect(await tabs.evaluate(el => el.scrollHeight - el.clientHeight)).toBe(0);
+    expect(await tabs.evaluate((el) => el.scrollHeight - el.clientHeight)).toBe(0);
     await tabs.getByRole("tab", { name: "Deps", exact: true }).click();
-    await expect(tabs.getByRole("tab", { name: "Deps", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(tabs.getByRole("tab", { name: "Deps", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     await page.screenshot({ path: `test-results/details-tabs-${width}.png` });
   }
 });
 
-test("locked status choices show only labels and locks while valid moves still work", async ({ page }) => {
+test("locked status choices show only labels and locks while valid moves still work", async ({
+  page,
+}) => {
   await page.goto("/#/hierarchy?item=TASK-101");
-  await page.getByTestId("details-panel").getByRole("button", { name: "In progress", exact: true }).click();
+  await page
+    .getByTestId("details-panel")
+    .getByRole("button", { name: "In progress", exact: true })
+    .click();
   const locked = page.getByRole("menuitem", { name: /^Ready/ });
   await expect(locked).toHaveAttribute("aria-disabled", "true");
   await expect(locked).toHaveText("Ready");
   await expect(locked.locator("svg")).toHaveCount(1);
   await expect(page.getByRole("menu")).not.toContainText("Couldn't update status");
   await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
-  await expect(page.getByTestId("details-panel").getByRole("button", { name: "Blocked", exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("details-panel").getByRole("button", { name: "Blocked", exact: true }),
+  ).toBeVisible();
 });
 
 for (const start of [false, true]) {
   for (const width of [1440, 390]) {
-    test(`${start ? 'start' : 'new'} orchestrator fits long paths and expanded roles at ${width}px`, async ({ page }) => {
+    test(`${start ? "start" : "new"} orchestrator fits long paths and expanded roles at ${width}px`, async ({
+      page,
+    }) => {
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.route(/\/api\/repos(?:\?|$)/, async (route) => {
         const response = await route.fetch();
         const body = await response.json();
-        for (const repo of [...body.all, ...body.recent, ...body.groups.flatMap((g: { repos: object[] }) => g.repos)]) {
-          repo.path = '/Users/alex/' + 'verylongfolder'.repeat(40) + '/repository';
+        for (const repo of [
+          ...body.all,
+          ...body.recent,
+          ...body.groups.flatMap((g: { repos: object[] }) => g.repos),
+        ]) {
+          repo.path = "/Users/alex/" + "verylongfolder".repeat(40) + "/repository";
         }
         await route.fulfill({ response, json: body });
       });
@@ -677,23 +795,46 @@ for (const start of [false, true]) {
       });
       await page.setViewportSize({ width, height: 844 });
       await page.goto(start ? "/#/hierarchy?item=EPIC-12" : "/");
-      if (start) await page.getByRole("button", { name: "Start orchestrator", exact: true }).click();
+      if (start)
+        await page.getByRole("button", { name: "Start orchestrator", exact: true }).click();
       else await openNewOrchestrator(page);
-      const sheet = page.getByRole("dialog", { name: start ? "Start orchestrator" : "New orchestrator", exact: true });
+      const sheet = page.getByRole("dialog", {
+        name: start ? "Start orchestrator" : "New orchestrator",
+        exact: true,
+      });
       await expect(sheet).toBeVisible();
-      await expect.poll(async () => Math.round((await sheet.boundingBox())!.x)).toBe(width === 1440 ? 540 : 0);
+      await expect
+        .poll(async () => Math.round((await sheet.boundingBox())!.x))
+        .toBe(width === 1440 ? 540 : 0);
       const sheetBox = await sheet.boundingBox();
       expect(sheetBox?.width).toBeLessThanOrEqual(width);
       if (width === 1440) expect(sheetBox?.width).toBeGreaterThanOrEqual(850);
       const path = sheet.getByRole("option").first().locator(".key");
       await expect(path).toBeVisible();
-      expect(await path.evaluate(el => el.scrollWidth)).toBeGreaterThan(await path.evaluate(el => el.clientWidth));
+      expect(await path.evaluate((el) => el.scrollWidth)).toBeGreaterThan(
+        await path.evaluate((el) => el.clientWidth),
+      );
       await expect(path).toHaveCSS("text-overflow", "ellipsis");
       await sheet.getByRole("button", { name: "Worker Roles" }).click();
-      await sheet.getByRole("combobox", { name: "Coder Agent", exact: true }).scrollIntoViewIfNeeded();
-      await page.screenshot({ path: `test-results/orchestrator-roles-${start ? 'start' : 'new'}-${width}.png` });
-      for (const role of ['', 'Coder', 'Reviewer', 'UI reviewer', 'Designer', 'Researcher', 'Debugger', 'Mechanical']) {
-        const controls = ['Agent', 'Model', 'Effort'].map(label => sheet.getByRole("combobox", { name: role ? `${role} ${label}` : label, exact: true }));
+      await sheet
+        .getByRole("combobox", { name: "Coder Agent", exact: true })
+        .scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: `test-results/orchestrator-roles-${start ? "start" : "new"}-${width}.png`,
+      });
+      for (const role of [
+        "",
+        "Coder",
+        "Reviewer",
+        "UI reviewer",
+        "Designer",
+        "Researcher",
+        "Debugger",
+        "Mechanical",
+      ]) {
+        const controls = ["Agent", "Model", "Effort"].map((label) =>
+          sheet.getByRole("combobox", { name: role ? `${role} ${label}` : label, exact: true }),
+        );
         for (const control of controls) {
           await control.scrollIntoViewIfNeeded();
           await expect(control).toBeInViewport();
@@ -703,19 +844,23 @@ for (const start of [false, true]) {
           expect(box?.width).toBeGreaterThanOrEqual(width === 390 ? 160 : 140);
         }
         if (width === 1440) {
-          const boxes = await Promise.all(controls.map(control => control.boundingBox()));
+          const boxes = await Promise.all(controls.map((control) => control.boundingBox()));
           expect(boxes[0]?.y).toBe(boxes[1]?.y);
           expect(boxes[0]?.y).toBe(boxes[2]?.y);
         }
-        const icon = controls[0]!.locator('[role=img]');
-        await expect(icon).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+        const icon = controls[0]!.locator("[role=img]");
+        await expect(icon).toHaveCSS("background-color", "rgb(255, 255, 255)");
       }
-      const body = sheet.locator(':scope > div.overflow-y-auto');
-      expect(await body.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
-      await sheet.getByRole('textbox', { name: start ? 'Name' : 'Request (optional)', exact: true }).scrollIntoViewIfNeeded();
-      await expect(sheet.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
-      await page.screenshot({ path: `test-results/orchestrator-${start ? 'start' : 'new'}-${width}.png` });
-      await sheet.getByRole('button', { name: 'Cancel', exact: true }).click();
+      const body = sheet.locator(":scope > div.overflow-y-auto");
+      expect(await body.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+      await sheet
+        .getByRole("textbox", { name: start ? "Name" : "Request (optional)", exact: true })
+        .scrollIntoViewIfNeeded();
+      await expect(sheet.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
+      await page.screenshot({
+        path: `test-results/orchestrator-${start ? "start" : "new"}-${width}.png`,
+      });
+      await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
       await expect(sheet).toHaveCount(0);
     });
   }
@@ -737,8 +882,14 @@ for (const width of [1440, 390]) {
       expect((await button.innerText()).trim()).toBe("");
       const box = await button.boundingBox();
       // One line, level with the name, inside the row.
-      expect(Math.abs((box?.y ?? 0) + (box?.height ?? 0) / 2 - ((nameBox?.y ?? 0) + (nameBox?.height ?? 0) / 2))).toBeLessThan(12);
-      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
+      expect(
+        Math.abs(
+          (box?.y ?? 0) + (box?.height ?? 0) / 2 - ((nameBox?.y ?? 0) + (nameBox?.height ?? 0) / 2),
+        ),
+      ).toBeLessThan(12);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+        (rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1,
+      );
     }
   });
 }
@@ -763,7 +914,10 @@ for (const width of [375, 430, 768]) {
       await noHorizontalOverflow(page);
     });
   }
-  for (const [name, hash] of [["New item", "New item"], ["New orchestrator", "New orchestrator"]] as const) {
+  for (const [name, hash] of [
+    ["New item", "New item"],
+    ["New orchestrator", "New orchestrator"],
+  ] as const) {
     test(`${name} sheet has no horizontal overflow at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/");
@@ -772,14 +926,18 @@ for (const width of [375, 430, 768]) {
         await page.getByRole("button", { name: "New item" }).click();
         await page.getByRole("menuitem", { name: "Task" }).click();
       }
-      await expect(page.getByRole("dialog", { name: name === "New item" ? "New item" : "New orchestrator" })).toBeVisible();
+      await expect(
+        page.getByRole("dialog", { name: name === "New item" ? "New item" : "New orchestrator" }),
+      ).toBeVisible();
       await noHorizontalOverflow(page);
     });
   }
 }
 
 for (const width of [375, 390, 430]) {
-  test(`the phone header fits its tabs, search and Filters popover at ${width}px`, async ({ page }) => {
+  test(`the phone header fits its tabs, search and Filters popover at ${width}px`, async ({
+    page,
+  }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.goto("/#/kanban");
     const header = page.getByRole("banner");
@@ -788,7 +946,7 @@ for (const width of [375, 390, 430]) {
     const list = (await header.getByRole("tablist").boundingBox())!;
     const needsYou = (await header.getByRole("button", { name: /^Needs you/ }).boundingBox())!;
     const tabs = header.getByRole("tab");
-    for (let i = 0; i < await tabs.count(); i++) {
+    for (let i = 0; i < (await tabs.count()); i++) {
       const box = (await tabs.nth(i).boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(list.x - 0.5);
       expect(box.x + box.width).toBeLessThanOrEqual(list.x + list.width + 0.5);
@@ -797,17 +955,19 @@ for (const width of [375, 390, 430]) {
     const search = header.getByRole("searchbox");
     expect((await search.boundingBox())!.width).toBeGreaterThanOrEqual(170);
     // the placeholder must fit the field whole, focused or not: a focused input drops the ellipsis and hard-cuts a glyph
-    const overflow = () => search.evaluate((el: HTMLInputElement) => {
-      const cs = getComputedStyle(el);
-      const probe = document.createElement("span");
-      probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
-      probe.textContent = el.placeholder;
-      document.body.append(probe);
-      const textWidth = probe.getBoundingClientRect().width;
-      probe.remove();
-      const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-      return textWidth - room;
-    });
+    const overflow = () =>
+      search.evaluate((el: HTMLInputElement) => {
+        const cs = getComputedStyle(el);
+        const probe = document.createElement("span");
+        probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+        probe.textContent = el.placeholder;
+        document.body.append(probe);
+        const textWidth = probe.getBoundingClientRect().width;
+        probe.remove();
+        const room =
+          el.clientWidth - Number.parseFloat(cs.paddingLeft) - Number.parseFloat(cs.paddingRight);
+        return textWidth - room;
+      });
     expect(await overflow()).toBeLessThanOrEqual(0);
     await search.focus();
     expect(await overflow()).toBeLessThanOrEqual(0);
@@ -829,7 +989,9 @@ test("touch targets are at least 44x44 below md", async ({ page }, testInfo) => 
     // evaluateAll does not auto-wait, so wait for the first match: a slow runner has not rendered the list yet.
     await expect(locator.first()).toBeVisible();
     // Layout size, not getBoundingClientRect: menus and listboxes scale in while they open.
-    const boxes = await locator.evaluateAll((els) => els.map((e) => ({ w: (e as HTMLElement).offsetWidth, h: (e as HTMLElement).offsetHeight })));
+    const boxes = await locator.evaluateAll((els) =>
+      els.map((e) => ({ w: (e as HTMLElement).offsetWidth, h: (e as HTMLElement).offsetHeight })),
+    );
     expect(boxes.length, `${what} present`).toBeGreaterThan(0);
     for (const b of boxes) {
       expect(b.w, `${what} width`).toBeGreaterThanOrEqual(44);
@@ -864,16 +1026,28 @@ test("RepoPicker option rows are at least 44px tall below md", async ({ page }, 
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   const options = sheet.getByRole("option");
   await expect(options.first()).toBeVisible();
-  const heights = await options.evaluateAll((els) => els.map((e) => (e as HTMLElement).offsetHeight));
+  const heights = await options.evaluateAll((els) =>
+    els.map((e) => (e as HTMLElement).offsetHeight),
+  );
   expect(heights.length).toBeGreaterThan(0);
   for (const h of heights) expect(h).toBeGreaterThanOrEqual(44);
 });
 
 // A real 1x1 PNG: Chrome decodes it, so the sheet's prepareImage path runs unmocked.
-const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOoyfkPAANPAehlu0LKAAAAAElFTkSuQmCC", "base64");
-const shots = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({ name: `shot-${from + i + 1}.png`, mimeType: "image/png", buffer: PNG_1X1 }));
+const PNG_1X1 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOoyfkPAANPAehlu0LKAAAAAElFTkSuQmCC",
+  "base64",
+);
+const shots = (n: number, from = 0) =>
+  Array.from({ length: n }, (_, i) => ({
+    name: `shot-${from + i + 1}.png`,
+    mimeType: "image/png",
+    buffer: PNG_1X1,
+  }));
 
-test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized, Start works with only a request", async ({ page }) => {
+test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized, Start works with only a request", async ({
+  page,
+}) => {
   await page.goto("/");
   await openNewOrchestrator(page);
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
@@ -886,7 +1060,9 @@ test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized
   // Measure only once the sheet has finished sliding in.
   await expect(async () => {
     const box = await sheet.boundingBox();
-    expect((box?.x ?? Number.POSITIVE_INFINITY) + (box?.width ?? 0)).toBeLessThanOrEqual(width + 0.5);
+    expect((box?.x ?? Number.POSITIVE_INFINITY) + (box?.width ?? 0)).toBeLessThanOrEqual(
+      width + 0.5,
+    );
   }).toPass();
   await expect(add).toBeEnabled();
   await expect(sheet.getByText(/ of 10$/)).toHaveCount(0);
@@ -905,24 +1081,42 @@ test("New orchestrator request images: 0, 3 and 10 images fit, targets are sized
   await expect(add).toBeDisabled();
   await noHorizontalOverflow(page);
 
-  const boxes = await remove.evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height, right: r.right }; }));
+  const boxes = await remove.evaluateAll((els) =>
+    els.map((e) => {
+      const r = e.getBoundingClientRect();
+      return { w: r.width, h: r.height, right: r.right };
+    }),
+  );
   const min = phone ? 44 : 24;
   for (const b of boxes) {
     expect(b.w, "remove target width").toBeGreaterThanOrEqual(min - 0.5);
     expect(b.h, "remove target height").toBeGreaterThanOrEqual(min - 0.5);
   }
-  if (phone) for (const b of boxes) expect(b.right, "remove target inside the viewport").toBeLessThanOrEqual(width);
-  const tiles = await sheet.locator("li:has(img)").evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { y: Math.round(r.top), w: r.width, right: r.right }; }));
+  if (phone)
+    for (const b of boxes)
+      expect(b.right, "remove target inside the viewport").toBeLessThanOrEqual(width);
+  const tiles = await sheet.locator("li:has(img)").evaluateAll((els) =>
+    els.map((e) => {
+      const r = e.getBoundingClientRect();
+      return { y: Math.round(r.top), w: r.width, right: r.right };
+    }),
+  );
   expect(tiles).toHaveLength(10);
-  expect(new Set(tiles.map((t) => t.y)).size, phone ? "two rows of five" : "one row").toBe(phone ? 2 : 1);
+  expect(new Set(tiles.map((t) => t.y)).size, phone ? "two rows of five" : "one row").toBe(
+    phone ? 2 : 1,
+  );
   for (const t of tiles) expect(t.right).toBeLessThanOrEqual(width);
 
-  await sheet.getByRole("textbox", { name: "Request (optional)" }).fill("Fix the login redirect loop");
+  await sheet
+    .getByRole("textbox", { name: "Request (optional)" })
+    .fill("Fix the login redirect loop");
   await sheet.getByRole("button", { name: /^(Start|Queue) orchestrator$/ }).click();
   await expect(page).toHaveURL(/item=CHORE-\d+/);
 });
 
-test("New orchestrator request attachments: a PDF sits in the strip beside images and can be removed", async ({ page }) => {
+test("New orchestrator request attachments: a PDF sits in the strip beside images and can be removed", async ({
+  page,
+}) => {
   await page.goto("/");
   await openNewOrchestrator(page);
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
@@ -932,7 +1126,10 @@ test("New orchestrator request attachments: a PDF sits in the strip beside image
   await expect(sheet.getByText("3 of 10")).toBeVisible();
   const tile = sheet.locator("li", { has: page.getByRole("img", { name: "Spec.pdf" }) });
   await expect(tile).toContainText("PDF");
-  const [pdfBox, pngBox] = await Promise.all([tile.boundingBox(), sheet.locator("li:has(img)").first().boundingBox()]);
+  const [pdfBox, pngBox] = await Promise.all([
+    tile.boundingBox(),
+    sheet.locator("li:has(img)").first().boundingBox(),
+  ]);
   expect(pdfBox?.width).toBeCloseTo(pngBox?.width ?? 0, 0);
   expect(pdfBox?.height).toBeCloseTo(pngBox?.height ?? 0, 0);
   await noHorizontalOverflow(page);
@@ -953,17 +1150,29 @@ for (const width of [375, 430, 768]) {
     await noHorizontalOverflow(page);
     const sheetBox = await sheet.boundingBox();
     expect(sheetBox?.width).toBeLessThanOrEqual(width);
-    const sizes = await sheet.getByRole("button", { name: /^Remove shot-/ }).evaluateAll((els) => els.map((e) => ({ w: e.getBoundingClientRect().width, h: e.getBoundingClientRect().height })));
-    for (const s of sizes) expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual((width < 768 ? 44 : 24) - 0.5);
+    const sizes = await sheet
+      .getByRole("button", { name: /^Remove shot-/ })
+      .evaluateAll((els) =>
+        els.map((e) => ({
+          w: e.getBoundingClientRect().width,
+          h: e.getBoundingClientRect().height,
+        })),
+      );
+    for (const s of sizes)
+      expect(Math.min(s.w, s.h)).toBeGreaterThanOrEqual((width < 768 ? 44 : 24) - 0.5);
   });
 }
 
 // EPIC-28 review: the counter must not wrap and the remove disc must not scale with the root text size.
 for (const root of [16, 24]) {
-  test(`10 request images: counter on one line and no tile clipped at ${root}px root text`, async ({ page }, testInfo) => {
+  test(`10 request images: counter on one line and no tile clipped at ${root}px root text`, async ({
+    page,
+  }, testInfo) => {
     test.skip(testInfo.project.name === "mobile", "tablet and desktop strip");
     await page.goto("/");
-    await page.evaluate((px) => { document.documentElement.style.fontSize = `${px}px`; }, root);
+    await page.evaluate((px) => {
+      document.documentElement.style.fontSize = `${px}px`;
+    }, root);
     await openNewOrchestrator(page);
     const sheet = page.getByRole("dialog", { name: "New orchestrator" });
     await sheet.locator('input[type="file"]').setInputFiles(shots(10));
@@ -971,18 +1180,29 @@ for (const root of [16, 24]) {
     await expect(counter).toBeVisible();
     await expect(async () => {
       const box = await sheet.boundingBox();
-      expect((box?.x ?? Number.POSITIVE_INFINITY) + (box?.width ?? 0)).toBeLessThanOrEqual((page.viewportSize()?.width ?? 0) + 0.5);
+      expect((box?.x ?? Number.POSITIVE_INFINITY) + (box?.width ?? 0)).toBeLessThanOrEqual(
+        (page.viewportSize()?.width ?? 0) + 0.5,
+      );
     }).toPass();
-    const lines = await counter.evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); return new Set(Array.from(r.getClientRects()).map((q) => Math.round(q.top))).size; });
+    const lines = await counter.evaluate((el) => {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      return new Set(Array.from(r.getClientRects()).map((q) => Math.round(q.top))).size;
+    });
     expect(lines, "counter line boxes").toBe(1);
-    const edges = (extreme: "start" | "end") => sheet.locator("ul").evaluate((ul, at) => {
-      ul.scrollLeft = at === "end" ? ul.scrollWidth : 0;
-      const u = ul.getBoundingClientRect();
-      const tiles = Array.from(ul.children).map((c) => c.getBoundingClientRect());
-      // the tile on the scroll extreme must be fully inside the strip, borders included
-      const edge = (at === "end" ? tiles[tiles.length - 1] : tiles[0]) as DOMRect;
-      return { fits: ul.scrollWidth <= ul.clientWidth, left: edge.left - u.left, right: u.right - edge.right };
-    }, extreme);
+    const edges = (extreme: "start" | "end") =>
+      sheet.locator("ul").evaluate((ul, at) => {
+        ul.scrollLeft = at === "end" ? ul.scrollWidth : 0;
+        const u = ul.getBoundingClientRect();
+        const tiles = Array.from(ul.children).map((c) => c.getBoundingClientRect());
+        // the tile on the scroll extreme must be fully inside the strip, borders included
+        const edge = (at === "end" ? tiles[tiles.length - 1] : tiles[0]) as DOMRect;
+        return {
+          fits: ul.scrollWidth <= ul.clientWidth,
+          left: edge.left - u.left,
+          right: u.right - edge.right,
+        };
+      }, extreme);
     const start = await edges("start");
     const end = await edges("end");
     if (root === 16) expect(start.fits, "strip does not overflow at default text").toBe(true);
@@ -993,10 +1213,14 @@ for (const root of [16, 24]) {
   });
 }
 
-test("remove disc stays 24px in a 44px target at 24px root text on a phone", async ({ page }, testInfo) => {
+test("remove disc stays 24px in a 44px target at 24px root text on a phone", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout");
   await page.goto("/");
-  await page.evaluate(() => { document.documentElement.style.fontSize = "24px"; });
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "24px";
+  });
   await openNewOrchestrator(page);
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   await sheet.locator('input[type="file"]').setInputFiles(shots(3));
@@ -1006,7 +1230,13 @@ test("remove disc stays 24px in a 44px target at 24px root text on a phone", asy
     const t = b.getBoundingClientRect();
     const d = (b.firstElementChild as HTMLElement).getBoundingClientRect();
     const tile = (b.closest("li") as HTMLElement).getBoundingClientRect();
-    return { tw: t.width, th: t.height, dw: d.width, dh: d.height, inside: t.right <= tile.right + 0.5 && t.top >= tile.top - 0.5 && t.left >= tile.left - 0.5 };
+    return {
+      tw: t.width,
+      th: t.height,
+      dw: d.width,
+      dh: d.height,
+      inside: t.right <= tile.right + 0.5 && t.top >= tile.top - 0.5 && t.left >= tile.left - 0.5,
+    };
   });
   expect(m.dw, "disc width").toBeLessThanOrEqual(24);
   expect(m.dh, "disc height").toBeLessThanOrEqual(24);

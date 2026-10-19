@@ -1,8 +1,28 @@
 import type {
-  Advice, AgentCatalogEntry, AgentEndpoint, AgentNode, ApiErrorBody, ApiErrorCode, ApproveBody,
-  ArtifactResponse, Checkpoint, ConfirmReposBody, CreateItemBody, CreateSpikeBody, CreateSpikeResponse,
-  Graph, GraphScope, Item, ItemDetail, ItemsResponse, PatchItemBody, Repo, ReposResponse, Request,
-  Settings, StartOrchestratorBody,
+  Advice,
+  AgentCatalogEntry,
+  AgentEndpoint,
+  AgentNode,
+  ApiErrorBody,
+  ApiErrorCode,
+  ApproveBody,
+  ArtifactResponse,
+  Checkpoint,
+  ConfirmReposBody,
+  CreateItemBody,
+  CreateSpikeBody,
+  CreateSpikeResponse,
+  Graph,
+  GraphScope,
+  Item,
+  ItemDetail,
+  ItemsResponse,
+  PatchItemBody,
+  Repo,
+  ReposResponse,
+  Request,
+  Settings,
+  StartOrchestratorBody,
 } from "./types";
 
 export class ApiError extends Error {
@@ -11,7 +31,13 @@ export class ApiError extends Error {
   readonly reason: string | undefined;
   /** Seconds from a 429's Retry-After header. */
   readonly retryAfter: number | undefined;
-  constructor(status: number, code: ApiErrorCode, message: string, reason?: string, retryAfter?: number) {
+  constructor(
+    status: number,
+    code: ApiErrorCode,
+    message: string,
+    reason?: string,
+    retryAfter?: number,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -31,7 +57,13 @@ async function toError(res: Response): Promise<ApiError> {
   try {
     const body = (await res.json()) as ApiErrorBody;
     const wait = Number(res.headers.get("Retry-After"));
-    return new ApiError(res.status, body.error.code, body.error.message, body.error.reason, wait > 0 ? wait : undefined);
+    return new ApiError(
+      res.status,
+      body.error.code,
+      body.error.message,
+      body.error.reason,
+      wait > 0 ? wait : undefined,
+    );
   } catch {
     return new ApiError(res.status, "internal", res.statusText || `HTTP ${res.status}`);
   }
@@ -48,11 +80,23 @@ const enc = encodeURIComponent;
 const via = { via: "board" as const };
 
 /** GET /api/auth/me: "local" is this Mac (Bearer token); any other origin signs in with a session cookie. */
-export interface Session { origin: string; authenticated: boolean; email?: string }
+export interface Session {
+  origin: string;
+  authenticated: boolean;
+  email?: string;
+}
 
-export interface ApiOptions { base?: string; fetchFn?: typeof fetch; onUnauthenticated?: () => void }
+export interface ApiOptions {
+  base?: string;
+  fetchFn?: typeof fetch;
+  onUnauthenticated?: () => void;
+}
 
-export function createApi({ base = "", fetchFn = (...a) => fetch(...a), onUnauthenticated }: ApiOptions = {}) {
+export function createApi({
+  base = "",
+  fetchFn = (...a) => fetch(...a),
+  onUnauthenticated,
+}: ApiOptions = {}) {
   let token: Promise<string> | null = null;
   let me: Promise<Session> | null = null;
 
@@ -102,7 +146,12 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a), onUnauth
     return (await isCookieMode()) ? {} : { Authorization: `Bearer ${await getToken()}` };
   }
 
-  async function call<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+  async function call<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    retried = false,
+  ): Promise<T> {
     const headers = await authHeaders();
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const res = await fetchFn(`${base}${path}`, {
@@ -136,25 +185,34 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a), onUnauth
     addDep: (key: string, blockedBy: string) =>
       call<void>("POST", `/api/items/${enc(key)}/deps`, { blocked_by: blockedBy }),
     graph: (key: string, scope: GraphScope, hops: number) =>
-      call<Graph>("GET", `/api/items/${enc(key)}/graph${query({ scope, hops: scope === "neighbourhood" ? hops : undefined })}`),
+      call<Graph>(
+        "GET",
+        `/api/items/${enc(key)}/graph${query({ scope, hops: scope === "neighbourhood" ? hops : undefined })}`,
+      ),
     checkpoints: (key: string, limit = 50) =>
       call<Checkpoint[]>("GET", `/api/items/${enc(key)}/checkpoints${query({ limit })}`),
     startOrchestrator: (key: string, b: StartOrchestratorBody) =>
       call<AgentNode>("POST", `/api/items/${enc(key)}/orchestrator`, b),
     createSpike: (b: CreateSpikeBody) => call<CreateSpikeResponse>("POST", "/api/spikes", b),
-    agents: (state: "active" | "all" = "active") => call<AgentNode[]>("GET", `/api/agents${query({ state })}`),
+    agents: (state: "active" | "all" = "active") =>
+      call<AgentNode[]>("GET", `/api/agents${query({ state })}`),
     agentAction: (name: string, action: AgentEndpoint, body?: object) =>
       call<unknown>("POST", `/api/agents/${enc(name)}/${action}`, body ?? {}),
     advice: (name: string) => call<Advice[]>("GET", `/api/agents/${enc(name)}/advice`),
     requests: () => call<Request[]>("GET", "/api/requests?state=open"),
-    approve: (id: string, b: ApproveBody) => call<Request>("POST", `/api/requests/${enc(id)}/approve`, { ...b, ...via }),
+    approve: (id: string, b: ApproveBody) =>
+      call<Request>("POST", `/api/requests/${enc(id)}/approve`, { ...b, ...via }),
     requestChanges: (id: string, comment: string) =>
       call<Request>("POST", `/api/requests/${enc(id)}/request-changes`, { comment, ...via }),
     confirmRepos: (id: string, b: ConfirmReposBody) =>
       call<Request>("POST", `/api/requests/${enc(id)}/confirm-repos`, { ...b, ...via }),
-    closeSpike: (id: string) => call<Request>("POST", `/api/requests/${enc(id)}/close-spike`, { ...via }),
+    closeSpike: (id: string) =>
+      call<Request>("POST", `/api/requests/${enc(id)}/close-spike`, { ...via }),
     artifact: (id: string, o: { revision?: number; section?: string } = {}) =>
-      call<ArtifactResponse>("GET", `/api/artifacts/${enc(id)}${query({ revision: o.revision, section: o.section })}`),
+      call<ArtifactResponse>(
+        "GET",
+        `/api/artifacts/${enc(id)}${query({ revision: o.revision, section: o.section })}`,
+      ),
     settings: () => call<Settings>("GET", "/api/settings"),
     catalog: () => call<AgentCatalogEntry[]>("GET", "/api/catalog"),
     repos: (q = "") => call<ReposResponse>("GET", `/api/repos${query({ q })}`),

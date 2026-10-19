@@ -2,23 +2,35 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { AgentIcon, Key, TypeIcon } from "./icons";
 import { ConnectionBanner } from "./Banners";
 import { MoveToMenu } from "./MoveToMenu";
 import { Segmented } from "./Segmented";
 import { Sheet } from "./Sheet";
 import { StateDot, StatusPill } from "./StatusLabel";
+import { AgentIcon, Key, TypeIcon } from "./icons";
 
 describe("icons and labels", () => {
   it("labels agent and type icons", () => {
-    render(<><AgentIcon kind="codex" /><TypeIcon type="spike" /><Key>TASK-1</Key></>);
+    render(
+      <>
+        <AgentIcon kind="codex" />
+        <TypeIcon type="spike" />
+        <Key>TASK-1</Key>
+      </>,
+    );
     expect(screen.getByRole("img", { name: "Codex" })).toBeInTheDocument();
     expect(screen.getByLabelText("Spike")).toBeInTheDocument();
     expect(screen.getByText("TASK-1")).toHaveClass("key");
   });
 
   it("always shows status text and state labels", () => {
-    render(<><StatusPill status="awaiting_approval" /><StateDot state="quiescing" withLabel /><StateDot state="running" /></>);
+    render(
+      <>
+        <StatusPill status="awaiting_approval" />
+        <StateDot state="quiescing" withLabel />
+        <StateDot state="running" />
+      </>,
+    );
     expect(screen.getByText("Awaiting approval")).toBeInTheDocument();
     expect(screen.getByText("Finishing current step")).toBeInTheDocument();
     expect(screen.getByLabelText("Running")).toBeInTheDocument();
@@ -45,10 +57,20 @@ describe("icons and labels", () => {
   });
 
   it("keeps muted state dots visible on the dark palette", () => {
-    const { container } = render(<><StateDot state="queued" /><StateDot state="spawning" /><StateDot state="capacity_paused" /></>);
+    const { container } = render(
+      <>
+        <StateDot state="queued" />
+        <StateDot state="spawning" />
+        <StateDot state="capacity_paused" />
+      </>,
+    );
     const dots = container.querySelectorAll(".size-2");
     expect(dots[0]).toHaveClass("bg-muted-foreground");
-    expect(dots[1]).toHaveClass("bg-muted-foreground", "animate-pulse", "motion-reduce:animate-none");
+    expect(dots[1]).toHaveClass(
+      "bg-muted-foreground",
+      "animate-pulse",
+      "motion-reduce:animate-none",
+    );
     expect(dots[2]).toHaveClass("border-muted-foreground");
   });
 });
@@ -57,9 +79,20 @@ describe("Sheet", () => {
   it("closes with the button and Escape", async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();
-    render(<Sheet title="Start orchestrator" subtitle="EPIC-12 · Authentication" onClose={onClose} footer={<button type="button">ok</button>}>body</Sheet>);
+    render(
+      <Sheet
+        title="Start orchestrator"
+        subtitle="EPIC-12 · Authentication"
+        onClose={onClose}
+        footer={<button type="button">ok</button>}
+      >
+        body
+      </Sheet>,
+    );
     expect(document.querySelector("[data-slot=sheet-overlay]")).toHaveClass("bg-black/60");
-    expect(screen.getByRole("dialog", { name: "Start orchestrator" })).toHaveStyle({ "--sheet-width": "420px" });
+    expect(screen.getByRole("dialog", { name: "Start orchestrator" })).toHaveStyle({
+      "--sheet-width": "420px",
+    });
     expect(screen.getByText("EPIC-12 · Authentication")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close" }));
     await user.keyboard("{Escape}");
@@ -72,9 +105,15 @@ describe("Sheet", () => {
       const [open, setOpen] = useState(false);
       return (
         <>
-          <button type="button" onClick={() => setOpen(true)}>Open sheet</button>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open sheet
+          </button>
           {open && (
-            <Sheet title="Start orchestrator" onClose={() => setOpen(false)} footer={<button type="button">Go</button>}>
+            <Sheet
+              title="Start orchestrator"
+              onClose={() => setOpen(false)}
+              footer={<button type="button">Go</button>}
+            >
               body
             </Sheet>
           )}
@@ -94,28 +133,50 @@ describe("Sheet", () => {
   });
 
   it("keeps an accessible title without a visible header", () => {
-    render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
+    render(
+      <Sheet title="Details" header={false} onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
     expect(screen.getByRole("dialog", { name: "Details" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Details" })).toHaveClass("sr-only");
   });
 
   it("associates a visible subtitle with the dialog", () => {
-    render(<Sheet title="A long sheet title that could reach the close button" subtitle="Helpful context" onClose={vi.fn()}>body</Sheet>);
+    render(
+      <Sheet
+        title="A long sheet title that could reach the close button"
+        subtitle="Helpful context"
+        onClose={vi.fn()}
+      >
+        body
+      </Sheet>,
+    );
     const dialog = screen.getByRole("dialog", { name: /A long sheet title/ });
     expect(dialog).toHaveAccessibleDescription("Helpful context");
-    expect(dialog.querySelector("[data-slot=sheet-header]")).toHaveClass("pr-[max(4rem,calc(env(safe-area-inset-right)_+_3.5rem))]");
+    expect(dialog.querySelector("[data-slot=sheet-header]")).toHaveClass(
+      "pr-[max(4rem,calc(env(safe-area-inset-right)_+_3.5rem))]",
+    );
   });
 
   it("wraps a long unbroken title before the Close target", () => {
     const title = "TASK-" + "verylongidentifier".repeat(8);
-    render(<Sheet title={title} onClose={vi.fn()}>body</Sheet>);
+    render(
+      <Sheet title={title} onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
     expect(screen.getByRole("heading", { name: title })).toHaveClass("break-words");
     expect(screen.getByRole("button", { name: "Close" })).toHaveClass("size-11");
   });
 
   it("omits a description and clears the close button for headerless content", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
+    render(
+      <Sheet title="Details" header={false} onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
     const dialog = screen.getByRole("dialog", { name: "Details" });
     expect(dialog).not.toHaveAttribute("aria-describedby");
     expect(screen.getByText("body")).toHaveClass("py-4");
@@ -124,34 +185,68 @@ describe("Sheet", () => {
   });
 
   it("keeps a headerless subtitle available as the dialog description", () => {
-    render(<Sheet title="Details" subtitle="TASK-1 context" header={false} onClose={vi.fn()}>body</Sheet>);
+    render(
+      <Sheet title="Details" subtitle="TASK-1 context" header={false} onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
     const dialog = screen.getByRole("dialog", { name: "Details" });
     expect(dialog).toHaveAccessibleDescription("TASK-1 context");
     expect(screen.getByText("TASK-1 context")).toHaveClass("sr-only");
   });
 
   it("fills narrow screens and applies configured widths from 640px up", () => {
-    const { rerender } = render(<Sheet title="New item" width={480} onClose={vi.fn()}>body</Sheet>);
+    const { rerender } = render(
+      <Sheet title="New item" width={480} onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
     const dialog = screen.getByRole("dialog", { name: "New item" });
-    expect(dialog).toHaveClass("w-full", "sm:w-[var(--sheet-width)]", "max-w-full", "sm:max-w-full");
+    expect(dialog).toHaveClass(
+      "w-full",
+      "sm:w-[var(--sheet-width)]",
+      "max-w-full",
+      "sm:max-w-full",
+    );
     expect(dialog.style.width).toBe("");
     expect(dialog).toHaveStyle({ "--sheet-width": "480px" });
 
-    rerender(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
-    expect(screen.getByRole("dialog", { name: "Details" })).toHaveStyle({ "--sheet-width": "420px" });
+    rerender(
+      <Sheet title="Details" header={false} onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
+    expect(screen.getByRole("dialog", { name: "Details" })).toHaveStyle({
+      "--sheet-width": "420px",
+    });
   });
 
   it("gives Close a 44px target and disables sheet animations for reduced motion", () => {
-    render(<Sheet title="New item" onClose={vi.fn()}>body</Sheet>);
+    render(
+      <Sheet title="New item" onClose={vi.fn()}>
+        body
+      </Sheet>,
+    );
     expect(screen.getByRole("button", { name: "Close" })).toHaveClass("size-11");
-    expect(screen.getByRole("dialog", { name: "New item" })).toHaveClass("motion-reduce:animate-none");
-    expect(document.querySelector("[data-slot=sheet-overlay]")).toHaveClass("motion-reduce:animate-none");
+    expect(screen.getByRole("dialog", { name: "New item" })).toHaveClass(
+      "motion-reduce:animate-none",
+    );
+    expect(document.querySelector("[data-slot=sheet-overlay]")).toHaveClass(
+      "motion-reduce:animate-none",
+    );
   });
 
   it("non-modal sheet has no overlay and ignores outside clicks", async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();
-    render(<><button type="button">outside</button><Sheet title="Details" modal={false} onClose={onClose}>body</Sheet></>);
+    render(
+      <>
+        <button type="button">outside</button>
+        <Sheet title="Details" modal={false} onClose={onClose}>
+          body
+        </Sheet>
+      </>,
+    );
     expect(document.querySelector("[data-slot=sheet-overlay]")).toBeNull();
     await user.click(screen.getByRole("button", { name: "outside" }));
     expect(onClose).not.toHaveBeenCalled();
@@ -170,25 +265,50 @@ describe("Segmented", () => {
         <Segmented<"root" | "neighbourhood">
           label="Scope"
           value={v}
-          onChange={(value) => { onChange(value); setV(value); }}
-          options={[{ value: "root", label: "Root" }, { value: "neighbourhood", label: "Neighbourhood" }]}
+          onChange={(value) => {
+            onChange(value);
+            setV(value);
+          }}
+          options={[
+            { value: "root", label: "Root" },
+            { value: "neighbourhood", label: "Neighbourhood" },
+          ]}
         />
       );
     }
     render(<Host />);
     expect(screen.getByRole("radio", { name: "Root" })).toHaveAttribute("aria-checked", "true");
     await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
-    expect(screen.getByRole("radio", { name: "Neighbourhood" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Neighbourhood" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
     await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
-    expect(screen.getByRole("radio", { name: "Neighbourhood" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Neighbourhood" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("radiogroup", { name: "Scope" })).toHaveAttribute("data-slot", "toggle-group");
+    expect(screen.getByRole("radiogroup", { name: "Scope" })).toHaveAttribute(
+      "data-slot",
+      "toggle-group",
+    );
   });
 });
 
 describe("MoveToMenu", () => {
-  const story = { key: "STORY-40", type: "story" as const, status: "in_review" as const, status_before_block: null };
-  const epic = { key: "EPIC-12", type: "epic" as const, status: "in_review" as const, status_before_block: null };
+  const story = {
+    key: "STORY-40",
+    type: "story" as const,
+    status: "in_review" as const,
+    status_before_block: null,
+  };
+  const epic = {
+    key: "EPIC-12",
+    type: "epic" as const,
+    status: "in_review" as const,
+    status_before_block: null,
+  };
 
   it("lists every other status with locks on disabled choices", async () => {
     const user = userEvent.setup();
@@ -201,7 +321,10 @@ describe("MoveToMenu", () => {
     expect(done.querySelector("svg")).toBeInTheDocument();
     expect(done).toHaveTextContent(/^Done$/);
     expect(done.querySelector("svg")).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /Blocked/ })).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("menuitem", { name: /Blocked/ })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.queryByRole("menuitem", { name: /^In review/ })).not.toBeInTheDocument();
   });
 
@@ -213,7 +336,11 @@ describe("MoveToMenu", () => {
     await user.keyboard("{Enter}");
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.keyboard("{End}{ArrowUp}{Enter}");
-    expect(onMove).toHaveBeenCalledWith("done", { ok: false, reason: "Accept this epic to mark it Done.", special: "accept" });
+    expect(onMove).toHaveBeenCalledWith("done", {
+      ok: false,
+      reason: "Accept this epic to mark it Done.",
+      special: "accept",
+    });
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     // A keyboard user who picked an entry must land back on the trigger, not <body>.
     expect(screen.getByRole("button", { name: "In review" })).toHaveFocus();

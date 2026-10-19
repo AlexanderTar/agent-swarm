@@ -18,6 +18,11 @@ describe("requestTitle", () => {
     });
     const long = { ...seed().requests[1]!, prompt: "x".repeat(100) };
     expect(requestTitle(long)).toHaveLength(80);
-    expect(ARTIFACT_LABEL).toEqual({ spec: "Spec", plan: "Plan", debug_report: "Report", note: "Note" });
+    expect(ARTIFACT_LABEL).toEqual({
+      spec: "Spec",
+      plan: "Plan",
+      debug_report: "Report",
+      note: "Note",
+    });
   });
 });

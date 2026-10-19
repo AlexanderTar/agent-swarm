@@ -2,7 +2,10 @@ import { C, T } from "../copy";
 import type { ItemMerge } from "../types";
 
 const CHECKS: Record<ItemMerge["checks"], string> = {
-  "": C.noChecks, pending: C.checksPending, passing: C.checksPassing, failing: C.checksFailing,
+  "": C.noChecks,
+  pending: C.checksPending,
+  passing: C.checksPassing,
+  failing: C.checksFailing,
 };
 
 function status(m: ItemMerge): string {
@@ -25,7 +28,17 @@ export function MergeList({ merges }: { merges: ItemMerge[] }) {
             <span className="min-w-0 break-words font-medium">{m.repo}</span>
             {m.number !== undefined && <span>#{m.number}</span>}
             <span className="min-w-0 break-words text-muted-foreground">{status(m)}</span>
-            {m.url && <a href={m.url} target="_blank" rel="noreferrer" aria-label={`Open ${m.repo} pull request${m.number === undefined ? "" : ` #${m.number}`}`} className="inline-flex size-8 shrink-0 items-center justify-center rounded text-link">↗</a>}
+            {m.url && (
+              <a
+                href={m.url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open ${m.repo} pull request${m.number === undefined ? "" : ` #${m.number}`}`}
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded text-link"
+              >
+                ↗
+              </a>
+            )}
           </li>
         ))}
       </ul>

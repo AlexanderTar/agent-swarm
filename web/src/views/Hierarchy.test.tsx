@@ -9,8 +9,16 @@ import type { HierarchyProps } from "./props";
 const none: Filter = { q: "", type: "", status: "" };
 function setup(p: Partial<HierarchyProps> = {}) {
   const props: HierarchyProps = {
-    items: seed().items, loaded: true, filter: none, selected: "", connected: true,
-    onSelect: vi.fn(), onAddChild: vi.fn(), onNewItem: vi.fn(), onClearFilters: vi.fn(), ...p,
+    items: seed().items,
+    loaded: true,
+    filter: none,
+    selected: "",
+    connected: true,
+    onSelect: vi.fn(),
+    onAddChild: vi.fn(),
+    onNewItem: vi.fn(),
+    onClearFilters: vi.fn(),
+    ...p,
   };
   const user = userEvent.setup();
   const r = render(<Hierarchy {...props} />);
@@ -32,7 +40,15 @@ describe("Hierarchy view (§16.6)", () => {
     setup();
     expect(screen.getByText("WORK ITEM")).toBeInTheDocument();
     const keys = screen.getAllByRole("treeitem").map((r) => r.getAttribute("data-key"));
-    expect(keys.slice(0, 7)).toEqual(["EPIC-12", "STORY-40", "TASK-101", "TASK-102", "TASK-104", "STORY-41", "TASK-103"]);
+    expect(keys.slice(0, 7)).toEqual([
+      "EPIC-12",
+      "STORY-40",
+      "TASK-101",
+      "TASK-102",
+      "TASK-104",
+      "STORY-41",
+      "TASK-103",
+    ]);
     expect(row("EPIC-12")).toHaveAttribute("aria-level", "1");
     expect(row("TASK-101")).toHaveAttribute("aria-level", "3");
     expect(row("EPIC-12")).toHaveClass("font-semibold");
@@ -45,13 +61,18 @@ describe("Hierarchy view (§16.6)", () => {
     const r = row("TASK-102");
     expect(r).toHaveClass("max-sm:grid-cols-[1fr_auto]", "max-md:h-auto", "max-md:min-h-11");
     const status = within(r).getByText("Blocked").parentElement!;
-    expect(status).toHaveClass("max-sm:col-start-1", "max-sm:row-start-2", "max-sm:pl-[calc(var(--indent)+42px)]");
+    expect(status).toHaveClass(
+      "max-sm:col-start-1",
+      "max-sm:row-start-2",
+      "max-sm:pl-[calc(var(--indent)+42px)]",
+    );
     expect(within(r).getByText("TASK-102").parentElement).toHaveClass("max-sm:whitespace-nowrap");
   });
 
   it("reserves the same trailing slots below sm on rows with and without Add child", () => {
     setup();
-    const slots = (key: string) => Array.from(row(key).lastElementChild!.children).map((c) => c.className);
+    const slots = (key: string) =>
+      Array.from(row(key).lastElementChild!.children).map((c) => c.className);
     // TASK-102 is a task (no Add child button); EPIC-12 has one. The agents, needs-you and add slots exist on both.
     expect(slots("EPIC-12")).toHaveLength(3);
     expect(slots("TASK-102")).toEqual(slots("EPIC-12"));
@@ -125,7 +146,10 @@ describe("Hierarchy view (§16.6)", () => {
     const { user, props } = setup();
     expect(row("EPIC-12")).toHaveClass("h-[30px]");
     fireEvent.contextMenu(row("EPIC-12"));
-    expect(screen.getByRole("menuitem", { name: "Add story" })).toHaveAttribute("data-slot", "dropdown-menu-item");
+    expect(screen.getByRole("menuitem", { name: "Add story" })).toHaveAttribute(
+      "data-slot",
+      "dropdown-menu-item",
+    );
     await user.click(screen.getByRole("menuitem", { name: "Add story" }));
     expect(props.onAddChild).toHaveBeenCalledWith("EPIC-12", "story");
     fireEvent.contextMenu(row("BUG-7"));

@@ -11,7 +11,10 @@ describe("url state (§16.5)", () => {
   });
 
   const cases: Array<[string, Partial<BoardUrl>]> = [
-    ["#/hierarchy?q=login&type=task&status=blocked&item=TASK-102", { q: "login", type: "task", status: "blocked", item: "TASK-102" }],
+    [
+      "#/hierarchy?q=login&type=task&status=blocked&item=TASK-102",
+      { q: "login", type: "task", status: "blocked", item: "TASK-102" },
+    ],
     ["#/kanban?level=stories&group=flat", { view: "kanban", level: "stories", group: "flat" }],
     ["#/kanban?level=top&item=EPIC-12", { view: "kanban", level: "top", item: "EPIC-12" }],
     ["#/dependencies?item=TASK-102", { view: "dependencies", item: "TASK-102" }],
@@ -26,7 +29,9 @@ describe("url state (§16.5)", () => {
   });
 
   it("drops invalid values", () => {
-    expect(parseHash("#/nope?type=story2&status=weird&level=x&group=y&filter=z")).toEqual(DEFAULT_URL);
+    expect(parseHash("#/nope?type=story2&status=weird&level=x&group=y&filter=z")).toEqual(
+      DEFAULT_URL,
+    );
     expect(parseHash("#/inbox?filter=reviews").filter).toBe("all"); // merged into Approvals
   });
 
@@ -36,7 +41,11 @@ describe("url state (§16.5)", () => {
   });
 
   it("extracts the filter", () => {
-    expect(filterOf({ ...DEFAULT_URL, q: "x", type: "bug", status: "done" })).toEqual({ q: "x", type: "bug", status: "done" });
+    expect(filterOf({ ...DEFAULT_URL, q: "x", type: "bug", status: "done" })).toEqual({
+      q: "x",
+      type: "bug",
+      status: "done",
+    });
   });
 
   it("switching view keeps the selection", () => {

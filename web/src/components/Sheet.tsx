@@ -1,13 +1,13 @@
-import { type CSSProperties, type ReactNode, useRef } from "react";
-import { cn } from "@/lib/utils";
 import {
-  Sheet as UiSheet,
   SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
   SheetTitle,
+  Sheet as UiSheet,
 } from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
+import { type CSSProperties, type ReactNode, useRef } from "react";
 
 export function Sheet(p: {
   title: string;
@@ -20,19 +20,33 @@ export function Sheet(p: {
   footer?: ReactNode;
 }) {
   const modal = p.modal ?? true;
-  const previousFocus = useRef(typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+  const previousFocus = useRef(
+    typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null),
+  );
   const keepOpen = modal ? undefined : (e: Event) => e.preventDefault();
   return (
-    <UiSheet open modal={modal} onOpenChange={(open) => { if (!open) p.onClose(); }}>
+    <UiSheet
+      open
+      modal={modal}
+      onOpenChange={(open) => {
+        if (!open) p.onClose();
+      }}
+    >
       <SheetContent
         side="right"
         tabIndex={-1}
-        onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).focus(); }}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          (e.currentTarget as HTMLElement).focus();
+        }}
         overlay={modal}
         aria-label={p.title}
         {...(p.subtitle ? {} : { "aria-describedby": undefined })}
         style={{ "--sheet-width": `${p.width ?? 420}px` } as CSSProperties}
-        className={cn("flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:max-w-full", modal ? "sm:w-[var(--sheet-width)]" : "min-[1100px]:w-[var(--sheet-width)]")}
+        className={cn(
+          "flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:max-w-full",
+          modal ? "sm:w-[var(--sheet-width)]" : "min-[1100px]:w-[var(--sheet-width)]",
+        )}
         onInteractOutside={keepOpen}
         onPointerDownOutside={keepOpen}
         onCloseAutoFocus={(e) => {
@@ -51,8 +65,14 @@ export function Sheet(p: {
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
         )}
-        <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto py-4 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))]">{p.children}</div>
-        {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 max-sm:flex-col-reverse max-sm:items-stretch border-t border-border py-3 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">{p.footer}</SheetFooter>}
+        <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto py-4 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))]">
+          {p.children}
+        </div>
+        {p.footer && (
+          <SheetFooter className="flex-row items-center justify-end gap-2 max-sm:flex-col-reverse max-sm:items-stretch border-t border-border py-3 pl-[max(1.25rem,env(safe-area-inset-left))] pr-[max(1.25rem,env(safe-area-inset-right))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+            {p.footer}
+          </SheetFooter>
+        )}
       </SheetContent>
     </UiSheet>
   );

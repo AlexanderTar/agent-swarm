@@ -1,4 +1,8 @@
-export interface Entry { data: unknown; error: unknown; loading: boolean }
+export interface Entry {
+  data: unknown;
+  error: unknown;
+  loading: boolean;
+}
 type Loader = () => Promise<unknown>;
 
 export class QueryStore {
@@ -42,7 +46,8 @@ export class QueryStore {
           // R1 fix: a response fetched before an invalidation must never commit as fresh. If a
           // subscriber is still around once it lands, refetch for them; otherwise drop it outright
           // so a later non-forced `fetch` (e.g. on remount) can't short-circuit on stale data.
-          if ((this.subs.get(key)?.size ?? 0) > 0) void this.fetch(key, this.loaders.get(key) ?? load, true);
+          if ((this.subs.get(key)?.size ?? 0) > 0)
+            void this.fetch(key, this.loaders.get(key) ?? load, true);
           else this.entries.delete(key);
         }
       });

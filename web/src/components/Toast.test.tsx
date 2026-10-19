@@ -1,8 +1,8 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
 import { toast as sonner } from "sonner";
+import { describe, expect, it, vi } from "vitest";
 import { createApi } from "../api";
 import { DataProvider, useConnection } from "../data/hooks";
 import { ToastProvider, useToast } from "./Toast";
@@ -11,40 +11,87 @@ function Trigger({ onAction }: { onAction: () => void }) {
   const toast = useToast();
   return (
     <>
-      <button type="button" onClick={() => toast({ message: "This spike reaches Done after materialization.", action: { label: "View spike", onClick: onAction } })}>legacy action</button>
-      <button type="button" onClick={() => toast({ message: "Failed to move item" })}>legacy</button>
-      <button type="button" onClick={() => toast.success("Created TASK-9")}>ok</button>
-      <button type="button" onClick={() => toast.error("Could not start", "Try again later")}>error helper</button>
+      <button
+        type="button"
+        onClick={() =>
+          toast({
+            message: "This spike reaches Done after materialization.",
+            action: { label: "View spike", onClick: onAction },
+          })
+        }
+      >
+        legacy action
+      </button>
+      <button type="button" onClick={() => toast({ message: "Failed to move item" })}>
+        legacy
+      </button>
+      <button type="button" onClick={() => toast.success("Created TASK-9")}>
+        ok
+      </button>
+      <button type="button" onClick={() => toast.error("Could not start", "Try again later")}>
+        error helper
+      </button>
     </>
   );
 }
 
-const renderToast = (ui: ReactNode) => render(<DataProvider api={createApi()} events={false}><ToastProvider>{ui}</ToastProvider></DataProvider>);
+const renderToast = (ui: ReactNode) =>
+  render(
+    <DataProvider api={createApi()} events={false}>
+      <ToastProvider>{ui}</ToastProvider>
+    </DataProvider>,
+  );
 
 describe("Toast (Sonner)", () => {
-  it.each([{ failure: false, reconnect: false }, { failure: true, reconnect: false }, { failure: false, reconnect: true }, { failure: true, reconnect: true }])
-  ("drops a held completion after disconnect (failure: $failure, reconnect: $reconnect)", async ({ failure, reconnect }) => {
-    const success = vi.spyOn(sonner, "success");
-    const error = vi.spyOn(sonner, "error");
-    let live: ReturnType<typeof useConnection>["live"] | undefined;
-    let release = () => {};
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    function PendingToast() {
-      const toast = useToast();
-      live = useConnection().live;
-      return <button onClick={() => { void held.then(() => failure ? toast.error("Failed") : toast.success("Done")); }}>Start</button>;
-    }
-    const user = userEvent.setup();
-    render(<DataProvider api={createApi()} events={false}><ToastProvider><PendingToast /></ToastProvider></DataProvider>);
-    await user.click(screen.getByRole("button", { name: "Start" }));
-    live!.connected = false;
-    live!.epoch++;
-    if (reconnect) live!.connected = true;
-    await act(async () => { release(); });
-    expect(success).not.toHaveBeenCalled();
-    expect(error).not.toHaveBeenCalled();
-    success.mockRestore(); error.mockRestore();
-  });
+  it.each([
+    { failure: false, reconnect: false },
+    { failure: true, reconnect: false },
+    { failure: false, reconnect: true },
+    { failure: true, reconnect: true },
+  ])(
+    "drops a held completion after disconnect (failure: $failure, reconnect: $reconnect)",
+    async ({ failure, reconnect }) => {
+      const success = vi.spyOn(sonner, "success");
+      const error = vi.spyOn(sonner, "error");
+      let live: ReturnType<typeof useConnection>["live"] | undefined;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      function PendingToast() {
+        const toast = useToast();
+        live = useConnection().live;
+        return (
+          <button
+            onClick={() => {
+              void held.then(() => (failure ? toast.error("Failed") : toast.success("Done")));
+            }}
+          >
+            Start
+          </button>
+        );
+      }
+      const user = userEvent.setup();
+      render(
+        <DataProvider api={createApi()} events={false}>
+          <ToastProvider>
+            <PendingToast />
+          </ToastProvider>
+        </DataProvider>,
+      );
+      await user.click(screen.getByRole("button", { name: "Start" }));
+      live!.connected = false;
+      live!.epoch++;
+      if (reconnect) live!.connected = true;
+      await act(async () => {
+        release();
+      });
+      expect(success).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      success.mockRestore();
+      error.mockRestore();
+    },
+  );
 
   it("drops a toast from an offline click before React rerenders", async () => {
     let live: ReturnType<typeof useConnection>["live"] | undefined;
@@ -54,7 +101,13 @@ describe("Toast (Sonner)", () => {
       return <button onClick={() => toast({ message: "Offline refusal" })}>Refuse</button>;
     }
     const user = userEvent.setup();
-    render(<DataProvider api={createApi()} events={false}><ToastProvider><OfflineToast /></ToastProvider></DataProvider>);
+    render(
+      <DataProvider api={createApi()} events={false}>
+        <ToastProvider>
+          <OfflineToast />
+        </ToastProvider>
+      </DataProvider>,
+    );
     live!.connected = false;
     await user.click(screen.getByRole("button", { name: "Refuse" }));
     expect(screen.queryByText("Offline refusal")).not.toBeInTheDocument();
@@ -64,21 +117,39 @@ describe("Toast (Sonner)", () => {
     const success = vi.spyOn(sonner, "success");
     let live: ReturnType<typeof useConnection>["live"] | undefined;
     let release = () => {};
-    const held = new Promise<void>((resolve) => { release = resolve; });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     function PendingToast() {
       const toast = useToast();
       live = useConnection().live;
-      return <button onClick={() => { void held.then(() => toast.success("Stale completion")); }}>Start</button>;
+      return (
+        <button
+          onClick={() => {
+            void held.then(() => toast.success("Stale completion"));
+          }}
+        >
+          Start
+        </button>
+      );
     }
     const api = createApi();
-    const ui = () => <DataProvider api={api} events={false}><ToastProvider><PendingToast /></ToastProvider></DataProvider>;
+    const ui = () => (
+      <DataProvider api={api} events={false}>
+        <ToastProvider>
+          <PendingToast />
+        </ToastProvider>
+      </DataProvider>
+    );
     const view = render(ui());
     live!.connected = false;
     live!.epoch++;
     view.rerender(ui());
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     live!.connected = true;
-    await act(async () => { release(); });
+    await act(async () => {
+      release();
+    });
     expect(success).not.toHaveBeenCalled();
     success.mockRestore();
   });
@@ -88,7 +159,9 @@ describe("Toast (Sonner)", () => {
     const user = userEvent.setup();
     renderToast(<Trigger onAction={onAction} />);
     await user.click(screen.getByRole("button", { name: "legacy action" }));
-    expect(await screen.findByText("This spike reaches Done after materialization.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("This spike reaches Done after materialization."),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View spike" }));
     expect(onAction).toHaveBeenCalled();
   });

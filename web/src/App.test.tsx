@@ -9,10 +9,28 @@ import type { Request } from "./types";
 // Minimal Request factory, independent of the board fixtures (spec 4.4 / Task 17a).
 const req = (p: Partial<Request> & Pick<Request, "id" | "kind">): Request => ({
   is_hitl: p.kind === "question" || p.kind === "prompt" || p.kind === "blocker",
-  agent_name: null, terminal_agent: null, item_key: "TASK-1", item_title: "Task", root_key: "TASK-1",
-  artifact_id: null, artifact_revision: null, section_id: null, section_title: null, section_sha256: null,
-  prompt: "", options: [], state: "open", confirmed: null, binding: null, response_text: null,
-  responded_via: null, responded_at: null, created_at: 0, native_pending: false, approval_evidence: null, ...p,
+  agent_name: null,
+  terminal_agent: null,
+  item_key: "TASK-1",
+  item_title: "Task",
+  root_key: "TASK-1",
+  artifact_id: null,
+  artifact_revision: null,
+  section_id: null,
+  section_title: null,
+  section_sha256: null,
+  prompt: "",
+  options: [],
+  state: "open",
+  confirmed: null,
+  binding: null,
+  response_text: null,
+  responded_via: null,
+  responded_at: null,
+  created_at: 0,
+  native_pending: false,
+  approval_evidence: null,
+  ...p,
 });
 
 describe("App shell (§16.5)", () => {
@@ -63,7 +81,9 @@ describe("App shell (§16.5)", () => {
   });
 
   it("restores filters from the URL", async () => {
-    renderWithDaemon(<App />, { hash: "#/kanban?q=session&status=blocked&level=stories&group=flat" });
+    renderWithDaemon(<App />, {
+      hash: "#/kanban?q=session&status=blocked&level=stories&group=flat",
+    });
     expect(screen.getByRole("searchbox", { name: "Search name or key…" })).toHaveValue("session");
     expect(comboText("Status")).toBe("Blocked");
     expect(comboText("Card level")).toBe("Stories");
@@ -104,7 +124,10 @@ describe("App shell (§16.5)", () => {
     d.override("GET /api/items", () => {
       attempt += 1;
       if (attempt === 1) {
-        return { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load items." } } };
+        return {
+          status: 500,
+          body: { error: { code: "internal", message: "x", reason: "Couldn't load items." } },
+        };
       }
       return { status: 200, body: { items: d.db.items, matches: d.db.items.length } };
     });
@@ -119,12 +142,19 @@ describe("App shell (§16.5)", () => {
     const { daemon } = renderWithDaemon(<App />);
     await screen.findByRole("button", { name: /Needs you/ });
     daemon.disconnect();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost. Status changes are unavailable.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Connection lost. Status changes are unavailable.",
+    );
   });
 
   it("keeps the view behind the details sheet on narrow windows", async () => {
     vi.spyOn(window, "matchMedia").mockImplementation(
-      (q: string) => ({ matches: q === "(max-width: 1099px)", addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
+      (q: string) =>
+        ({
+          matches: q === "(max-width: 1099px)",
+          addEventListener() {},
+          removeEventListener() {},
+        }) as unknown as MediaQueryList,
     );
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=TASK-102" });
     expect(await screen.findByRole("dialog", { name: "TASK-102" })).toBeInTheDocument();
@@ -133,7 +163,11 @@ describe("App shell (§16.5)", () => {
     expect(narrowBody).not.toHaveClass("pt-16");
     expect(await screen.findByTestId("details-panel")).not.toHaveClass("p-4");
     expect(screen.getByTestId("view")).toBeInTheDocument();
-    await user.click(within(screen.getByRole("dialog", { name: "TASK-102" })).getByRole("button", { name: "Close" }));
+    await user.click(
+      within(screen.getByRole("dialog", { name: "TASK-102" })).getByRole("button", {
+        name: "Close",
+      }),
+    );
     expect(window.location.hash).toBe("#/hierarchy");
     expect(screen.getByTestId("view")).toBeInTheDocument();
   });
@@ -163,9 +197,11 @@ describe("App shell (§16.5)", () => {
   it("offers every type in New item", async () => {
     const { user } = renderWithDaemon(<App />);
     await user.click(screen.getByRole("button", { name: "New item" }));
-    expect(within(screen.getByRole("menu", { name: "New item" })).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
-      "Epic", "Bug", "Story", "Task", "Spike", "Chore",
-    ]);
+    expect(
+      within(screen.getByRole("menu", { name: "New item" }))
+        .getAllByRole("menuitem")
+        .map((m) => m.textContent),
+    ).toEqual(["Epic", "Bug", "Story", "Task", "Spike", "Chore"]);
     await user.keyboard("{Escape}");
   });
 
@@ -173,7 +209,9 @@ describe("App shell (§16.5)", () => {
     const { user } = renderWithDaemon(<App />);
     const trigger = screen.getByRole("button", { name: "New item" });
     await user.click(trigger);
-    expect((await screen.findByRole("menu", { name: "New item" })).contains(document.activeElement)).toBe(true);
+    expect(
+      (await screen.findByRole("menu", { name: "New item" })).contains(document.activeElement),
+    ).toBe(true);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu", { name: "New item" })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();

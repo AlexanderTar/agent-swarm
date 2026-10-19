@@ -31,19 +31,30 @@ export function QuestionView({ request, connected }: { request: Request; connect
           </ul>
         </div>
       )}
-      {!remote && <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={!connected || !open}
-        onClick={() => { if (open && live.connected) {
-          const epoch = live.epoch;
-          void terminal.run(open).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", open)); })
-            .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast.error(errorText(e)); });
-        } }}
-      >
-        {C.openOrchestratorTerminal}
-      </Button>}
+      {!remote && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!connected || !open}
+          onClick={() => {
+            if (open && live.connected) {
+              const epoch = live.epoch;
+              void terminal
+                .run(open)
+                .then(() => {
+                  if (live.connected && live.epoch === epoch)
+                    toast.success(agentActionToast("terminal", open));
+                })
+                .catch((e: unknown) => {
+                  if (live.connected && live.epoch === epoch) toast.error(errorText(e));
+                });
+            }
+          }}
+        >
+          {C.openOrchestratorTerminal}
+        </Button>
+      )}
       {target?.kind === "unavailable" && <p className="text-muted-foreground">{target.hint}</p>}
     </div>
   );

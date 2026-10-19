@@ -1,10 +1,10 @@
+import { cn } from "@/lib/utils";
 import { Loader2, TriangleAlert } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { errorText } from "../api";
-import { cn } from "@/lib/utils";
 import { AgentFields, type AgentFieldsValue } from "../components/AgentFields";
 import { RepoPicker } from "../components/RepoPicker";
-import { RequestImages, type RequestImage } from "../components/RequestImages";
+import { type RequestImage, RequestImages } from "../components/RequestImages";
 import { Segmented } from "../components/Segmented";
 import { Sheet } from "../components/Sheet";
 import { useToast } from "../components/Toast";
@@ -19,15 +19,29 @@ import { useAgents, useCatalog, useSettings } from "../data/queries";
 import { isValid, prefill, validateChoice } from "../logic/catalog";
 import { kebab } from "../logic/kebab";
 import { addImages } from "../logic/requestImages";
-import { useMediaQuery } from "../state/media";
-import { startedToast } from "../logic/toasts";
 import {
-  type SubmitFailure, mapSubmitError, nameError, newRequestId, orchestratorsBusy, spikePayload, submitLabel,
+  type SubmitFailure,
+  mapSubmitError,
+  nameError,
+  newRequestId,
+  orchestratorsBusy,
+  spikePayload,
+  submitLabel,
 } from "../logic/spawnForm";
-import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, CreateSpikeResponse, Settings, SpikeIntent } from "../types";
+import { startedToast } from "../logic/toasts";
+import { useMediaQuery } from "../state/media";
+import type {
+  AgentCatalogEntry,
+  AgentNode,
+  CreateSpikeBody,
+  CreateSpikeResponse,
+  Settings,
+  SpikeIntent,
+} from "../types";
 
 const SNIFFED_TYPES = /^image\/(png|jpe?g|gif|webp|heic|heif|tiff?)$/;
-const hasFiles = (e: { dataTransfer: DataTransfer | null }) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+const hasFiles = (e: { dataTransfer: DataTransfer | null }) =>
+  Array.from(e.dataTransfer?.types ?? []).includes("Files");
 
 function Form(p: {
   settings: Settings;
@@ -45,7 +59,9 @@ function Form(p: {
   const [nameTouched, setNameTouched] = useState(false);
   const [intent, setIntent] = useState<SpikeIntent>(p.intent ?? "chore");
   const [repos, setRepos] = useState<string[]>([]);
-  const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
+  const [fields, setFields] = useState<AgentFieldsValue>(() =>
+    prefill(p.settings, "orchestrator", p.catalog),
+  );
   const [request, setRequest] = useState("");
   const [requestId, setRequestId] = useState(newRequestId);
   const [failure, setFailure] = useState<SubmitFailure>({});
@@ -64,20 +80,49 @@ function Form(p: {
   const zone = useRef<HTMLDivElement>(null);
   const depth = useRef(0);
   const finePointer = useMediaQuery("(hover: hover) and (pointer: fine)");
-  const hint = finePointer ? (/Mac|iPhone|iPad/.test(navigator.userAgent) ? C.requestImageHintMac : C.requestImageHint) : undefined;
-  const create = useMutation((api, body: CreateSpikeBody) => api.createSpike(body), ["agents", "items", "item:"]);
+  const hint = finePointer
+    ? /Mac|iPhone|iPad/.test(navigator.userAgent)
+      ? C.requestImageHintMac
+      : C.requestImageHint
+    : undefined;
+  const create = useMutation(
+    (api, body: CreateSpikeBody) => api.createSpike(body),
+    ["agents", "items", "item:"],
+  );
   const busy = orchestratorsBusy(p.agents, p.settings);
   const tName = name.trim();
   const tReq = request.trim();
-  const clientNameErr = tName === "" ? (tReq === "" && nameTouched ? C.nameOrRequestRequired : undefined) : nameError(name);
+  const clientNameErr =
+    tName === ""
+      ? tReq === "" && nameTouched
+        ? C.nameOrRequestRequired
+        : undefined
+      : nameError(name);
   const nameErr = failure.name ?? clientNameErr;
-  const agentChoiceValid = isValid(validateChoice(fields.choice, fields.advisor, p.catalog, p.settings.enabled_agents, "orchestrator"));
-  const canStart = connected && !create.pending && pending === 0 && !started && !nameErr && agentChoiceValid && (tName !== "" || tReq !== "");
+  const agentChoiceValid = isValid(
+    validateChoice(
+      fields.choice,
+      fields.advisor,
+      p.catalog,
+      p.settings.enabled_agents,
+      "orchestrator",
+    ),
+  );
+  const canStart =
+    connected &&
+    !create.pending &&
+    pending === 0 &&
+    !started &&
+    !nameErr &&
+    agentChoiceValid &&
+    (tName !== "" || tReq !== "");
   const nameKebab = kebab(name);
 
   // The alerts are the first children of the scrolling sheet body; bring them into view.
   useEffect(() => {
-    const body = (started ? notSaved.current : failure.banner ? banner.current : null)?.closest<HTMLElement>(".overflow-y-auto");
+    const body = (
+      started ? notSaved.current : failure.banner ? banner.current : null
+    )?.closest<HTMLElement>(".overflow-y-auto");
     if (body) body.scrollTop = 0;
   }, [started, failure.banner]);
 
@@ -93,7 +138,9 @@ function Form(p: {
 
   useEffect(() => {
     alive.current = true;
-    return () => { alive.current = false; };
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
   // Window guard: a file dropped outside the zone would make the browser open it and lose the form.
@@ -111,7 +158,11 @@ function Form(p: {
     };
   }, []);
 
-  const addFiles = (files: File[], fallbackName: string, usable: (n: string) => boolean = (n) => n !== "") => {
+  const addFiles = (
+    files: File[],
+    fallbackName: string,
+    usable: (n: string) => boolean = (n) => n !== "",
+  ) => {
     if (files.length === 0) return;
     setPending((n) => n + files.length);
     // The fallback names are .png; an unnamed file the image sniffer would not recognise (BMP, SVG, a PDF) must not get one.
@@ -123,7 +174,13 @@ function Form(p: {
       try {
         const r = await addImages(imagesRef.current.length, named);
         if (!alive.current) return;
-        const fresh = r.added.map((a) => ({ id: crypto.randomUUID(), name: a.name, blob: a.blob, url: URL.createObjectURL(a.blob), image: a.image }));
+        const fresh = r.added.map((a) => ({
+          id: crypto.randomUUID(),
+          name: a.name,
+          blob: a.blob,
+          url: URL.createObjectURL(a.blob),
+          image: a.image,
+        }));
         imagesRef.current = [...imagesRef.current, ...fresh];
         setImages(imagesRef.current);
         setImageError(r.error);
@@ -182,7 +239,14 @@ function Form(p: {
     if (create.pending) return;
     setFailure({});
     try {
-      const r = await create.run(await spikePayload({ name, intent, repos, request, images, fields }, p.settings, p.catalog, requestId));
+      const r = await create.run(
+        await spikePayload(
+          { name, intent, repos, request, images, fields },
+          p.settings,
+          p.catalog,
+          requestId,
+        ),
+      );
       if (r.attachments_failed) setStarted(r);
       else finish(r);
     } catch (e) {
@@ -198,10 +262,18 @@ function Form(p: {
       onClose={started ? () => finish(started) : p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">{C.queuedCaption}</span>}
-          <Button variant="secondary" disabled={!!started} onClick={p.onClose}>{C.cancel}</Button>
+          {busy && (
+            <span className="mr-auto self-center text-xs text-muted-foreground max-sm:order-last max-sm:mr-0 max-sm:self-start">
+              {C.queuedCaption}
+            </span>
+          )}
+          <Button variant="secondary" disabled={!!started} onClick={p.onClose}>
+            {C.cancel}
+          </Button>
           {started ? (
-            <Button ref={done} onClick={() => finish(started)}>{C.done}</Button>
+            <Button ref={done} onClick={() => finish(started)}>
+              {C.done}
+            </Button>
           ) : (
             <Button ref={start} disabled={!canStart} onClick={() => void submit()}>
               {create.pending && <Loader2 className="animate-spin" />}
@@ -226,47 +298,100 @@ function Form(p: {
           </div>
         </Alert>
       )}
-      <div className={cn("space-y-4", started && "opacity-50")} inert={!!started} aria-disabled={!!started} data-started={!!started}>
-      <div className="space-y-1.5">
-        <Label htmlFor={nameId}>{C.name}</Label>
-        <Input id={nameId}
-          value={name}
-          placeholder={C.nameOptionalPlaceholder}
-          onChange={(e) => { setName(e.target.value); if (e.target.value.trim() !== "") setNameTouched(true); setFailure((f) => ({ ...f, name: undefined })); }}
-        />
-        {nameErr ? <p className="text-xs text-destructive">{nameErr}</p>
-          : nameKebab !== "" && <p className="font-mono text-xs text-muted-foreground">{T.agentName(nameKebab)}</p>}
-      </div>
-      <div className="grid grid-cols-[72px_1fr] items-start gap-x-2 gap-y-1 max-sm:grid-cols-1">
+      <div
+        className={cn("space-y-4", started && "opacity-50")}
+        inert={!!started}
+        aria-disabled={!!started}
+        data-started={!!started}
+      >
+        <div className="space-y-1.5">
+          <Label htmlFor={nameId}>{C.name}</Label>
+          <Input
+            id={nameId}
+            value={name}
+            placeholder={C.nameOptionalPlaceholder}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (e.target.value.trim() !== "") setNameTouched(true);
+              setFailure((f) => ({ ...f, name: undefined }));
+            }}
+          />
+          {nameErr ? (
+            <p className="text-xs text-destructive">{nameErr}</p>
+          ) : (
+            nameKebab !== "" && (
+              <p className="font-mono text-xs text-muted-foreground">{T.agentName(nameKebab)}</p>
+            )
+          )}
+        </div>
+        <div className="grid grid-cols-[72px_1fr] items-start gap-x-2 gap-y-1 max-sm:grid-cols-1">
           <Label className="h-7 leading-7">{C.intent}</Label>
           <Segmented<SpikeIntent>
             label={C.intent}
             value={intent}
             onChange={setIntent}
-            options={[{ value: "chore", label: C.choreIntent }, { value: "feature", label: C.featureSpike }, { value: "debug", label: C.debugSpike }]}
+            options={[
+              { value: "chore", label: C.choreIntent },
+              { value: "feature", label: C.featureSpike },
+              { value: "debug", label: C.debugSpike },
+            ]}
           />
-          <p className="col-start-2 text-xs text-muted-foreground max-sm:col-start-1">{intent === "chore" ? C.choreCaption : intent === "feature" ? C.featureCaption : C.debugCaption}</p>
-      </div>
-      <RepoPicker label={C.repositoriesOptional} caption={intent === "chore" ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
-      <AgentFields value={fields} onChange={setFields} settings={p.settings} catalog={p.catalog} />
-      <div ref={zone} data-drop-zone className="space-y-1.5" {...zoneHandlers}>
-        <Label htmlFor={requestIdField}>{C.requestOptional}</Label>
-        <div className="relative">
-          <Textarea id={requestIdField} rows={5} className="min-h-[108px]" placeholder={hint} value={request} onChange={(e) => setRequest(e.target.value)} onPaste={onPaste} />
-          {dragging && (
-            <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-md border-2 border-dashed border-ring bg-background text-sm font-medium text-link">
-              {C.dropImages}
-            </div>
-          )}
+          <p className="col-start-2 text-xs text-muted-foreground max-sm:col-start-1">
+            {intent === "chore"
+              ? C.choreCaption
+              : intent === "feature"
+                ? C.featureCaption
+                : C.debugCaption}
+          </p>
         </div>
-        <RequestImages images={images} pending={pending} error={imageError} onAdd={(files) => addFiles(files, C.droppedImageName)} onRemove={removeImage} />
-      </div>
+        <RepoPicker
+          label={C.repositoriesOptional}
+          caption={intent === "chore" ? C.choreReposCaption : C.reposCaption}
+          selected={repos}
+          onChange={setRepos}
+        />
+        <AgentFields
+          value={fields}
+          onChange={setFields}
+          settings={p.settings}
+          catalog={p.catalog}
+        />
+        <div ref={zone} data-drop-zone className="space-y-1.5" {...zoneHandlers}>
+          <Label htmlFor={requestIdField}>{C.requestOptional}</Label>
+          <div className="relative">
+            <Textarea
+              id={requestIdField}
+              rows={5}
+              className="min-h-[108px]"
+              placeholder={hint}
+              value={request}
+              onChange={(e) => setRequest(e.target.value)}
+              onPaste={onPaste}
+            />
+            {dragging && (
+              <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-md border-2 border-dashed border-ring bg-background text-sm font-medium text-link">
+                {C.dropImages}
+              </div>
+            )}
+          </div>
+          <RequestImages
+            images={images}
+            pending={pending}
+            error={imageError}
+            onAdd={(files) => addFiles(files, C.droppedImageName)}
+            onRemove={removeImage}
+          />
+        </div>
       </div>
     </Sheet>
   );
 }
 
-export function NewSpikeSheet(p: { intent?: SpikeIntent; onClose(): void; onCreated(key: string): void }) {
+export function NewSpikeSheet(p: {
+  intent?: SpikeIntent;
+  onClose(): void;
+  onCreated(key: string): void;
+}) {
   const settings = useSettings();
   const catalog = useCatalog();
   const agents = useAgents();
@@ -277,7 +402,8 @@ export function NewSpikeSheet(p: { intent?: SpikeIntent; onClose(): void; onCrea
       <Sheet title={C.newOrchestrator} width={900} onClose={p.onClose}>
         <Alert variant="destructive">
           {errorText(err)}{" "}
-          <Button variant="link"
+          <Button
+            variant="link"
             onClick={() => {
               settings.reload();
               catalog.reload();

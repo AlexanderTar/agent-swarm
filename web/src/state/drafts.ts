@@ -3,8 +3,10 @@ import { readJson, storage, writeJson } from "./local";
 
 const key = (id: string, field: string) => `swarm.draft.${id}.${field}`;
 
-export const readDraft = (id: string, field: string) => readJson<string>(storage("sessionStorage"), key(id, field), "");
-export const writeDraft = (id: string, field: string, value: string) => writeJson(storage("sessionStorage"), key(id, field), value);
+export const readDraft = (id: string, field: string) =>
+  readJson<string>(storage("sessionStorage"), key(id, field), "");
+export const writeDraft = (id: string, field: string, value: string) =>
+  writeJson(storage("sessionStorage"), key(id, field), value);
 export function clearDraft(id: string, field: string): void {
   try {
     storage("sessionStorage")?.removeItem(key(id, field));

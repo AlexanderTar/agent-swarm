@@ -1,10 +1,10 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useItems } from "../data/queries";
-import { seed } from "../mock/fixtures";
 import { createMockDaemon } from "../mock/daemon";
+import { seed } from "../mock/fixtures";
 import { clickNode, renderWithDaemon } from "../test/render";
 import { pickOption } from "../test/select";
 import type { Filter } from "../types";
@@ -15,10 +15,20 @@ const none: Filter = { q: "", type: "", status: "" };
 function Host(p: { selected: string; filter?: Filter; onSelect?: (k: string) => void }) {
   const items = useItems();
   if (!items.data) return null;
-  return <Dependencies items={items.data.items} loaded filter={p.filter ?? none} selected={p.selected} connected onSelect={p.onSelect ?? vi.fn()} />;
+  return (
+    <Dependencies
+      items={items.data.items}
+      loaded
+      filter={p.filter ?? none}
+      selected={p.selected}
+      connected
+      onSelect={p.onSelect ?? vi.fn()}
+    />
+  );
 }
 const node = (k: string) => screen.getByTestId(`node-${k}`);
-const nodeBox = (k: string) => (node(k).closest(".react-flow__node") as HTMLElement).style.transform;
+const nodeBox = (k: string) =>
+  (node(k).closest(".react-flow__node") as HTMLElement).style.transform;
 
 describe("Dependencies view (§16.8)", () => {
   it("shows the root scope with story boxes, external nodes and the legend", async () => {
@@ -43,7 +53,9 @@ describe("Dependencies view (§16.8)", () => {
 
   it("selects nodes and opens the root of an external node", async () => {
     const onSelect = vi.fn();
-    const { user } = renderWithDaemon(<Host selected="TASK-102" onSelect={onSelect} />, { events: false });
+    const { user } = renderWithDaemon(<Host selected="TASK-102" onSelect={onSelect} />, {
+      events: false,
+    });
     // See test/render.tsx's clickNode() for why a node click uses fireEvent instead of user.click.
     clickNode(await screen.findByTestId("node-TASK-104"));
     expect(onSelect).toHaveBeenCalledWith("TASK-104");
@@ -62,7 +74,9 @@ describe("Dependencies view (§16.8)", () => {
     expect(screen.queryByTestId("node-TASK-103")).not.toBeInTheDocument();
     await pickOption(user, "Hops", "2");
     expect(await screen.findByTestId("node-TASK-98")).toBeInTheDocument();
-    expect(daemon.calls.some((c) => c.path === "/api/items/TASK-104/graph?scope=neighbourhood&hops=2")).toBe(true);
+    expect(
+      daemon.calls.some((c) => c.path === "/api/items/TASK-104/graph?scope=neighbourhood&hops=2"),
+    ).toBe(true);
     await user.click(screen.getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(screen.queryByTestId("node-TASK-98")).not.toBeInTheDocument());
   });
@@ -71,12 +85,17 @@ describe("Dependencies view (§16.8)", () => {
     const { user, daemon } = renderWithDaemon(<Host selected="TASK-104" />, { events: false });
     await screen.findByTestId("node-TASK-104");
     await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
-    for (let n = 2; n <= 4; n += 1) await user.click(screen.getByRole("button", { name: "Expand one hop" }));
-    expect(daemon.calls.some((c) => c.path === "/api/items/TASK-104/graph?scope=neighbourhood&hops=4")).toBe(true);
+    for (let n = 2; n <= 4; n += 1)
+      await user.click(screen.getByRole("button", { name: "Expand one hop" }));
+    expect(
+      daemon.calls.some((c) => c.path === "/api/items/TASK-104/graph?scope=neighbourhood&hops=4"),
+    ).toBe(true);
   });
 
   it("dims non-matching nodes and keeps positions when statuses change", async () => {
-    const { daemon } = renderWithDaemon(<Host selected="TASK-102" filter={{ ...none, status: "blocked" }} />);
+    const { daemon } = renderWithDaemon(
+      <Host selected="TASK-102" filter={{ ...none, status: "blocked" }} />,
+    );
     await screen.findByTestId("node-TASK-104");
     expect(node("TASK-104")).toHaveAttribute("data-dimmed", "true");
     expect(node("TASK-102")).toHaveAttribute("data-dimmed", "false");
@@ -90,7 +109,9 @@ describe("Dependencies view (§16.8)", () => {
 
   it("finds a node", async () => {
     const onSelect = vi.fn();
-    const { user } = renderWithDaemon(<Host selected="TASK-102" onSelect={onSelect} />, { events: false });
+    const { user } = renderWithDaemon(<Host selected="TASK-102" onSelect={onSelect} />, {
+      events: false,
+    });
     await screen.findByTestId("node-TASK-104");
     await user.type(screen.getByPlaceholderText("Find…"), "validate{Enter}");
     expect(onSelect).toHaveBeenCalledWith("TASK-104");
@@ -108,8 +129,12 @@ describe("Dependencies view (§16.8)", () => {
   });
 
   it("below 1100 it opens on the graph of the first root instead of selecting it", async () => {
-    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
-      ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+      matches: query.includes("max-width: 1099"),
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    })) as unknown as typeof window.matchMedia);
     const onSelect = vi.fn();
     renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false });
     // No root has an edge in the seed, so the empty state names the anchor (EPIC-12, the first root).
@@ -119,13 +144,20 @@ describe("Dependencies view (§16.8)", () => {
   });
 
   it("below 1100 it anchors on the first root that has dependency edges", async () => {
-    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) =>
-      ({ matches: query.includes("max-width: 1099"), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia);
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+      matches: query.includes("max-width: 1099"),
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    })) as unknown as typeof window.matchMedia);
     // EPIC-12 is the first root but has no edge; BUG-8 waits for BUG-7, so BUG-8 is the first root with one.
     const db = seed();
     db.deps = [{ item: "BUG-8", blocked_by: "BUG-7" }];
     const onSelect = vi.fn();
-    renderWithDaemon(<Host selected="" onSelect={onSelect} />, { events: false, daemon: createMockDaemon(db) });
+    renderWithDaemon(<Host selected="" onSelect={onSelect} />, {
+      events: false,
+      daemon: createMockDaemon(db),
+    });
     expect(await screen.findByTestId("node-BUG-8")).toBeInTheDocument();
     expect(screen.getByTestId("node-BUG-7")).toBeInTheDocument();
     expect(screen.queryByText("No dependencies for this item.")).not.toBeInTheDocument();
@@ -140,8 +172,20 @@ describe("Dependencies view (§16.8)", () => {
       if (!items.data) return null;
       return (
         <>
-          <button type="button" onClick={() => setSel("")}>Close details</button>
-          <Dependencies items={items.data.items} loaded filter={none} selected={sel} connected onSelect={(k) => { onSelect(k); setSel(k); }} />
+          <button type="button" onClick={() => setSel("")}>
+            Close details
+          </button>
+          <Dependencies
+            items={items.data.items}
+            loaded
+            filter={none}
+            selected={sel}
+            connected
+            onSelect={(k) => {
+              onSelect(k);
+              setSel(k);
+            }}
+          />
         </>
       );
     }
@@ -168,7 +212,10 @@ describe("Dependencies view (§16.8)", () => {
     d.override("GET /api/items/TASK-102/graph", () => {
       attempt += 1;
       if (attempt === 1) {
-        return { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load the graph." } } };
+        return {
+          status: 500,
+          body: { error: { code: "internal", message: "x", reason: "Couldn't load the graph." } },
+        };
       }
       return { status: 200, body: { nodes: [], edges: [] } };
     });
@@ -176,6 +223,8 @@ describe("Dependencies view (§16.8)", () => {
     renderWithDaemon(<Host selected="TASK-102" />, { daemon: d, events: false });
     expect(await screen.findByText("Couldn't load the graph.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.queryByText("Couldn't load the graph.")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("Couldn't load the graph.")).not.toBeInTheDocument(),
+    );
   });
 });

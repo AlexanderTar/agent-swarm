@@ -1,14 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { seed } from "../mock/fixtures";
-import { PARENT_TYPES, TITLE_MAX, canCreate, initialParent, newItemPayload, parentOptions } from "./newItem";
+import {
+  PARENT_TYPES,
+  TITLE_MAX,
+  canCreate,
+  initialParent,
+  newItemPayload,
+  parentOptions,
+} from "./newItem";
 
 const items = seed().items;
-const base = { type: "task" as const, parentKey: "STORY-40", title: "Add tests", brief: "", acceptance: ["", " A works ", "B works"] };
+const base = {
+  type: "task" as const,
+  parentKey: "STORY-40",
+  title: "Add tests",
+  brief: "",
+  acceptance: ["", " A works ", "B works"],
+};
 
 describe("new item rules (§16.5, I15)", () => {
   it("lists eligible parents", () => {
-    expect(PARENT_TYPES).toEqual({ epic: [], bug: [], story: ["epic"], task: ["story", "bug", "spike", "chore"] });
-    expect(parentOptions(items, "story").map((i) => i.key)).toEqual(["EPIC-12", "EPIC-20", "EPIC-30"]);
+    expect(PARENT_TYPES).toEqual({
+      epic: [],
+      bug: [],
+      story: ["epic"],
+      task: ["story", "bug", "spike", "chore"],
+    });
+    expect(parentOptions(items, "story").map((i) => i.key)).toEqual([
+      "EPIC-12",
+      "EPIC-20",
+      "EPIC-30",
+    ]);
     expect(parentOptions(items, "task").map((i) => i.type)).not.toContain("epic");
     expect(parentOptions(items, "task").map((i) => i.key)).toContain("SPIKE-3");
     expect(parentOptions(items, "epic")).toEqual([]);
@@ -30,7 +52,12 @@ describe("new item rules (§16.5, I15)", () => {
     expect(canCreate({ ...base, type: "epic", parentKey: "" })).toBe(true);
     expect(canCreate({ ...base, brief: "x".repeat(2000) })).toBe(true);
     expect(newItemPayload(base, "r1")).toEqual({
-      request_id: "r1", type: "task", title: "Add tests", brief: "", acceptance: ["A works", "B works"], parent_key: "STORY-40",
+      request_id: "r1",
+      type: "task",
+      title: "Add tests",
+      brief: "",
+      acceptance: ["A works", "B works"],
+      parent_key: "STORY-40",
     });
     expect(newItemPayload({ ...base, type: "bug" }, "r2")).not.toHaveProperty("parent_key");
   });
