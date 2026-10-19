@@ -8,6 +8,8 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
+Running the `swarm` binary against a scratch `SWARM_HOME`, or writing a test near `install`, `uninstall` or `launchctl`: follow docs/isolated-runs.md. A scratch `SWARM_HOME` alone does not protect the live daemon (the launchd labels are fixed); use a fake `HOME`, a `launchctl` stub on `PATH`, and never `--live` without both. Tests inject `execx.Fake`; the real runners refuse `launchctl` under `go test`.
+
 # Contributing
 
 Agent Swarm is open source under Apache-2.0 (`LICENSE`, `NOTICE`). Follow CONTRIBUTING.md for every change: signed conventional commits with a scope (`fix(usage): …`), no agent attribution lines, one logical change per commit, and pull requests against `main` that are squash-merged. Vendored third-party files keep their upstream licence and record their source and changes (`internal/install/skills/vendor/README.md`, `assets/icons/LICENSES.md`).
