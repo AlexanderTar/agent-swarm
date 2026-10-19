@@ -98,32 +98,51 @@ let pickerErrorFragments = ["installed on this Mac", "signed in", "superpowers p
 /// OCR of a hosted view: plain SwiftUI `Text` has no backing `NSView` to inspect.
 @MainActor
 func ocrText(_ host: NSView) throws -> String {
-    host.layoutSubtreeIfNeeded()
-    let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-    host.cacheDisplay(in: host.bounds, to: rep)
+    let rep = try ocrBitmap(host)
     let request = VNRecognizeTextRequest()
     try VNImageRequestHandler(cgImage: try XCTUnwrap(rep.cgImage), options: [:]).perform([request])
     return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
 }
 
-/// OCR input that does not depend on the machine: the view is hosted dark (the one appearance Vision
+/// Paints an opaque window background behind the view being captured for OCR.
+private final class OpaqueBackdrop: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
+    }
+}
+
+/// OCR input that does not depend on the machine: the view is drawn dark (the one appearance Vision
 /// reads cleanly on macOS 26 and 27; light grey text on a transparent bitmap is invisible to it, and
-/// a runner is light where a developer's Mac is often dark), over an opaque window background, and
-/// rendered at 2x so small captions survive recognition. Returns the host (to inspect its views) and
-/// the bitmap (pixels are 2x `frame`; Vision boxes are normalised, so scale them by `frame`).
+/// a CI runner is light where a developer's Mac is often dark), over an opaque window background,
+/// at 2x so small captions survive recognition. Pixels are 2x `host.bounds`; Vision boxes are
+/// normalised, so scale them by the bounds.
 @MainActor
-func ocrCapture<V: View>(_ view: V, size: CGSize) throws -> (host: NSHostingView<AnyView>, bitmap: NSBitmapImageRep) {
-    let host = NSHostingView(rootView: AnyView(view.background(Color(nsColor: .windowBackgroundColor))))
-    host.appearance = NSAppearance(named: .darkAqua)
-    host.frame = NSRect(origin: .zero, size: size)
+func ocrBitmap(_ host: NSView) throws -> NSBitmapImageRep {
     host.layoutSubtreeIfNeeded()
+    let size = host.bounds.size
+    let (origin, appearance) = (host.frame.origin, host.appearance)
+    let backdrop = OpaqueBackdrop(frame: NSRect(origin: .zero, size: size))
+    backdrop.appearance = NSAppearance(named: .darkAqua)
+    host.frame.origin = .zero
+    backdrop.addSubview(host)
+    defer { host.removeFromSuperview(); host.frame.origin = origin; host.appearance = appearance }
+    backdrop.layoutSubtreeIfNeeded()
     let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width) * 2, pixelsHigh: Int(size.height) * 2,
                                                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                                 isPlanar: false, colorSpaceName: .deviceRGB,
                                                 bytesPerRow: 0, bitsPerPixel: 0))
     bitmap.size = size
-    host.cacheDisplay(in: host.bounds, to: bitmap)
-    return (host, bitmap)
+    backdrop.cacheDisplay(in: backdrop.bounds, to: bitmap)
+    return bitmap
+}
+
+/// Hosts `view` at `size` and captures it for OCR (see `ocrBitmap`); the host is returned to inspect its views.
+@MainActor
+func ocrCapture<V: View>(_ view: V, size: CGSize) throws -> (host: NSHostingView<V>, bitmap: NSBitmapImageRep) {
+    let host = NSHostingView(rootView: view)
+    host.frame = NSRect(origin: .zero, size: size)
+    return (host, try ocrBitmap(host))
 }
 
 /// Asserts no picker validation error is visible in `text`.
