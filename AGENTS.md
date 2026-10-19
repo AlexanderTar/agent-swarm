@@ -8,6 +8,8 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
+Briefs and launch commands have hard size limits (6000-byte brief cap checked where a brief is written; tmux's ~16 KB command line, so the kickoff rides in a launch file, never argv or env). Never add your own length check or put kickoff text on the tmux command line: see section 8 of docs/adding-an-agent-kind.md, guarded by `go test ./internal/items/ ./internal/spawn/ ./internal/adapter/`.
+
 # Contributing
 
 Agent Swarm is open source under Apache-2.0 (`LICENSE`, `NOTICE`). Follow CONTRIBUTING.md for every change: signed conventional commits with a scope (`fix(usage): …`), no agent attribution lines, one logical change per commit, and pull requests against `main` that are squash-merged. Vendored third-party files keep their upstream licence and record their source and changes (`internal/install/skills/vendor/README.md`, `assets/icons/LICENSES.md`).
