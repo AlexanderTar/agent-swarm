@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
@@ -190,5 +192,46 @@ func TestLiveWorkflowRefusesBriefUpdateThatOverflowsAStep(t *testing.T) {
 	// A small edit still goes through.
 	if err := update("a shorter brief"); err != nil {
 		t.Fatalf("small update refused: %v", err)
+	}
+}
+
+// TASK-1221: the line naming where a notes or design gate looks sits in the
+// Workflow section, which RenderBrief never truncates; Context, where it used
+// to live, collapses to a pointer when the kickoff is over the cap.
+func TestGateDirLineSurvivesContextTruncation(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+		{ID: "research", Run: "researcher", Gates: []workflow.Gate{workflow.GateArtifactNotes}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch, taskKey := seedWorkflowTask(t, s, spec)
+	it, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := []string{strings.Repeat("c", items.MaxBrief)}
+	ctxJSON, _ := json.Marshal(long)
+	wf := wfRow{OwnerAgentID: orch.ID, ContextJSON: string(ctxJSON), WorktreesJSON: "[]"}
+	brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: "research", Role: "researcher", Round: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief.Key, brief.Title, brief.Name, brief.Role = it.Key, it.Title, "researcher-x", Role("researcher")
+	brief.RootKey, brief.ParentName = it.RootKey, orch.Name
+	out, err := RenderBrief(brief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, long[0]) {
+		t.Fatalf("setup: the over-long Context was not truncated")
+	}
+	if want := "Write your research notes under " + filepath.Join(s.Home, "research", it.RootKey) + "/"; !strings.Contains(out, want) {
+		t.Fatalf("kickoff lost the notes-dir line %q:\n%s", want, out)
+	}
+	if i, j := strings.Index(out, "Write your research notes"), strings.Index(out, "## Workflow"); i < j {
+		t.Fatalf("notes-dir line (at %d) should follow the ## Workflow heading (at %d)", i, j)
 	}
 }

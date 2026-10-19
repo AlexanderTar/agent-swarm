@@ -1076,7 +1076,8 @@ func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *
 }
 
 // gateDirLines names the directory a step's artifact gate checks, resolved
-// from SWARM_HOME, so the agent never has to guess a ~/.swarm path.
+// from SWARM_HOME, so the agent never has to guess a ~/.swarm path. stepBrief
+// appends them to the Workflow section.
 func (s *Store) gateDirLines(it items.Item, step workflow.Step) []string {
 	var out []string
 	for _, g := range step.Gates {
@@ -1109,7 +1110,6 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 		return BriefInput{}, nil, err
 	}
 	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
-	ctxLines = append(ctxLines, s.gateDirLines(it, step)...)
 	if step.Run != "" && run.Round > 1 {
 		findingLines, err := s.roundFindingLines(ctx, wf.ID, &spec, run.StepID, run.Round)
 		if err != nil {
@@ -1118,6 +1118,11 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 		ctxLines = append(ctxLines, findingLines...)
 	}
 	brief := BriefForStep(it, spec, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
+	// The gate-dir lines go in the Workflow section: RenderBrief truncates
+	// Context to fit the cap but never Workflow.
+	if lines := s.gateDirLines(it, step); len(lines) > 0 && brief.Workflow != "" {
+		brief.Workflow += "\n" + strings.Join(lines, "\n")
+	}
 
 	var shareRW []WorkflowWorktree
 	if step.Run != "" {
