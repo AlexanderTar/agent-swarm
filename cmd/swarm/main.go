@@ -38,7 +38,8 @@ Commands:
   ack NAME                         move a failed, crashed or interrupted agent to history
   lineage NAME [--repair]          show an agent's canonical identity and generation history
   requests                         list open requests
-  bugs                             list stored swarm_report_bug reports, newest first
+  bugs [--issue ID [--repo OWNER/NAME] [--dry-run]]
+                                   list stored swarm_report_bug reports, newest first; --issue files one on GitHub
   answer REQ TEXT
   approve REQ
   confirm-repos REQ PATH... [--comment TEXT]

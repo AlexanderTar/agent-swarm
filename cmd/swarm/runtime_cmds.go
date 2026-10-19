@@ -509,12 +509,22 @@ type bugRow struct {
 	RootItemKey  string `json:"root_item_key"`
 	Title        string `json:"title"`
 	BoardItemKey string `json:"board_item_key"`
+	IssueURL     string `json:"issue_url"`
 }
 
 func cmdBugs(args []string, stdout, stderr io.Writer) int {
-	c, _, code, done := connect("bugs", args, stderr, nil)
+	var issue, repo string
+	var dry bool
+	c, _, code, done := connect("bugs", args, stderr, func(fs *flag.FlagSet) {
+		fs.StringVar(&issue, "issue", "", "file the report with this id as a GitHub issue")
+		fs.StringVar(&repo, "repo", defaultBugRepo, "with --issue: the OWNER/NAME to file on")
+		fs.BoolVar(&dry, "dry-run", false, "with --issue: print what would be posted, post nothing")
+	})
 	if done {
 		return code
+	}
+	if issue != "" {
+		return fileBugIssue(c, issue, repo, dry, stdout, stderr)
 	}
 	var list []bugRow
 	if err := c.do("GET", "/api/bugs", nil, &list); err != nil {
@@ -525,14 +535,17 @@ func cmdBugs(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tCREATED\tREPORTER\tROOT\tTITLE\tBOARD")
+	fmt.Fprintln(tw, "ID\tCREATED\tREPORTER\tROOT\tTITLE\tBOARD\tISSUE")
 	for _, b := range list {
-		board := b.BoardItemKey
+		board, issue := b.BoardItemKey, b.IssueURL
 		if board == "" {
 			board = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", b.ID, time.UnixMilli(b.CreatedAt).Format("2006-01-02 15:04"),
-			b.Reporter, b.RootItemKey, b.Title, board)
+		if issue == "" {
+			issue = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", b.ID, time.UnixMilli(b.CreatedAt).Format("2006-01-02 15:04"),
+			b.Reporter, b.RootItemKey, b.Title, board, issue)
 	}
 	tw.Flush()
 	return 0
