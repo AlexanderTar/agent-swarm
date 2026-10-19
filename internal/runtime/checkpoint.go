@@ -366,17 +366,23 @@ func shaMatches(a, b string) bool {
 	return false
 }
 
+// hasIntegrationVerifyPassed reports whether the latest non-red run of cmd on
+// the item (past checkpoints in write order, then the one being written)
+// passed. Matching is exact, unlike the per-task verify gate's containment.
 func (s *Store) hasIntegrationVerifyPassed(ctx context.Context, tx *sql.Tx, itemID string, currentVerify []Verify, cmd string) (bool, error) {
-	for _, v := range currentVerify {
-		if v.Cmd == cmd && v.OK {
-			return true, nil
-		}
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT verify_json FROM checkpoints WHERE item_id = ?`, itemID)
+	rows, err := tx.QueryContext(ctx, `SELECT verify_json FROM checkpoints WHERE item_id = ? ORDER BY rowid`, itemID)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
+	passed := false
+	latest := func(vs []Verify) {
+		for _, v := range vs {
+			if v.Cmd == cmd && v.Phase != "red" {
+				passed = v.OK
+			}
+		}
+	}
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
@@ -386,13 +392,13 @@ func (s *Store) hasIntegrationVerifyPassed(ctx context.Context, tx *sql.Tx, item
 		if err := json.Unmarshal([]byte(raw), &vs); err != nil {
 			continue
 		}
-		for _, v := range vs {
-			if v.Cmd == cmd && v.OK {
-				return true, nil
-			}
-		}
+		latest(vs)
 	}
-	return false, rows.Err()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	latest(currentVerify)
+	return passed, nil
 }
 
 func (s *Store) hasFinalReviewPassed(ctx context.Context, tx *sql.Tx, itemID string, integratedSHA string) (bool, error) {
@@ -822,17 +828,20 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 	return &items.Error{Code: items.CodeBadRequest, Message: tddMissingCopy}
 }
 
-// verifyDeclaredOK reports whether entries contains an ok:true entry whose
-// cmd, whitespace-normalized, equals or contains want (also
-// whitespace-normalized).
-func verifyDeclaredOK(entries []Verify, want string) bool {
+// verifyDeclaredState classifies want against entries, in order. An entry
+// matches when its whitespace-normalized cmd contains the normalized want.
+// Red-phase entries are skipped: a red run is meant to fail and says nothing
+// about the declared command. The latest matching entry decides, so an
+// earlier pass can't hide a later failure and a rerun can fix one.
+func verifyDeclaredState(entries []Verify, want string) (found, passed bool) {
 	w := normalizeWhitespace(want)
 	for _, v := range entries {
-		if v.OK && strings.Contains(normalizeWhitespace(v.Cmd), w) {
-			return true
+		if v.Phase == "red" || !strings.Contains(normalizeWhitespace(v.Cmd), w) {
+			continue
 		}
+		found, passed = true, v.OK
 	}
-	return false
+	return found, passed
 }
 
 func normalizeWhitespace(s string) string {
@@ -849,7 +858,12 @@ func (s *Store) verifyGate(ctx context.Context, tx *sql.Tx, it items.Item, run w
 	entries := append(append([]Verify{}, prior...), in.Verification...)
 	var missing []string
 	for _, want := range it.Verify {
-		if !verifyDeclaredOK(entries, want) {
+		found, passed := verifyDeclaredState(entries, want)
+		if found && !passed {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Declared verify command failed: %s (recorded ok:false). Fix it and rerun, or write a blocked checkpoint.", want)}
+		}
+		if !passed {
 			missing = append(missing, want)
 		}
 	}

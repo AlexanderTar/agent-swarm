@@ -1689,6 +1689,64 @@ func TestVerifyGateMatchesDeclaredCommands(t *testing.T) {
 	}
 }
 
+// A declared verify command whose latest evidence is ok:false must refuse
+// completed, even when an earlier run of it passed or the same checkpoint
+// also carries other passing entries. A red-phase run is expected to fail and
+// is not evidence about the declared command.
+func TestVerifyGateRefusesFailedDeclaredCommand(t *testing.T) {
+	failed := `Declared verify command failed: go test ./... (recorded ok:false). Fix it and rerun, or write a blocked checkpoint.` + hintCopy
+
+	t.Run("failing entry alone", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+		setItemVerify(t, s, "TASK-1", "go test ./...")
+		_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./...", OK: false}}})
+		if err == nil || err.Error() != failed {
+			t.Fatalf("err = %v, want %q", err, failed)
+		}
+	})
+
+	t.Run("earlier pass then failing completed", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+		setItemVerify(t, s, "TASK-1", "go test ./...")
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "p",
+			Verification: []Verify{{Cmd: "go test ./...", OK: true}}}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./...", OK: false}}})
+		if err == nil || err.Error() != failed {
+			t.Fatalf("a stale pass must not hide the latest failure: err = %v, want %q", err, failed)
+		}
+	})
+
+	t.Run("fail then pass completes", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+		setItemVerify(t, s, "TASK-1", "go test ./...")
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./...", OK: false}, {Cmd: "go test ./...", OK: true}}}); err != nil {
+			t.Fatalf("a rerun that passed after a failure should complete: %v", err)
+		}
+	})
+
+	t.Run("later red run does not count as a failure", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+		setItemVerify(t, s, "TASK-1", "go test ./...")
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./...", OK: true}, {Cmd: "go test ./... -run X", Phase: "red", OK: false}}}); err != nil {
+			t.Fatalf("a red-phase failure is expected evidence, not a failed verify: %v", err)
+		}
+	})
+}
+
 // Diligence test (not brief-named, but the crux of both controller rulings
 // this unit implements): a fix round (round > 1) narrows tdd evidence to
 // only the units the previous round's reviewer actually flagged -- unit 3

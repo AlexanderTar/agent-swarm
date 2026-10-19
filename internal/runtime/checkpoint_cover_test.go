@@ -83,6 +83,40 @@ func TestHasIntegrationVerifyPassedReadsCurrentAndPastEvidence(t *testing.T) {
 	}
 }
 
+// The latest run of the command decides: an old pass can't hide a newer
+// failure, and a newer pass fixes an older failure. Red-phase runs are skipped.
+func TestHasIntegrationVerifyPassedLatestRunWins(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	check := func(current []Verify) bool {
+		t.Helper()
+		var ok bool
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			var err error
+			ok, err = s.hasIntegrationVerifyPassed(ctx, tx, w.ItemID, current, "make test")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	seedCheckpointRow(t, s, w, wSes, "", `[]`, `[{"cmd":"make test","ok":true}]`)
+	if check([]Verify{{Cmd: "make test", OK: false}}) {
+		t.Fatal("an older pass hid the failure in the checkpoint being written")
+	}
+	seedCheckpointRow(t, s, w, wSes, "", `[]`, `[{"cmd":"make test","ok":false}]`)
+	if check(nil) {
+		t.Fatal("an older pass hid a later failing checkpoint")
+	}
+	if !check([]Verify{{Cmd: "make test", OK: false}, {Cmd: "make test", OK: true}}) {
+		t.Fatal("a rerun that passed after a failure should count")
+	}
+	if !check([]Verify{{Cmd: "make test", OK: true}, {Cmd: "make test", Phase: "red", OK: false}}) {
+		t.Fatal("a red-phase failure should not count against the command")
+	}
+}
+
 func TestHasFinalReviewPassedMatchesReviewerShas(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
