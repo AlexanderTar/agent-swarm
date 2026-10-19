@@ -1,0 +1,8 @@
+{
+  "fill" : { "automatic-gradient" : "extended-srgb:0.40000,0.40000,0.95000,1.00000" },
+  "groups" : [
+    { "layers" : [ { "image-name" : "Glyph.png", "name" : "Glyph", "glass" : true } ], "shadow" : { "kind" : "neutral", "opacity" : 0.5 }, "translucency" : { "enabled" : true, "value" : 0.5 } },
+    { "layers" : [ { "image-name" : "Background.png", "name" : "Background" } ] }
+  ],
+  "supported-platforms" : { "squares" : [ "macOS" ] }
+}
