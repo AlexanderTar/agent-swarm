@@ -9,8 +9,8 @@ set -euo pipefail
 # agent CLI" (S-1's sibling invariant for this script) even though nothing
 # here ever chooses to spawn one — Preflight's Installed() check alone
 # would start shelling out to them. tmux/gpg/git/curl/go all resolve under
-# just these three.
-export PATH=/opt/homebrew/bin:/usr/bin:/bin
+# just these three. CI sets SWARM_E2E_PATH to put its Go toolchain first.
+export PATH=${SWARM_E2E_PATH:-/opt/homebrew/bin:/usr/bin:/bin}
 root="$(cd "$(dirname "$0")/.." && pwd)"
 export SWARM_HOME="$(mktemp -d)"
 export SWARM_TMUX_SOCKET="swarm-e2e"
