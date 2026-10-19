@@ -287,6 +287,37 @@ func (s *Store) preflightBriefs(ctx context.Context, orch Agent, it items.Item, 
 	return nil
 }
 
+// CheckLiveWorkflowBriefs is the items.Store.CheckWorkflowBriefs hook: an update
+// to the text a kickoff renders (brief, acceptance, units, verify) on an item
+// whose workflow is live (running, or escalated: a "retry" resume spawns the
+// steps again without a preflight) is refused when any step's kickoff, completed
+// ones included since a fix round re-runs build, would no longer fit, so a late
+// step (the review after a long build) can't fail to spawn (BUG-106). It is
+// preflightBriefs on the patched item.
+func (s *Store) CheckLiveWorkflowBriefs(ctx context.Context, tx *sql.Tx, it items.Item) error {
+	if it.Workflow == nil {
+		return nil
+	}
+	var wfID string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE item_id = ? AND state IN ('running','escalated')
+		ORDER BY created_at DESC LIMIT 1`, it.ID).Scan(&wfID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	wf, ok, err := s.workflowRowByID(ctx, wfID)
+	if err != nil || !ok {
+		return err
+	}
+	orch, err := s.agentByIDTx(ctx, tx, wf.OwnerAgentID)
+	if err != nil {
+		return err
+	}
+	return s.preflightBriefs(ctx, orch, it, wf)
+}
+
 // StartWorkflow is swarm_workflow op:"start" (spec B4/B7): validates, inserts
 // the workflows row (round 1, running) and calls advance.
 func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error) {
@@ -1047,7 +1078,8 @@ func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *
 }
 
 // gateDirLines names the directory a step's artifact gate checks, resolved
-// from SWARM_HOME, so the agent never has to guess a ~/.swarm path.
+// from SWARM_HOME, so the agent never has to guess a ~/.swarm path. stepBrief
+// appends them to the Workflow section.
 func (s *Store) gateDirLines(it items.Item, step workflow.Step) []string {
 	var out []string
 	for _, g := range step.Gates {
@@ -1080,7 +1112,6 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 		return BriefInput{}, nil, err
 	}
 	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
-	ctxLines = append(ctxLines, s.gateDirLines(it, step)...)
 	if step.Run != "" && run.Round > 1 {
 		findingLines, err := s.roundFindingLines(ctx, wf.ID, &spec, run.StepID, run.Round)
 		if err != nil {
@@ -1089,6 +1120,11 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 		ctxLines = append(ctxLines, findingLines...)
 	}
 	brief := BriefForStep(it, spec, run.StepID, run.Round, wf.ExtraRounds, ctxLines)
+	// The gate-dir lines go in the Workflow section: RenderBrief truncates
+	// Context to fit the cap but never Workflow.
+	if lines := s.gateDirLines(it, step); len(lines) > 0 && brief.Workflow != "" {
+		brief.Workflow += "\n" + strings.Join(lines, "\n")
+	}
 
 	var shareRW []WorkflowWorktree
 	if step.Run != "" {

@@ -846,13 +846,13 @@ func verifyDeclaredState(entries []Verify, want string) (found, passed bool) {
 }
 
 // containsCmd reports whether want occurs in cmd bounded on both sides by the
-// string's ends, whitespace or a shell separator, so "cd web && pnpm test -- x"
-// contains "pnpm test" but "pnpm test:e2e" does not.
+// string's ends, whitespace, a shell separator or a quote, so "cd web && pnpm test -- x"
+// and bash -c "pnpm test" contain "pnpm test" but "pnpm test:e2e" does not.
 func containsCmd(cmd, want string) bool {
 	if want == "" {
 		return false
 	}
-	boundary := func(b byte) bool { return strings.IndexByte(" ;&|()", b) >= 0 }
+	boundary := func(b byte) bool { return strings.IndexByte(" ;&|()\"'`", b) >= 0 }
 	for off := 0; ; {
 		i := strings.Index(cmd[off:], want)
 		if i < 0 {

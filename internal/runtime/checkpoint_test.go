@@ -3265,3 +3265,23 @@ func TestTDDGateAllUnitsCarriedPasses(t *testing.T) {
 		t.Fatalf("every unit carried: %v", err)
 	}
 }
+
+// TASK-1221: a verify command recorded inside quotes still matches its declared
+// command, while a longer command sharing its prefix does not.
+func TestContainsCmdQuotedCommands(t *testing.T) {
+	for _, tc := range []struct {
+		cmd, want string
+		match     bool
+	}{
+		{`bash -c "pnpm test"`, "pnpm test", true},
+		{`sh -c 'go test ./...'`, "go test ./...", true},
+		{"sh -c `pnpm test`", "pnpm test", true},
+		{`bash -c "cd web && pnpm test -- x"`, "pnpm test", true},
+		{`bash -c "pnpm test:e2e"`, "pnpm test", false},
+		{`bash -c "xpnpm test"`, "pnpm test", false},
+	} {
+		if got := containsCmd(tc.cmd, tc.want); got != tc.match {
+			t.Errorf("containsCmd(%q, %q) = %v, want %v", tc.cmd, tc.want, got, tc.match)
+		}
+	}
+}

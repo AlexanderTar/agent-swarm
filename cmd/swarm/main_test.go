@@ -1033,12 +1033,54 @@ func TestMigrateFlagsAreExclusiveAndDispatch(t *testing.T) {
 	} {
 		var got string
 		migrateRun = func(ctx context.Context, r *migrate.Runner, mode string) error { got = mode; return nil }
-		code := run(append(tc.args, "--home", t.TempDir()), io.Discard, io.Discard)
+		code := run(append(tc.args, "--live", "--home", t.TempDir()), io.Discard, io.Discard)
 		if code != tc.code {
 			t.Errorf("%v exit = %d, want %d", tc.args, code, tc.code)
 		}
 		if got != tc.want {
 			t.Errorf("%v mode = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// TASK-1221 (BUG-100): migrate acts on the fixed launchd labels, so a
+// non-default home is refused without --live, in every mode. migrateRun is
+// stubbed, so nothing here reaches launchctl.
+func TestMigrateRefusesANonDefaultHomeWithoutLive(t *testing.T) {
+	saved := migrateRun
+	t.Cleanup(func() { migrateRun = saved })
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	scratch := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantRun bool
+	}{
+		{"scratch home", []string{"--home", scratch}, false},
+		{"scratch home, dry run", []string{"--dry-run", "--home", scratch}, false},
+		{"scratch home, rollback", []string{"--rollback", "--home", scratch}, false},
+		{"scratch home with --live", []string{"--live", "--home", scratch}, true},
+		{"default home", []string{"--home", filepath.Join(userHome, ".swarm")}, true},
+	} {
+		ran := false
+		migrateRun = func(ctx context.Context, r *migrate.Runner, mode string) error {
+			ran = true
+			if r.Cfg.Isolated {
+				t.Errorf("%s: Cfg.Isolated is set on a run that proceeds", tc.name)
+			}
+			return nil
+		}
+		var errOut bytes.Buffer
+		code := run(append([]string{"migrate"}, tc.args...), io.Discard, &errOut)
+		if ran != tc.wantRun {
+			t.Errorf("%s: migrate ran = %v, want %v", tc.name, ran, tc.wantRun)
+		}
+		if !tc.wantRun && (code == 0 || !strings.Contains(errOut.String(), "--live")) {
+			t.Errorf("%s: code = %d, stderr = %q, want a refusal naming --live", tc.name, code, errOut.String())
+		}
+		if tc.wantRun && code != 0 {
+			t.Errorf("%s: code = %d, want 0", tc.name, code)
 		}
 	}
 }

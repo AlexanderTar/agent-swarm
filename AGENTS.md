@@ -8,7 +8,7 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
-Running the `swarm` binary against a scratch `SWARM_HOME`, or writing a test near `install`, `uninstall` or `launchctl`: follow docs/isolated-runs.md. A scratch `SWARM_HOME` alone does not protect the live daemon (the launchd labels are fixed); use a fake `HOME`, a `launchctl` stub on `PATH`, and never `--live` without both. Tests inject `execx.Fake`; the real runners refuse `launchctl` under `go test`.
+Running the `swarm` binary against a scratch `SWARM_HOME`, or writing a test near `install`, `uninstall`, `migrate` or `launchctl`: follow docs/isolated-runs.md. A scratch `SWARM_HOME` alone does not protect the live daemon (the launchd labels are fixed); use a fake `HOME`, a `launchctl` stub on `PATH`, and never `--live` without both. Tests inject `execx.Fake`; the real runners refuse `launchctl` under `go test`.
 
 Briefs and launch commands have hard size limits (6000-character brief cap checked where a brief is written; tmux's ~16 KB command line, so the kickoff rides in a launch file, never argv or env). Never add your own length check or put kickoff text on the tmux command line: see section 8 of docs/adding-an-agent-kind.md, guarded by `go test ./internal/items/ ./internal/spawn/ ./internal/adapter/`.
 

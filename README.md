@@ -168,7 +168,7 @@ swarm open [KEY]                   open the board
 swarm kb search QUERY | kb status
 swarm repos [--rescan] | repos add PATH
 swarm usage [--refresh]
-swarm migrate [--dry-run | --resume | --rollback]
+swarm migrate [--dry-run | --resume | --rollback] [--live]
 swarm uninstall                    remove launchd job and agent integrations (keeps data)
 ```
 

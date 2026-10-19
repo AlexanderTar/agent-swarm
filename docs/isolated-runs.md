@@ -20,7 +20,7 @@ When the swarm home is not `~/.swarm`, `swarm install` and `swarm uninstall` set
 - touch no agent configuration, plugin, skill link or `~/.local/bin/swarm` (`install.Agents`, `install.Uninstall`);
 - say so and name the flag that opts in.
 
-`--live` opts in (`swarm install --live`, `swarm uninstall --live`): it acts on the live launchd job and the real configuration even though the home is not `~/.swarm`. Only use it with a fake `HOME` **and** a `launchctl` stub on `PATH`. The default home is unchanged.
+`--live` opts in (`swarm install --live`, `swarm uninstall --live`, `swarm migrate --live`): it acts on the live launchd job and the real configuration even though the home is not `~/.swarm`. Only use it with a fake `HOME` **and** a `launchctl` stub on `PATH`. The default home is unchanged.
 
 ## Safe setup for a real binary (e2e, probes)
 
@@ -42,11 +42,11 @@ env -i PATH="$S/shim:/usr/bin:/bin:/opt/homebrew/bin" HOME="$S/fakehome" USER=te
 - An agent started inside the run can still guess the real home from its work-dir path and write to `~/.swarm/research`; check the live folder afterwards and remove strays.
 - `scripts/e2e.sh` follows this rule for the fake adapter: it never runs `swarm install`.
 - An isolated `swarm install` writes no plist and starts no daemon, so here it only proves nothing live is touched. To run an isolated daemon, start it yourself under the same `env -i ...` prefix: `swarm daemon --home "$S/home" --port 17778` (any free port other than 7777), and stop it with Ctrl-C.
-- `swarm migrate` (the one-time 1.x upgrade) is not covered: it always acts on the fixed launchd labels. Never run it with a scratch home.
+- `swarm migrate` (the one-time 1.x upgrade) always acts on the fixed launchd labels, so it refuses a non-default `--home` (exit 2, in every mode including `--dry-run`) unless you pass `--live`. Never run it for real with a scratch home; `TestMigrateRefusesANonDefaultHomeWithoutLive` (`cmd/swarm`) guards the refusal.
 
 ## Safe setup for Go tests
 
-- Never call the real `install.Install`, `install.Uninstall`, `install.Agents` or `migrate` with `execx.Run` in a test. Inject `execx.Fake` (`internal/install/isolated_test.go`) and a fake `HOME` (`fakeHome` in `internal/install/codex_test.go`). In `cmd/swarm` tests, stub `installLaunchd`, `installAgents` and `installUninstall`.
+- Never call the real `install.Install`, `install.Uninstall`, `install.Agents` or `migrate` with `execx.Run` in a test. Inject `execx.Fake` (`internal/install/isolated_test.go`) and a fake `HOME` (`fakeHome` in `internal/install/codex_test.go`). In `cmd/swarm` tests, stub `installLaunchd`, `installAgents`, `installUninstall` and `migrateRun`.
 - `execx.Run`, `execx.RunFor` and `execx.RunEnv` return an error for `launchctl` when running under `go test` (`refuseUnderTest`, guarded by `TestRealRunnersRefuseLaunchctlUnderGoTest`). A test that hits it forgot to inject a fake; fix the test, do not weaken the guard.
 - If a test run might have touched launchd, check at once: `launchctl print gui/$(id -u)/dev.swarm.daemon | grep -E 'state|pid'`. To restore it: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.swarm.daemon.plist`.
 
@@ -56,5 +56,6 @@ env -i PATH="$S/shim:/usr/bin:/bin:/opt/homebrew/bin" HOME="$S/fakehome" USER=te
 | --- | --- |
 | A non-default home never reaches launchd | `TestIsolatedInstallNeverTouchesLaunchd`, `TestIsolatedUninstallNeverTouchesLaunchd`, `TestIsolatedAgentsNeverBootsOutTheUpdater` (`internal/install`) |
 | A non-default home never touches agent configs | `TestIsolatedInstallAndUninstallLeaveUserAgentConfigsAlone` |
+| `swarm migrate` refuses a non-default home without `--live` | `TestMigrateRefusesANonDefaultHomeWithoutLive` (`cmd/swarm`) |
 | The default home is unchanged | `TestNonIsolatedInstallStillTouchesLaunchd`, `TestInstallAndUninstallIsolateANonDefaultHome` (`cmd/swarm`) |
 | Tests cannot run the real `launchctl` | `TestRealRunnersRefuseLaunchctlUnderGoTest` (`internal/execx`) |

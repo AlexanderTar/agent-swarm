@@ -394,8 +394,8 @@ func TestStepBriefNamesGateDirUnderSwarmHome(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := filepath.Join(s.Home, c.dir, it.RootKey) + "/"
-			if !slices.ContainsFunc(brief.Context, func(l string) bool { return strings.Contains(l, want) }) {
-				t.Fatalf("brief context = %v, want a line naming %s", brief.Context, want)
+			if !strings.Contains(brief.Workflow, want) {
+				t.Fatalf("brief workflow = %q, want a line naming %s", brief.Workflow, want)
 			}
 		})
 	}

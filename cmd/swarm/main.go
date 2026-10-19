@@ -18,7 +18,7 @@ Commands:
   daemon [--port N]                run the daemon (launchd starts it)
   install [--plugins] [--yes] [--live]  set up launchd, agent integrations and the superpowers plugins
   uninstall [--live]               remove the launchd job and agent integrations (keeps data)
-  migrate [--dry-run | --resume | --rollback]   import Agent Swarm 1.x data and cut over
+  migrate [--dry-run | --resume | --rollback] [--live]   import Agent Swarm 1.x data and cut over
   doctor [--json] [--legacy]       check prerequisites, agents, skills, Ollama, signing; --legacy reports 1.x state
   status                           daemon, items, repositories, knowledge base
   items [--type T] [--status S] [-q TEXT]

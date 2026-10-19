@@ -291,13 +291,14 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		Adapters: rt.Adapters, Catalog: cat, Run: execx.RunFor(240 * time.Second), RunEnv: execx.RunEnv, Now: now, Log: cfg.Log,
 		MaxConcurrent: 2, Timeout: 240 * time.Second, Deliver: rt.DeliverAdvice}
 	rt.Advisor = adv
-	wt.OnRetained = rt.OnWorktreeRetained             // the §17.5 "Worktree kept" notification
-	it.RequestPayload = rt.RequestPayload             // R5: full Request on request.*
-	it.RequestOpened = rt.OnRequestOpened             // §17.5 for the daemon-opened accept requests
-	it.DepUnblocked = rt.OnDepUnblocked               // wake whatever was blocked_by an item that just finished
-	it.StoryReadyForReview = rt.OnStoryReadyForReview // relay story_ready_for_review when all tasks finish
-	it.RootDone = rt.OnRootDone                       // finish every agent on a root that just reached Done
-	it.CheckLanded = rt.CheckLanded                   // refuse a resolved-by close whose integrated sha never reached the default branch
+	wt.OnRetained = rt.OnWorktreeRetained               // the §17.5 "Worktree kept" notification
+	it.RequestPayload = rt.RequestPayload               // R5: full Request on request.*
+	it.RequestOpened = rt.OnRequestOpened               // §17.5 for the daemon-opened accept requests
+	it.DepUnblocked = rt.OnDepUnblocked                 // wake whatever was blocked_by an item that just finished
+	it.StoryReadyForReview = rt.OnStoryReadyForReview   // relay story_ready_for_review when all tasks finish
+	it.RootDone = rt.OnRootDone                         // finish every agent on a root that just reached Done
+	it.CheckWorkflowBriefs = rt.CheckLiveWorkflowBriefs // refuse a brief update that would overflow a live workflow's later step kickoff
+	it.CheckLanded = rt.CheckLanded                     // refuse a resolved-by close whose integrated sha never reached the default branch
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
 	// which only the installed launchd plist sets. Every other daemon — a
 	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no
