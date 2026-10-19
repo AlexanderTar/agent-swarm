@@ -13,6 +13,9 @@ import (
 // which Run's fixed 30 s cap would cut short. Stdin is closed, as in Run.
 func RunFor(d time.Duration) Runner {
 	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if err := refuseUnderTest(name); err != nil {
+			return nil, err
+		}
 		ctx, cancel := context.WithTimeout(ctx, d)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, name, args...)

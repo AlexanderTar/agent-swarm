@@ -50,6 +50,10 @@ func InstalledKinds(lookPath func(string) (string, error)) func(context.Context)
 // the writers for the agents that are present, then the binary link and the
 // superpowers plugins.
 func Agents(ctx context.Context, o AgentsOpts) error {
+	if o.Cfg.Isolated {
+		fmt.Fprintf(o.Out, "%s is not the default swarm home, so the agents' own configuration under %s was left alone. Pass --live to write it anyway.\n", o.Cfg.Home, o.Cfg.UserHome)
+		return nil
+	}
 	installed := o.Installed(ctx)
 	if o.PluginsOnly {
 		return o.syncPlugins(ctx, installed)

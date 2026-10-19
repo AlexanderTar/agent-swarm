@@ -53,6 +53,16 @@ func newConfig(home string) (install.Config, error) {
 	}, nil
 }
 
+// isolate marks cfg Isolated when its home is not the default ~/.swarm, unless
+// the caller passed --live (BUG-100): the launchd labels and the agents'
+// configuration are machine-wide, so a scratch home must not be able to stop or
+// rewrite them.
+func isolate(cfg *install.Config, live bool) {
+	cfg.Isolated = !live && filepath.Clean(cfg.Home) != filepath.Join(cfg.UserHome, ".swarm")
+}
+
+const liveUsage = "act on the live launchd job and the agents' own configuration even though --home is not ~/.swarm"
+
 // agentsOpts builds the AgentsOpts for install and uninstall. §12.4 gives the
 // plugin commands 120 s, which execx.Run's 30 s cap would cut short.
 func agentsOpts(cfg install.Config, yes, pluginsOnly bool, stdin io.Reader, out io.Writer) install.AgentsOpts {
@@ -203,6 +213,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	dry := fs.Bool("dry-run", false, "print what would change")
 	plugins := fs.Bool("plugins", false, "only install or update the superpowers plugins and graphify")
 	yes := fs.Bool("yes", false, "answer the Agent Swarm 1.x removal prompt with yes")
+	live := fs.Bool("live", false, liveUsage)
 	if code, done := parse(fs, args); done {
 		return code
 	}
@@ -210,6 +221,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	isolate(&cfg, *live)
 	o := agentsOpts(cfg, *yes, *plugins, os.Stdin, stdout)
 	o.ClaudeSessions = daemonClaudeSessions(*home, *base)
 	if *plugins {
@@ -234,6 +246,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 
 func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	fs, home, _ := flags("uninstall", stderr, false)
+	live := fs.Bool("live", false, liveUsage)
 	if code, done := parse(fs, args); done {
 		return code
 	}
@@ -241,8 +254,12 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	isolate(&cfg, *live)
 	if err := installUninstall(context.Background(), agentsOpts(cfg, true, false, nil, stdout)); err != nil {
 		return fail(stderr, err)
+	}
+	if cfg.Isolated {
+		return 0 // install.Uninstall already said it left everything alone
 	}
 	fmt.Fprintln(stdout, "Removed the launch agent and the Swarm entries in each agent's configuration. Your data in "+cfg.Home+" is untouched.")
 	return 0
