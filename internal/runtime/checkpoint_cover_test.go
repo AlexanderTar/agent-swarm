@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
@@ -314,6 +315,46 @@ func TestResearchNotesGateAcceptsOriginSpikeDir(t *testing.T) {
 	}
 	if err := wantCount(s, `SELECT COUNT(*) FROM artifacts WHERE kind = 'research' AND path = ?`, 1, notes); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A notes/design step's brief names the directory the gate checks, resolved
+// from SWARM_HOME rather than a hardcoded ~/.swarm.
+func TestStepBriefNamesGateDirUnderSwarmHome(t *testing.T) {
+	for _, c := range []struct {
+		gate     workflow.Gate
+		run, dir string
+	}{
+		{workflow.GateArtifactNotes, "researcher", "research"},
+		{workflow.GateArtifactDesign, "designer", "designs"},
+	} {
+		t.Run(c.dir, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+				{ID: "work", Run: c.run, Gates: []workflow.Gate{c.gate}},
+			}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, taskKey, _, st, _ := startedWorkflow(t, s, spec)
+			it, err := s.Items.Get(ctx, taskKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wf, _, err := s.workflowRowByID(ctx, st.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			brief, _, err := s.stepBrief(ctx, wf, it, wfRunRow{StepID: "work", Role: c.run, Round: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(s.Home, c.dir, it.RootKey) + "/"
+			if !slices.ContainsFunc(brief.Context, func(l string) bool { return strings.Contains(l, want) }) {
+				t.Fatalf("brief context = %v, want a line naming %s", brief.Context, want)
+			}
+		})
 	}
 }
 

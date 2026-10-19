@@ -18,7 +18,7 @@ Before forming a hypothesis, trace the failing path with `graphify path` and `gr
 Find a command that fails for the reported reason, not some other reason. Run it and record a `progress` checkpoint with `verification: [{"cmd": "<repro command>", "phase": "repro", "ok": false, "note": "<why it fails>"}]`. Keep scratch repros (a throwaway script or test) in your scratchpad, never in the repo. Never edit tracked files and never commit: leave every worktree exactly as you found it, clean.
 
 ## The report
-Write the report to `~/.swarm/research/<ROOT-KEY>/<ITEM-KEY>-diagnosis.md` (`<ROOT-KEY>` is the `root:` key in your brief, `<ITEM-KEY>` your task). Use these sections:
+Write the report to `$SWARM_HOME/research/<ROOT-KEY>/<ITEM-KEY>-diagnosis.md` (`<ROOT-KEY>` is the `root:` key in your brief, `<ITEM-KEY>` your task). Use these sections:
 1. **Repro** — the exact command and its failing output.
 2. **Root cause** — what is wrong and why, with `file:line` evidence for each claim.
 3. **Regression test** — the regression test the coder should write: where it goes, what it sets up, what it asserts, and why it fails for the reported reason today.
@@ -26,4 +26,4 @@ Write the report to `~/.swarm/research/<ROOT-KEY>/<ITEM-KEY>-diagnosis.md` (`<RO
 5. **Follow-ups** — a second, unrelated bug you noticed goes here, never into the fix.
 
 ## Completing
-Write `completed` with the report path in `artifacts` (the `diagnose` step's gate requires a readable file under `~/.swarm/research/<ROOT-KEY>/`) and your repro command in `verification` (`{"cmd": "...", "ok": false}`; a legacy debugger's `completed` needs at least one verification command). There is no `git` commit to report. If a reviewer or your orchestrator asks for a better diagnosis, update the report and complete again.
+Write `completed` with the report path in `artifacts` (the `diagnose` step's gate requires a readable file under `$SWARM_HOME/research/<ROOT-KEY>/`) and your repro command in `verification` (`{"cmd": "...", "ok": false}`; a legacy debugger's `completed` needs at least one verification command). There is no `git` commit to report. If a reviewer or your orchestrator asks for a better diagnosis, update the report and complete again.

@@ -1246,7 +1246,7 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"superpowers:brainstorming",
 			"ui-ux-pro-max",
 			"building-components",
-			"~/.swarm/designs/",
+			"$SWARM_HOME/designs/",
 			"artifacts",
 			"Goals",
 			"Screens",
@@ -1285,7 +1285,7 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"Follow the `swarm` skill first",
 			"superpowers:brainstorming",
 			"no user dialogue",
-			"~/.swarm/research/",
+			"$SWARM_HOME/research/",
 			"### Takeaway",
 			"### Cited findings",
 			"### Inferences",
@@ -1690,7 +1690,7 @@ func TestDebugWorkflowSplitsDiagnosisFromFix(t *testing.T) {
 	debugger := string(install.SkillBody("swarm-debugger"))
 	for _, want := range []string{
 		"diagnose",
-		"~/.swarm/research/",
+		"$SWARM_HOME/research/",
 		"`artifacts`",
 		"Never edit tracked files",
 		"never commit",
