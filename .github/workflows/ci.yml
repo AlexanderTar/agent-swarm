@@ -1,0 +1,120 @@
+name: CI
+
+# Every check the repo has, on pull requests to main and on pushes to main. The job names are
+# the required status checks for main, so rename one only together with the branch protection.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The Makefile defaults GO to /opt/homebrew/bin/go.
+  GO: go
+
+jobs:
+  go-lint:
+    name: Go format and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-web
+      # web/dist is embedded into the Go packages, so vet needs it.
+      - run: make web-build
+      - run: make fmt vet
+
+  go-test:
+    name: Go tests and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-web
+      - run: make web-build
+      - name: Install tmux and gpg for the tests that drive them
+        run: sudo apt-get update && sudo apt-get install -y tmux gnupg
+      - run: go test -race -timeout 30m ./...
+      - run: scripts/cover.sh
+
+  web-test:
+    name: Web tests and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-web
+      - run: pnpm typecheck
+        working-directory: web
+      - run: pnpm test
+        working-directory: web
+
+  web-e2e:
+    name: Web e2e (Playwright, mock daemon)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-web
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+      - run: pnpm e2e
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: web/test-results
+          if-no-files-found: ignore
+
+  skills-mirror:
+    name: Skills mirror is in sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: make skills-sync
+      - name: Fail if the embedded mirror differs from skills/
+        run: |
+          git diff --exit-code -- internal/install/skills
+          test -z "$(git status --porcelain -- internal/install/skills)"
+
+  menubar:
+    name: Menu bar app tests and coverage
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-menubar
+
+  e2e:
+    name: End-to-end (fake adapter)
+    # macOS: scripts/e2e.sh drives tmux, and the daemon needs tmux 3.6+, which Ubuntu's apt lacks.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-web
+      - run: make web-build
+      - name: Install tmux and gpg
+        run: brew install tmux gnupg
+      - name: Run scripts/e2e.sh
+        # e2e.sh pins PATH on purpose (no real agent CLI may be found); keep the Go toolchain on it.
+        run: SWARM_E2E_PATH="$(dirname "$(command -v go)"):/opt/homebrew/bin:/usr/bin:/bin" scripts/e2e.sh
