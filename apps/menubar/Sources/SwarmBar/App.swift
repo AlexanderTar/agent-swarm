@@ -139,6 +139,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             catalog: { [weak model] in model?.catalog ?? [] })
         Task {
             await model.start()
+            // Screenshot seam: `SWARM_OPEN_POPOVER=1` opens the popover in-process, so a capture
+            // script can photograph it without accessibility permission. Activating first clears a
+            // long app menu that can push the status item off the menu bar; retried because the item
+            // can take a while to get a place there.
+            if ProcessInfo.processInfo.environment["SWARM_OPEN_POPOVER"] != nil {
+                for _ in 0..<90 {
+                    try? await Task.sleep(for: .seconds(1))
+                    if NSApp.windows.contains(where: { String(describing: type(of: $0)).contains("MenuBarExtraWindow") && $0.isVisible }) { break }
+                    NSApp.activate(ignoringOtherApps: true)
+                    if let b = StatusItemWatcher.statusItem()?.button { _ = b.sendAction(b.action, to: b.target) }
+                }
+            }
             if ProcessInfo.processInfo.environment["SWARM_SMOKE"] != nil {
                 let s = model.state
                 print("smoke: state agents=\(s.agents.count) requests=\(s.requests.count) active=\(s.activeCount)")

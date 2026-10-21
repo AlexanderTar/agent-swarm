@@ -55,7 +55,7 @@ public struct PopoverView: View {
     public var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            Divider().padding(.horizontal, 12)
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if let banner = model.banner { DaemonBanner(text: banner) { Task { await model.retryConnection() } } }
@@ -75,10 +75,11 @@ public struct PopoverView: View {
             .fixedSize(horizontal: false, vertical: true)
             .scrollIndicators(.never)
             .scrollBounceBehavior(.basedOnSize)
-            Divider()
+            Divider().padding(.horizontal, 12)
             footer
         }
         .frame(width: 360)
+        .popoverGlass()
         .background(PopoverWindowFit())
         .controlSize(.small)
         .glassButtons()
@@ -126,6 +127,29 @@ public struct PopoverView: View {
     }
 }
 
+/// CHORE-116: the system's own menu bar extras (Battery, Wi-Fi) are Liquid Glass with
+/// 14 pt corners on macOS 26+, while MenuBarExtra's default window background is a flat,
+/// near-opaque material with ~8 pt corners. Clear that background and draw the glass in its
+/// place, shaped like theirs. The glass is a background layer: wrapping the content would wash
+/// its colours to white (see `glassPanel`). Below macOS 26 the system material stays.
+extension View {
+    @ViewBuilder func popoverGlass() -> some View {
+        if #available(macOS 26, *) {
+            containerBackground(.clear, for: .window)
+                .background {
+                    Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: PopoverView.cornerRadius))
+                }
+        } else {
+            self
+        }
+    }
+}
+
+extension PopoverView {
+    /// Measured on the macOS 27 Battery menu (2x capture): a ~27 px corner, so 14 pt.
+    static let cornerRadius: CGFloat = 14
+}
+
 /// TASK-504: macOS 27's MenuBarExtraWindow grows with the popover but no longer shrinks when the
 /// content gets shorter while it is shown (a section collapses, the state loads), leaving the
 /// content — square opaque background and all — centered in a taller rounded window. This
@@ -145,7 +169,25 @@ struct PopoverWindowFit: NSViewRepresentable {
 
         override func setFrameSize(_ newSize: NSSize) {
             super.setFrameSize(newSize)
+            // Shrinking can't wait a turn: the window centres the shorter content in its old
+            // height for one frame, so the whole popover dropped by half the change and snapped
+            // back each time a section folded or the usage agent changed (CHORE-116). Growing
+            // is done by the window itself before this runs.
+            if let host = window?.contentView, newSize.height > 0, newSize.height < host.frame.height - 0.5 {
+                fitNow()
+            }
             fitSoon()
+        }
+
+        private var fitting = false
+
+        /// Resizes inside SwiftUI's layout pass; the guard stops the re-entry the window's own
+        /// resize causes.
+        private func fitNow() {
+            guard !fitting else { return }
+            fitting = true
+            fit()
+            fitting = false
         }
 
         /// Deferred: resizing the window from inside SwiftUI's layout pass re-enters it.
@@ -155,12 +197,55 @@ struct PopoverWindowFit: NSViewRepresentable {
 
         private func fit() {
             guard let window, let host = window.contentView, bounds.height > 0 else { return }
+            if #available(macOS 26, *), Self.hideSystemBackground(in: host) {
+                Self.roundWindow(window)
+                // After the next draw, so the shadow is taken from the glass, not the slab.
+                DispatchQueue.main.async { window.invalidateShadow() }
+            }
             let delta = host.frame.height - bounds.height
             guard abs(delta) > 0.5 else { return }
             var frame = window.frame
             frame.origin.y += delta
             frame.size.height -= delta
             window.setFrame(frame, display: true)
+            // The window is transparent outside the glass (CHORE-116), so its shadow follows
+            // the drawn shape; recompute it for the new height.
+            window.invalidateShadow()
+        }
+
+        /// The window server still rounds the window, and draws its rim, at the old ~8 pt radius,
+        /// which shows as a dark edge outside the glass's corners. No public API sets a window's
+        /// corner radius, so use AppKit's own setter while it exists.
+        /// ponytail: private `_setCornerRadius:`; without it only that thin rim comes back.
+        static func roundWindow(_ window: NSWindow) {
+            let setter = NSSelectorFromString("_setCornerRadius:")
+            guard window.responds(to: setter) else { return }
+            typealias Setter = @convention(c) (AnyObject, Selector, CGFloat) -> Void
+            unsafeBitCast(window.method(for: setter), to: Setter.self)(window, setter, PopoverView.cornerRadius)
+        }
+
+        /// CHORE-116: MenuBarExtra paints its own background as the hosting view's first two
+        /// layers, a blurring backdrop and a dark lightening tint, square and full size. With
+        /// them showing, `popoverGlass()` sits on a grey slab whose corners are the window's
+        /// tighter ones. No public modifier removes them (`containerBackground` doesn't), so hide
+        /// those two layers; matched by kind, not position, and re-hidden on every fit.
+        /// ponytail: relies on "CABackdropLayer" and the tint's compositing filter; if a macOS
+        /// release changes them the old slab simply shows again under the glass.
+        ///
+        /// Returns whether it hid anything, so the caller can round the window and reshape its
+        /// shadow to the glass.
+        @discardableResult
+        static func hideSystemBackground(in host: NSView) -> Bool {
+            var hid = false
+            for layer in host.layer?.sublayers ?? [] where layer.frame.size == host.bounds.size {
+                let backdrop = String(describing: type(of: layer)) == "CABackdropLayer"
+                let tint = layer.backgroundColor != nil && layer.compositingFilter != nil
+                if (backdrop || tint) && !layer.isHidden {
+                    layer.isHidden = true
+                    hid = true
+                }
+            }
+            return hid
         }
     }
 }
