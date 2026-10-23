@@ -194,7 +194,25 @@ public final class AppModel {
         await refresh()
     }
 
+    private var refreshing = false
+    private var refreshQueued = false
+
+    /// Every daemon event refetches, and a full /api/state is expensive: at most one request is in
+    /// flight, and any refreshes requested meanwhile collapse into a single follow-up.
     public func refresh() async {
+        if refreshing {
+            refreshQueued = true
+            return
+        }
+        refreshing = true
+        defer { refreshing = false }
+        repeat {
+            refreshQueued = false
+            await fetchState()
+        } while refreshQueued
+    }
+
+    private func fetchState() async {
         do {
             apply(try await client.state())
             if let c = try? await client.catalog() { catalog = c }

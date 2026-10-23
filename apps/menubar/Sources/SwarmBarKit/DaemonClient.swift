@@ -120,8 +120,21 @@ public final class MockDaemonClient: DaemonClient {
         }
     }
 
+    /// When true, `state` parks after recording its call until `releaseState()` — lets a test
+    /// observe refreshes while a /api/state request is pending.
+    public var holdState = false
+    private var stateGates: [CheckedContinuation<Void, Never>] = []
+
+    public func releaseState() {
+        guard !stateGates.isEmpty else { return }
+        stateGates.removeFirst().resume()
+    }
+
     public func state() async throws -> StateResponse {
         try record("state")
+        if holdState {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in stateGates.append(cont) }
+        }
         return try stateResult.get()
     }
 

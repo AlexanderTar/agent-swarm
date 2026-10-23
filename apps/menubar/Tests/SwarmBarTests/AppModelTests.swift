@@ -45,6 +45,33 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.usageRows.map(\.label), ["5h", "Weekly (all models)", "Fable weekly"])
     }
 
+    /// The daemon emits an event per change and each one refetches /api/state: while one request is
+    /// pending, any number of further refreshes must collapse into exactly one follow-up.
+    func testConcurrentRefreshesCoalesceToOneInFlightPlusOneFollowUp() async {
+        let m = make()
+        let stateCalls = { self.client.calls.filter { $0 == "state" }.count }
+        let settle = { for _ in 0..<30 { await Task.yield() } }
+        client.holdState = true
+        let first = Task { await m.refresh() }
+        await settle()
+        XCTAssertEqual(stateCalls(), 1)
+        let extra = (0..<5).map { _ in Task { await m.refresh() } }
+        await settle()
+        XCTAssertEqual(stateCalls(), 1, "a refresh requested while one is in flight must not start a second request")
+
+        client.releaseState()
+        await settle()
+        XCTAssertEqual(stateCalls(), 2, "exactly one follow-up after the in-flight request ends")
+        client.holdState = false
+        for _ in 0..<8 { client.releaseState() } // drains any parked extras, so a failure can't hang the run
+        await first.value
+        for t in extra { await t.value }
+        XCTAssertEqual(stateCalls(), 2)
+
+        await m.refresh()
+        XCTAssertEqual(stateCalls(), 3, "idle again: the next refresh runs normally")
+    }
+
     func testDaemonDownKeepsCachedStateAndChecksTmuxDirectly() async {
         let first = make()
         await first.refresh()
