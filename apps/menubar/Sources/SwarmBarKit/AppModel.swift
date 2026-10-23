@@ -196,20 +196,27 @@ public final class AppModel {
 
     private var refreshing = false
     private var refreshQueued = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Every daemon event refetches, and a full /api/state is expensive: at most one request is in
-    /// flight, and any refreshes requested meanwhile collapse into a single follow-up.
+    /// flight, and any refreshes requested meanwhile collapse into a single follow-up. A coalesced
+    /// caller still returns only once that follow-up has landed, since actions `await refresh()` and
+    /// then read fresh state.
     public func refresh() async {
         if refreshing {
             refreshQueued = true
+            await withCheckedContinuation { refreshWaiters.append($0) }
             return
         }
         refreshing = true
-        defer { refreshing = false }
         repeat {
             refreshQueued = false
             await fetchState()
         } while refreshQueued
+        refreshing = false
+        let waiters = refreshWaiters
+        refreshWaiters = []
+        for w in waiters { w.resume() }
     }
 
     private func fetchState() async {

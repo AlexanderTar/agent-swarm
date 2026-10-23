@@ -55,17 +55,21 @@ final class AppModelTests: XCTestCase {
         let first = Task { await m.refresh() }
         await settle()
         XCTAssertEqual(stateCalls(), 1)
-        let extra = (0..<5).map { _ in Task { await m.refresh() } }
+        var returned = 0
+        let extra = (0..<5).map { _ in Task { await m.refresh(); returned += 1 } }
         await settle()
         XCTAssertEqual(stateCalls(), 1, "a refresh requested while one is in flight must not start a second request")
 
         client.releaseState()
         await settle()
         XCTAssertEqual(stateCalls(), 2, "exactly one follow-up after the in-flight request ends")
+        // Actions `await refresh()` and then read fresh state: a coalesced caller waits for the follow-up.
+        XCTAssertEqual(returned, 0, "coalesced callers must not return before the follow-up fetch completes")
         client.holdState = false
         for _ in 0..<8 { client.releaseState() } // drains any parked extras, so a failure can't hang the run
         await first.value
         for t in extra { await t.value }
+        XCTAssertEqual(returned, 5)
         XCTAssertEqual(stateCalls(), 2)
 
         await m.refresh()
