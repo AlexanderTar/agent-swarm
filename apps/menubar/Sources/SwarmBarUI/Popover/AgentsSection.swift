@@ -16,8 +16,13 @@ struct AgentsSection: View {
                                disabled: model.lowTokenAllDisabled, tint: on ? .green : nil, toggleValue: on) {
                         Task { await model.setLowTokenAll(!on) }
                     }
-                    Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
-                        .disabled(model.pauseAllDisabled)
+                    if model.showsResumeAll {
+                        Button(model.resumeAllLabel) { Task { await model.resumeAll() } }
+                            .disabled(model.resumeAllDisabled)
+                    } else {
+                        Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
+                            .disabled(model.pauseAllDisabled)
+                    }
                 }
             }
             if let error = model.actionError {

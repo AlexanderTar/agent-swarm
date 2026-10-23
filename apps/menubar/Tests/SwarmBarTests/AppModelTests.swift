@@ -586,6 +586,93 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(fresh.pauseAllPending)
     }
 
+    /// state.json cut down to its paused orchestrator: every unfinished orchestrator is paused.
+    private func allPausedState() throws -> StateResponse {
+        var s: StateResponse = try Fixture.decode("state.json")
+        s.agents = s.agents.filter { $0.name == "crash-debug-orchestrator" }
+        XCTAssertEqual(s.agents.count, 1)
+        return s
+    }
+
+    func testResumeAllStates() async throws {
+        let m = make()
+        XCTAssertFalse(m.showsResumeAll, "disconnected")
+        client.stateResult = .success(try allPausedState())
+        await m.refresh()
+        XCTAssertTrue(m.showsResumeAll)
+        XCTAssertEqual(m.resumeAllLabel, "Resume all")
+        XCTAssertFalse(m.resumeAllDisabled)
+
+        // The resume is parked behind a full agent limit: the orchestrator is still paused after the call.
+        await m.resumeAll()
+        XCTAssertEqual(client.calls.filter { $0 == "resume-all" }.count, 1)
+        XCTAssertTrue(m.showsResumeAll, "stays on Resuming… until the orchestrators are no longer paused")
+        XCTAssertEqual(m.resumeAllLabel, "Resuming…")
+        XCTAssertTrue(m.resumeAllDisabled)
+        await m.resumeAll()
+        XCTAssertEqual(client.calls.filter { $0 == "resume-all" }.count, 1, "no second call while pending")
+
+        var running = try allPausedState()
+        running.agents[0].session?.state = .running
+        client.stateResult = .success(running)
+        await m.refresh()
+        XCTAssertFalse(m.resumeAllPending)
+        XCTAssertFalse(m.showsResumeAll)
+        XCTAssertEqual(m.pauseAllLabel, "Pause all")
+        XCTAssertFalse(m.pauseAllDisabled)
+    }
+
+    func testResumeAllFailureClearsPending() async throws {
+        let m = make()
+        client.stateResult = .success(try allPausedState())
+        await m.refresh()
+        client.failNext = .unreachable
+        await m.resumeAll()
+        XCTAssertFalse(m.resumeAllPending)
+    }
+
+    func testPauseAllStaysWhenNotEveryOrchestratorIsPaused() async throws {
+        let m = make()
+        // The stock fixture has a running orchestrator next to the paused one.
+        await m.refresh()
+        XCTAssertFalse(m.showsResumeAll)
+        XCTAssertEqual(m.pauseAllLabel, "Pause all")
+        await m.resumeAll()
+        XCTAssertTrue(client.calls.filter { $0 == "resume-all" }.isEmpty)
+
+        // Paused orchestrators, but something is still pausable (a running worker).
+        var withWorker = try allPausedState()
+        let stock: StateResponse = try Fixture.decode("state.json")
+        withWorker.agents[0].children = [stock.agents[0].children[0]]
+        client.stateResult = .success(withWorker)
+        await m.refresh()
+        XCTAssertFalse(m.showsResumeAll)
+
+        // Paused next to a queued orchestrator: not all are paused.
+        var queued: StateResponse = try Fixture.decode("state.json")
+        queued.agents = queued.agents.filter { $0.name == "crash-debug-orchestrator" || $0.name == "billing-spike-orchestrator" }
+        client.stateResult = .success(queued)
+        await m.refresh()
+        XCTAssertFalse(m.showsResumeAll)
+
+        // Paused next to a pausing orchestrator.
+        var pausing = try allPausedState()
+        var other: StateResponse = try Fixture.decode("state.json")
+        other.agents[0].children = []
+        other.agents[0].session?.state = .pauseRequested
+        pausing.agents.append(other.agents[0])
+        client.stateResult = .success(pausing)
+        await m.refresh()
+        XCTAssertFalse(m.showsResumeAll)
+
+        // Nothing unfinished at all: no Resume all either.
+        var none = try allPausedState()
+        none.agents[0].state = .acknowledged
+        client.stateResult = .success(none)
+        await m.refresh()
+        XCTAssertFalse(m.showsResumeAll)
+    }
+
     func testLowTokenAllStates() async throws {
         let m = make()
         XCTAssertTrue(m.lowTokenAllDisabled, "disconnected")

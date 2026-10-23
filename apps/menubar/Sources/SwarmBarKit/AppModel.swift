@@ -80,6 +80,7 @@ public final class AppModel {
     public private(set) var catalog: [AgentCatalogEntry] = []
     public var usageAgent: AgentKind?
     public private(set) var pauseAllPending = false
+    public private(set) var resumeAllPending = false
     /// Header leaf toggle: the requested default while its request is in flight (nil = none), and the
     /// orchestrators whose own low-token request is in flight.
     private var lowTokenAllRequested: Bool?
@@ -261,6 +262,9 @@ public final class AppModel {
         defaults.set(Array(open).sorted(), forKey: "seenRequests")
         if pauseAllPending && !AgentTree.flatten(s.agents).contains(where: { DisplayState($0).isPausing }) {
             pauseAllPending = false
+        }
+        if resumeAllPending && !Self.unfinishedOrchestrators(s.agents).contains(where: { DisplayState($0) == .paused }) {
+            resumeAllPending = false
         }
         usageAgent = UsageSection.selection(current: usageAgent, enabled: s.settings.enabledAgents)
     }
@@ -478,6 +482,33 @@ public final class AppModel {
 
     public var pauseAllLabel: String { pauseAllPending ? Copy.pausing : Copy.pauseAll }
     public var pauseAllDisabled: Bool { !connected || pauseAllPending || !anyPausable }
+
+    private static func unfinishedOrchestrators(_ agents: [AgentNode]) -> [AgentNode] {
+        AgentTree.flatten(agents).filter { $0.role == .orchestrator && !AgentTree.isFinished($0) }
+    }
+
+    /// The "Pause all" button turns into "Resume all" when nothing is running or pausing and every
+    /// unfinished orchestrator is paused; it stays on "Resuming…" until none is paused any more.
+    public var showsResumeAll: Bool {
+        if resumeAllPending { return true }
+        let all = AgentTree.flatten(state.agents)
+        let orchestrators = Self.unfinishedOrchestrators(state.agents)
+        return connected && !anyPausable && !all.contains { DisplayState($0).isPausing }
+            && !orchestrators.isEmpty && orchestrators.allSatisfy { DisplayState($0) == .paused }
+    }
+    public var resumeAllLabel: String { resumeAllPending ? Copy.resuming : Copy.resumeAll }
+    public var resumeAllDisabled: Bool { !connected || resumeAllPending || !showsResumeAll }
+
+    public func resumeAll() async {
+        guard !resumeAllDisabled else { return }
+        resumeAllPending = true
+        do {
+            if try await client.resumeAll() == 0 { resumeAllPending = false }
+        } catch {
+            resumeAllPending = false
+        }
+        await refresh()
+    }
 
     public func pauseAll() async {
         guard !pauseAllDisabled else { return }

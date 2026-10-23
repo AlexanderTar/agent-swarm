@@ -15,6 +15,7 @@ public enum Copy {
     public static let readAll = "Read all"
     public static let pauseAll = "Pause all"
     public static let pausing = "Pausing…"
+    public static let resumeAll = "Resume all"
     public static let lowTokenMode = "Low-token mode"
     public static let lowTokenOnHelp = "Low-token mode is on"
     public static let lowTokenA11y = "low-token mode"
