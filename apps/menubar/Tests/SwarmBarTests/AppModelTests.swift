@@ -901,6 +901,7 @@ final class AppModelTests: XCTestCase {
         // readAll's own follow-up refresh coalesces behind the parked one, so it can't return yet.
         let reading = Task { await m.readAll() }
         while m.state.notifications.unread != 0 { await Task.yield() }
+        client.stateResult = .failure(.timedOut) // the follow-up can't paper over a stale apply
 
         release?.resume()
         await stale.value
@@ -908,23 +909,24 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.state.notifications.unread, 0, "the older refresh's result is dropped")
     }
 
-    /// An older refresh that fails after a newer one succeeded doesn't mark the daemon down.
+    /// A refresh retired by "Read all" that then fails doesn't mark the daemon down. Fetches never
+    /// overlap (refresh coalesces), so "Read all" is what makes an in-flight fetch stale.
     func testStaleRefreshFailureDoesNotDisconnect() async {
         let m = make()
         await m.refresh()
-        let good = client.stateResult
         client.stateResult = .failure(.unreachable)
         var release: CheckedContinuation<Void, Never>?
         client.beforeStateReturns = { await withCheckedContinuation { release = $0 } }
         let stale = Task { await m.refresh() }
         while release == nil { await Task.yield() }
         client.beforeStateReturns = nil
-        client.stateResult = good
-        let newer = Task { await m.refresh() } // coalesces behind the parked one
+        let reading = Task { await m.readAll() } // its follow-up coalesces behind the parked one
+        while m.state.notifications.unread != 0 { await Task.yield() }
+        client.stateResult = .failure(.timedOut) // the follow-up keeps state, so it can't reconnect
 
         release?.resume()
         await stale.value
-        await newer.value
+        await reading.value
         XCTAssertTrue(m.connected)
     }
 
