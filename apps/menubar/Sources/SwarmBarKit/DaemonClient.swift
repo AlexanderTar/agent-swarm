@@ -78,6 +78,8 @@ public final class MockDaemonClient: DaemonClient {
     public private(set) var handoffRequests: [HandoffRequest] = []
     public private(set) var startBodies: [StartOrchestratorBody] = []
     public var failNext: DaemonError?
+    /// Awaited by `state()` after it has taken its result, so a test can hold a refresh in flight.
+    public var beforeStateReturns: (@MainActor () async -> Void)?
     /// What `resumeAll()` reports back (how many paused trees the daemon resumed).
     public var resumeAllResult = 1
     /// Any error for the next call, e.g. `CancellationError()`.
@@ -135,7 +137,9 @@ public final class MockDaemonClient: DaemonClient {
         if holdState {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in stateGates.append(cont) }
         }
-        return try stateResult.get()
+        let result = stateResult
+        await beforeStateReturns?()
+        return try result.get()
     }
 
     public func notifications(limit: Int) async throws -> [SwarmNotification] {

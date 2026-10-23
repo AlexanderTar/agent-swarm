@@ -219,9 +219,20 @@ public final class AppModel {
         for w in waiters { w.resume() }
     }
 
+    /// Each fetch takes a sequence number and its result is applied only if nothing newer was applied
+    /// first. Coalescing keeps fetches sequential, but a local mutation such as "Read all" raises
+    /// `appliedRefresh`, retiring the fetch already in flight.
+    private var startedRefresh = 0
+    private var appliedRefresh = 0
+
     private func fetchState() async {
+        startedRefresh += 1
+        let seq = startedRefresh
         do {
-            apply(try await client.state())
+            let s = try await client.state()
+            guard seq > appliedRefresh else { return }
+            appliedRefresh = seq
+            apply(s)
             if let c = try? await client.catalog() { catalog = c }
             await refreshExpandedNotifications()
         } catch is CancellationError {
@@ -229,6 +240,7 @@ public final class AppModel {
         } catch DaemonError.timedOut {
             return // slow, not down: keep the current state
         } catch {
+            guard seq > appliedRefresh else { return } // a newer refresh already reached the daemon
             await markDisconnected()
         }
     }
@@ -627,7 +639,12 @@ public final class AppModel {
 
     public func readAll() async {
         guard connected else { return }
-        try? await client.readAll()
+        do { try await client.readAll() } catch { return }
+        // Show the result now: the follow-up refresh may time out or lose to one already in flight.
+        appliedRefresh = startedRefresh
+        let at = Timestamp(now())
+        state.notifications.unread = 0
+        state.notifications.items = state.notifications.items.map { var n = $0; n.readAt = n.readAt ?? at; return n }
         allNotifications = nil
         await refresh()
     }

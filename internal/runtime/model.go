@@ -462,6 +462,10 @@ type Store struct {
 	// follows (one lock, one parse, review round 3) is the cost of D2 ever
 	// running at all, not a regression.
 	forgottenClaudeTrust map[string]bool
+	// kick wakes ReconcileLoop ahead of its timer (Kick). Created lazily because Store is built as a
+	// struct literal in the daemon and in tests.
+	kickOnce sync.Once
+	kickCh   chan struct{}
 	// launchDirsReclaimedAt is the real wall-clock time (UnixNano) of the
 	// last reclaimLaunchDirs pass. The sweep costs a DB query and an
 	// os.ReadDir, so Reconcile runs it at most once per launchDirGCEvery

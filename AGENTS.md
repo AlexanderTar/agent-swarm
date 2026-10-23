@@ -14,6 +14,8 @@ Running the `swarm` binary against a scratch `SWARM_HOME`, or writing a test nea
 
 Briefs and launch commands have hard size limits (6000-character brief cap checked where a brief is written; tmux's ~16 KB command line, so the kickoff rides in a launch file, never argv or env). Never add your own length check or put kickoff text on the tmux command line: see section 8 of docs/adding-an-agent-kind.md, guarded by `go test ./internal/items/ ./internal/spawn/ ./internal/adapter/`.
 
+Queued agents and parked operations (capacity pauses, resumes, retries) start only from the reconcile tick (`EnforceCapacity`, `ResumeOperations`, `DrainQueue` in `Reconcile`, every 5 s), so a change that affects scheduling, such as `max_concurrent_agents`, must call `runtime.Store.Kick()` (coalescing; wakes `ReconcileLoop` now) from the code that saves it (`putSettings` in internal/httpapi/config.go). Never call `DrainQueue` or `ResumeOperations` from a request goroutine: `startQueued`'s claim has no `state='queued'` guard, so two concurrent drains can start the same agent twice. A test that needs to prove "starts without waiting for a tick" runs `ReconcileLoop` with an `After` that never fires (see `TestKickRunsAReconcileTickBeforeTheTimer`, `TestPutSettingsKicksReconcileWhenTheAgentLimitChanges`).
+
 # /api/state stays bounded
 
 The menu bar refetches `GET /api/state` on every daemon event. Never add per-node DB work for finished agents, and prune before building nodes, not after. How the trim works, the caps, and how to measure the response (`curl -w` with `~/.swarm/run/daemon.port` and `daemon.token`): docs/api-state.md.
