@@ -61,5 +61,31 @@ final class FinishedCountTests: XCTestCase {
 
     func testTrimNoteCopy() {
         XCTAssertEqual(Copy.showingLatestFinished(10), "Showing latest 10 · open the board for all")
+        XCTAssertEqual(Copy.finishedOnBoard, "Open the board to see them")
+    }
+
+    /// A kept finished ancestor of a live agent carries finished_count > 0 but no finished nodes.
+    func testZeroShownKeepsTheCountAndLinksToTheItem() {
+        var kept = node("kept", state: .active, finishedCount: 12)
+        kept.itemKey = "TASK-7"
+        kept.children = [node("live", state: .active)]
+        let rows = AgentTree.rows([kept], collapsed: [], openFinished: ["kept"])
+        XCTAssertEqual(ids(rows), ["0 agent:kept", "1 agent:live", "1 finished:kept", "1 trim:kept"])
+        guard case let .trimNote(_, shown, itemKey) = rows.last?.kind else { return XCTFail("trim note") }
+        XCTAssertEqual(shown, 0)
+        XCTAssertEqual(itemKey, "TASK-7")
+    }
+
+    func testTopLevelTrimNoteLinksToTheBoardRoot() {
+        let rows = AgentTree.rows([node("done")], collapsed: [], openFinished: [""], topFinishedCount: 40)
+        guard case let .trimNote(_, _, itemKey) = rows.last?.kind else { return XCTFail("trim note") }
+        XCTAssertNil(itemKey)
+    }
+
+    /// The daemon always keeps up to 10 finished under a non-finished parent, so a count with
+    /// nothing to show never makes a live row disclosable.
+    func testCountAloneDoesNotMakeALiveRowDisclosable() {
+        let rows = AgentTree.rows([node("live", state: .active, finishedCount: 5)], collapsed: [], openFinished: [])
+        XCTAssertNil(rows.first?.expanded)
     }
 }

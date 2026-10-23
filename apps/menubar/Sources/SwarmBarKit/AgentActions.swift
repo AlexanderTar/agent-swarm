@@ -220,8 +220,9 @@ public enum AgentTree {
             case finished(parent: String, count: Int)
             /// "Failed (n)" under `parent` ("" for top-level); always rendered below `finished`.
             case failed(parent: String, count: Int)
-            /// Muted last line of an open "Finished (n)" group the daemon trimmed.
-            case trimNote(parent: String, shown: Int)
+            /// Muted last line of an open "Finished (n)" group the daemon trimmed; `itemKey` is the
+            /// parent's item for its board page (nil at top level: the board root).
+            case trimNote(parent: String, shown: Int, itemKey: String?)
         }
         public var kind: Kind
         public var depth: Int
@@ -233,7 +234,7 @@ public enum AgentTree {
             case let .agent(a): return "agent:" + a.name
             case let .finished(parent, _): return "finished:" + parent
             case let .failed(parent, _): return "failed:" + parent
-            case let .trimNote(parent, _): return "trim:" + parent
+            case let .trimNote(parent, _, _): return "trim:" + parent
             }
         }
     }
@@ -245,15 +246,15 @@ public enum AgentTree {
     public static func rows(_ roots: [AgentNode], collapsed: Set<String>, openFinished: Set<String>,
                              openFailed: Set<String> = [], topFinishedCount: Int? = nil) -> [Row] {
         var out: [Row] = []
-        func add(_ nodes: [AgentNode], finished: [AgentNode], finishedTotal: Int?, parent: String, depth: Int) {
+        func add(_ nodes: [AgentNode], finished: [AgentNode], finishedTotal: Int?, parent: String, parentItemKey: String?, depth: Int) {
             let live = nodes.filter { !isFailed($0) }
             let failed = nodes.filter(isFailed)
             for n in live {
-                let disclosable = !n.children.isEmpty || !n.finished.isEmpty || (n.finishedCount ?? 0) > 0
+                let disclosable = !n.children.isEmpty || !n.finished.isEmpty
                 let open = !collapsed.contains(n.name)
                 out.append(Row(kind: .agent(n), depth: depth, expanded: disclosable ? open : nil))
                 if disclosable && open {
-                    add(n.children, finished: n.finished, finishedTotal: n.finishedCount, parent: n.name, depth: depth + 1)
+                    add(n.children, finished: n.finished, finishedTotal: n.finishedCount, parent: n.name, parentItemKey: n.itemKey, depth: depth + 1)
                 }
             }
             let total = max(finishedTotal ?? 0, finished.count)
@@ -263,7 +264,7 @@ public enum AgentTree {
                 if open {
                     for f in finished { out.append(Row(kind: .agent(f), depth: depth, expanded: nil)) }
                     if total > finished.count {
-                        out.append(Row(kind: .trimNote(parent: parent, shown: finished.count), depth: depth, expanded: nil))
+                        out.append(Row(kind: .trimNote(parent: parent, shown: finished.count, itemKey: parentItemKey), depth: depth, expanded: nil))
                     }
                 }
             }
@@ -275,7 +276,7 @@ public enum AgentTree {
                 }
             }
         }
-        add(roots.filter { !isFinished($0) }, finished: roots.filter(isFinished), finishedTotal: topFinishedCount, parent: "", depth: 0)
+        add(roots.filter { !isFinished($0) }, finished: roots.filter(isFinished), finishedTotal: topFinishedCount, parent: "", parentItemKey: nil, depth: 0)
         return out
     }
 

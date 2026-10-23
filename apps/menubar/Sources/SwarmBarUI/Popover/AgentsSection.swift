@@ -50,9 +50,15 @@ struct AgentsSection: View {
                         .buttonStyle(.plain)
                         .padding(.leading, CGFloat(row.depth) * 16)
                         .frame(minHeight: 28)
-                    case let .trimNote(_, shown):
-                        Text(Copy.showingLatestFinished(shown)).font(.caption).foregroundStyle(.secondary)
-                            .padding(.leading, CGFloat(row.depth) * 16 + 16)
+                    case let .trimNote(_, shown, itemKey):
+                        Button {
+                            model.openBoard(itemKey.map(BoardLink.item) ?? "")
+                        } label: {
+                            Text(shown > 0 ? Copy.showingLatestFinished(shown) : Copy.finishedOnBoard)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.leading, CGFloat(row.depth) * 16 + 16)
                     case let .failed(parent, count):
                         Button {
                             model.toggleFailed(parent)
