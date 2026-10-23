@@ -29,6 +29,8 @@ public protocol DaemonClient: Sendable {
     /// reused on retries so the daemon replays the same operation.
     func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?, requestID: String?) async throws
     func pauseAll() async throws -> Int
+    /// POST /api/resume-all; returns how many paused trees the daemon resumed.
+    func resumeAll() async throws -> Int
     /// POST /api/agents/{name}/low-token; returns how many agents were notified.
     func setLowToken(agent: String, on: Bool) async throws -> Int
     /// POST /api/low-token: sets the default and every live orchestrator; returns how many were notified.
@@ -153,6 +155,11 @@ public final class MockDaemonClient: DaemonClient {
 
     public func pauseAll() async throws -> Int {
         try record("pause-all")
+        return 1
+    }
+
+    public func resumeAll() async throws -> Int {
+        try record("resume-all")
         return 1
     }
 

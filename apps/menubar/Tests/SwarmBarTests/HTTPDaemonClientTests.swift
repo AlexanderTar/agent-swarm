@@ -49,6 +49,7 @@ final class HTTPDaemonClientTests: XCTestCase {
         let session = StubURLProtocol.install { req in
             switch req.url!.path {
             case "/api/pause-all": return (200, try Fixture.data("pause-all.json"))
+            case "/api/resume-all": return (200, try Fixture.data("resume-all.json"))
             case "/api/settings": return (200, try Fixture.data("settings.json"))
             case "/api/catalog", "/api/catalog/refresh": return (200, try Fixture.data("catalog.json"))
             case "/api/repos": return req.httpMethod == "POST" ? (201, try Fixture.data("repo.json")) : (200, try Fixture.data("repos.json"))
@@ -63,6 +64,7 @@ final class HTTPDaemonClientTests: XCTestCase {
         try await client.agent("login-form-coder", .pause, scope: .subtree)
         try await client.agent("docs-fix-coder", .ack, scope: nil)
         let requested = try await client.pauseAll()
+        let resumed = try await client.resumeAll()
         try await client.markRead(notificationID: "ntf_05")
         try await client.readAll()
         try await client.refreshUsage(agent: .claude)
@@ -77,6 +79,7 @@ final class HTTPDaemonClientTests: XCTestCase {
         try await client.terminalOpened(name: "login-form-coder")
 
         XCTAssertEqual(requested, 3)
+        XCTAssertEqual(resumed, 2)
         XCTAssertEqual(saved.enabledAgents, [.claude, .codex, .agy])
         XCTAssertEqual([catalog.count, refreshed.count, notes.count], [5, 5, 5])
         XCTAssertEqual(repos.all.count, 5)
@@ -89,6 +92,7 @@ final class HTTPDaemonClientTests: XCTestCase {
             "POST /api/agents/login-form-coder/pause",
             "POST /api/agents/docs-fix-coder/ack",
             "POST /api/pause-all",
+            "POST /api/resume-all",
             "POST /api/notifications/ntf_05/read",
             "POST /api/notifications/read-all",
             "POST /api/usage/refresh",
@@ -104,15 +108,15 @@ final class HTTPDaemonClientTests: XCTestCase {
         ])
         XCTAssertEqual(seen[0].body, #"{"scope":"subtree"}"#)
         let empty = try Fixture.json(Fixture.data("empty-request.json"))
-        for i in [1, 2, 3, 4, 8, 11, 14] {
+        for i in [1, 2, 3, 5, 9, 12, 15] {
             XCTAssertEqual(try Fixture.json(Data(seen[i].body.utf8)), empty, seen[i].path)
             XCTAssertEqual(seen[i].headers["Content-Type"], "application/json")
         }
         XCTAssertTrue(seen.filter { $0.method == "GET" }.allSatisfy { $0.body.isEmpty })
-        XCTAssertEqual(try Fixture.json(Data(seen[5].body.utf8)), try Fixture.json(Fixture.data("usage-refresh-request.json")))
-        XCTAssertEqual(try Fixture.json(Data(seen[6].body.utf8)), try Fixture.json(Fixture.data("settings.json")))
-        XCTAssertEqual(try Fixture.json(Data(seen[12].body.utf8)), try Fixture.json(Fixture.data("spike-request.json")))
-        XCTAssertEqual(try Fixture.json(Data(seen[10].body.utf8)), try Fixture.json(Fixture.data("repo-add-request.json")))
+        XCTAssertEqual(try Fixture.json(Data(seen[6].body.utf8)), try Fixture.json(Fixture.data("usage-refresh-request.json")))
+        XCTAssertEqual(try Fixture.json(Data(seen[7].body.utf8)), try Fixture.json(Fixture.data("settings.json")))
+        XCTAssertEqual(try Fixture.json(Data(seen[13].body.utf8)), try Fixture.json(Fixture.data("spike-request.json")))
+        XCTAssertEqual(try Fixture.json(Data(seen[11].body.utf8)), try Fixture.json(Fixture.data("repo-add-request.json")))
         XCTAssertTrue(seen.filter { $0.method != "GET" }.allSatisfy { $0.headers["X-Swarm-Via"] == "menubar" })
         XCTAssertTrue(seen.allSatisfy { $0.headers["Authorization"] == "Bearer tok-123" })
         // Slow routes (catalog refresh probes every CLI, rescan walks the disk) get 120 s; spikes carry

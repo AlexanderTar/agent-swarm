@@ -50,7 +50,7 @@ public final class HTTPDaemonClient: DaemonClient {
 
     private struct Empty: Codable {}
     private struct Scope: Encodable { let scope: PauseScope }
-    private struct PauseAll: Decodable { let requested: Int }
+    private struct Requested: Decodable { let requested: Int }
     private struct LowTokenBody: Encodable { let on: Bool }
     private struct Notified: Decodable { let notified: Int }
     private struct UsageRefresh: Encodable { let agent: AgentKind? }
@@ -117,7 +117,11 @@ public final class HTTPDaemonClient: DaemonClient {
     }
 
     public func pauseAll() async throws -> Int {
-        try await call("POST", "/api/pause-all", as: PauseAll.self).requested
+        try await call("POST", "/api/pause-all", as: Requested.self).requested
+    }
+
+    public func resumeAll() async throws -> Int {
+        try await call("POST", "/api/resume-all", as: Requested.self).requested
     }
 
     public func setLowToken(agent: String, on: Bool) async throws -> Int {

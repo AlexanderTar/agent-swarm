@@ -11,6 +11,7 @@ final class MockDaemonClientTests: XCTestCase {
         try await mock.agent("login-form-coder", .pause, scope: .subtree)
         try await mock.agent("docs-fix-coder", .ack, scope: nil)
         let paused = try await mock.pauseAll()
+        let resumed = try await mock.resumeAll()
         let firstTwo = try await mock.notifications(limit: 2)
         try await mock.markRead(notificationID: "ntf_05")
         try await mock.readAll()
@@ -24,6 +25,7 @@ final class MockDaemonClientTests: XCTestCase {
         try await mock.terminalOpened(name: "login-form-coder")
         let pane = try await mock.pane("login-form-coder", lines: 40)
         XCTAssertEqual(paused, 1)
+        XCTAssertEqual(resumed, 1)
         XCTAssertEqual(firstTwo.count, 2)
         XCTAssertEqual([catalog.count, refreshed.count, repos.recent.count], [5, 5, 1])
         XCTAssertEqual(added.name, "notes")
@@ -31,7 +33,7 @@ final class MockDaemonClientTests: XCTestCase {
         XCTAssertEqual(pane, try Fixture.decode("pane.json"))
         XCTAssertEqual(mock.calls, [
             "state", "agent pause login-form-coder subtree", "agent ack docs-fix-coder",
-            "pause-all", "notifications 2", "read ntf_05", "read-all",
+            "pause-all", "resume-all", "notifications 2", "read ntf_05", "read-all",
             "usage-refresh claude", "usage-refresh all", "catalog", "catalog-refresh", "repos endurio",
             "repo-add /tmp/notes", "rescan", "terminal-opened login-form-coder", "pane login-form-coder 40",
         ])
