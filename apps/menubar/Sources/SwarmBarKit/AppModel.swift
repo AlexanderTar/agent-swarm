@@ -194,9 +194,20 @@ public final class AppModel {
         await refresh()
     }
 
+    /// Refreshes overlap (every daemon event starts one, and `/api/state` can take seconds), so each
+    /// takes a sequence number and a result is applied only if nothing newer was applied first.
+    /// A local mutation such as "Read all" also raises `appliedRefresh`, retiring refreshes already in flight.
+    private var startedRefresh = 0
+    private var appliedRefresh = 0
+
     public func refresh() async {
+        startedRefresh += 1
+        let seq = startedRefresh
         do {
-            apply(try await client.state())
+            let s = try await client.state()
+            guard seq > appliedRefresh else { return }
+            appliedRefresh = seq
+            apply(s)
             if let c = try? await client.catalog() { catalog = c }
             await refreshExpandedNotifications()
         } catch is CancellationError {
@@ -601,7 +612,12 @@ public final class AppModel {
 
     public func readAll() async {
         guard connected else { return }
-        try? await client.readAll()
+        do { try await client.readAll() } catch { return }
+        // Show the result now: the follow-up refresh may time out or lose to one already in flight.
+        appliedRefresh = startedRefresh
+        let at = Timestamp(now())
+        state.notifications.unread = 0
+        state.notifications.items = state.notifications.items.map { var n = $0; n.readAt = n.readAt ?? at; return n }
         allNotifications = nil
         await refresh()
     }

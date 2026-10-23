@@ -839,6 +839,51 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.visibleNotifications.count, 5, "collapsing drops the cached expanded list, falling back to the state's own trimmed 5")
     }
 
+    /// "Read all" shows its result as soon as the daemon accepts it, even when the follow-up
+    /// `/api/state` times out (a large state can take most of the 10 s request timeout).
+    func testReadAllClearsUnreadWhenTheFollowUpRefreshTimesOut() async {
+        let m = make()
+        await m.refresh()
+        XCTAssertEqual(m.state.notifications.unread, 4)
+        client.stateResult = .failure(.timedOut)
+        await m.readAll()
+        XCTAssertEqual(m.state.notifications.unread, 0)
+        XCTAssertEqual(m.notificationsTitle, "Notifications")
+        XCTAssertTrue(m.visibleNotifications.allSatisfy { $0.readAt != nil }, "every row drops its unread weight")
+    }
+
+    /// A refresh that started before "Read all" (every daemon event starts one) must not land
+    /// afterwards and bring the old unread count back.
+    func testRefreshStartedBeforeReadAllDoesNotRestoreUnread() async throws {
+        let m = make()
+        await m.refresh()
+        var release: CheckedContinuation<Void, Never>?
+        client.beforeStateReturns = { await withCheckedContinuation { release = $0 } }
+        let stale = Task { await m.refresh() }
+        while release == nil { await Task.yield() }
+        client.beforeStateReturns = nil
+
+        var read: StateResponse = try Fixture.decode("state.json")
+        read.notifications.unread = 0
+        read.notifications.items = read.notifications.items.map { var n = $0; n.readAt = n.readAt ?? .minutes(0); return n }
+        client.stateResult = .success(read)
+        await m.readAll()
+        XCTAssertEqual(m.state.notifications.unread, 0)
+
+        release?.resume()
+        await stale.value
+        XCTAssertEqual(m.state.notifications.unread, 0, "the older refresh's result is dropped")
+    }
+
+    /// A failed "Read all" leaves the unread state as it was.
+    func testReadAllFailureKeepsUnread() async {
+        let m = make()
+        await m.refresh()
+        client.failNext = .timedOut
+        await m.readAll()
+        XCTAssertEqual(m.state.notifications.unread, 4)
+    }
+
     /// A request notification (its action button or a banner tap) opens the terminal the daemon named for the
     /// request, and does nothing the user could mistake for an answer.
     func testRequestNotificationActionOpensTheOrchestratorTerminal() async {
