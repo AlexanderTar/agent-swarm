@@ -1241,6 +1241,69 @@ func (s *Store) PauseAll(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// resumeTarget returns the highest paused ancestor of a, or a itself if none
+// of its ancestors is paused: the mirror of pauseTarget. Like pauseTarget it
+// walks the whole chain, so a non-paused intermediate agent never hides a
+// paused one above it.
+func (s *Store) resumeTarget(ctx context.Context, a Agent) (Agent, error) {
+	best, cur := a, a
+	for cur.ParentAgentID != "" {
+		parent, err := s.agentByID(ctx, cur.ParentAgentID)
+		if err != nil {
+			return Agent{}, err
+		}
+		if pses, err := s.LatestSession(ctx, parent.ID); err == nil && pses.State == Paused {
+			best = parent
+		}
+		cur = parent
+	}
+	return best, nil
+}
+
+// ResumeAll resumes every paused session, grouped by resume target
+// (resumeTarget above) so each paused tree is resumed exactly once from its
+// topmost paused agent: Resume cascades a subtree pause to the children it
+// paused (resumeSubtree) and parks in the queue when the agent limit is full,
+// so a child is never resumed on its own here. Only 'paused' counts, not
+// 'interrupted': an interrupted session didn't stop cleanly and is left for
+// an explicit resume. n is the number of targets Resume accepted; a target
+// that fails is logged and skipped, like PauseAll.
+func (s *Store) ResumeAll(ctx context.Context) (int, error) {
+	paused, err := s.queryIDs(ctx, `SELECT a.name FROM agents a JOIN sessions ses ON ses.agent_id = a.id
+		WHERE ses.state = 'paused'
+		AND ses.generation = (SELECT MAX(s2.generation) FROM sessions s2 WHERE s2.agent_id = a.id)`)
+	if err != nil {
+		return 0, err
+	}
+	seen := map[string]bool{}
+	var targets []string
+	for _, name := range paused {
+		a, err := s.Agent(ctx, name)
+		if err != nil {
+			s.logf("resume-all: %s: %v", name, err)
+			continue
+		}
+		target, err := s.resumeTarget(ctx, a)
+		if err != nil {
+			s.logf("resume-all: %s: %v", name, err)
+			continue
+		}
+		if !seen[target.ID] {
+			seen[target.ID] = true
+			targets = append(targets, target.Name)
+		}
+	}
+	n := 0
+	for _, name := range targets {
+		if _, err := s.Resume(ctx, name, "", ""); err != nil {
+			s.logf("resume-all: %s: %v", name, err)
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 // rootHasLiveSubtreePause reports whether rootItemID has a subtree pause in
 // flight: any session in the tree whose role says it is part of one (§10.5),
 // from the moment Pause(scope="subtree") is called -- whether or not the root

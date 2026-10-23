@@ -2594,3 +2594,156 @@ func TestQueuedResumeCascadesToSubtreePausedChildren(t *testing.T) {
 		}
 	}
 }
+
+// sessionGeneration is the generation of an agent's latest session, so a test
+// can tell how many times ResumeAll started one.
+func sessionGeneration(t *testing.T, s *Store, agentID string) int {
+	t.Helper()
+	ses, err := s.LatestSession(context.Background(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ses.Generation
+}
+
+// ResumeAll resumes a subtree-paused tree once, from its root: the root's own
+// Resume cascades to the children, so none of them is resumed a second time.
+func TestResumeAllResumesASubtreePausedTreeOnceFromItsRoot(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w1, _ := worker(t, s)
+	w2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "second"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markPaused(t, s, orch.ID, "subtree", true)
+	markPaused(t, s, w1.ID, "subtree", false)
+	markPaused(t, s, w2.ID, "subtree", false)
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("resumed = %d, want 1 -- one target for the whole tree", n)
+	}
+	for _, a := range []Agent{orch, w1, w2} {
+		ses, err := s.LatestSession(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ses.State.Live() || ses.Generation != 2 {
+			t.Fatalf("%s: state %s generation %d, want live generation 2 (resumed exactly once)",
+				a.Name, ses.State, ses.Generation)
+		}
+	}
+	for _, c := range []Agent{w1, w2} {
+		if n := resumedRelays(t, s, orch.ID, c.Name); n != 1 {
+			t.Fatalf("resumed relays to orchestrator about %s = %d, want 1", c.Name, n)
+		}
+	}
+}
+
+// A standalone paused agent is its own target.
+func TestResumeAllResumesAStandalonePausedAgent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	markPaused(t, s, orch.ID, "session", false)
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("resumed = %d, want 1", n)
+	}
+	if ses, _ := s.LatestSession(ctx, orch.ID); !ses.State.Live() {
+		t.Fatalf("orchestrator state = %s, want live", ses.State)
+	}
+}
+
+// A paused child whose parent is not paused (still live, or ended) is the
+// topmost paused agent of its own run, so it is resumed on its own.
+func TestResumeAllResumesAPausedChildUnderALiveParent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	markPaused(t, s, w.ID, "session", false)
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("resumed = %d, want 1", n)
+	}
+	if got := sessionGeneration(t, s, w.ID); got != 2 {
+		t.Fatalf("worker generation = %d, want 2", got)
+	}
+	if got := sessionGeneration(t, s, orch.ID); got != 1 {
+		t.Fatalf("orchestrator generation = %d, want 1 (it was never paused)", got)
+	}
+}
+
+// Only 'paused' counts: an interrupted session is left for an explicit resume.
+func TestResumeAllIgnoresInterruptedSessions(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("resumed = %d, want 0", n)
+	}
+	if got, _ := s.LatestSession(ctx, orch.ID); got.State != Interrupted || got.ID != ses.ID {
+		t.Fatalf("interrupted session was touched: %s %s", got.ID, got.State)
+	}
+}
+
+// Nothing paused: nothing to do.
+func TestResumeAllWithNothingPausedResumesNothing(t *testing.T) {
+	s, _, _ := clockStore(t)
+	worker(t, s)
+	n, err := s.ResumeAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("resumed = %d, want 0", n)
+	}
+}
+
+// Only the latest generation counts: an old paused generation under a live
+// session is history, not something to resume.
+func TestResumeAllIgnoresASupersededPausedGeneration(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	markPaused(t, s, orch.ID, "session", false)
+	if _, err := s.Resume(ctx, orch.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("resumed = %d, want 0", n)
+	}
+	if got := sessionGeneration(t, s, orch.ID); got != 2 {
+		t.Fatalf("generation = %d, want 2", got)
+	}
+}
