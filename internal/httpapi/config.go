@@ -88,6 +88,11 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if !slices.Equal(prev.ScanExcludes, saved.ScanExcludes) {
 		s.Repos.Trigger()
 	}
+	// A new limit lets queued agents start (or makes running ones pause) on the next reconcile tick;
+	// kick it now instead of waiting for the timer. Never drain from this goroutine (Store.Kick).
+	if s.RT != nil && prev.MaxConcurrentAgents != saved.MaxConcurrentAgents {
+		s.RT.Kick()
+	}
 	writeJSON(w, http.StatusOK, saved)
 }
 
