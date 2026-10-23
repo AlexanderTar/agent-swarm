@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -79,6 +80,9 @@ type agentNodeWire struct {
 	FinishedAt        *int64                     `json:"finished_at"`
 	Children          []agentNodeWire            `json:"children"`
 	Finished          []agentNodeWire            `json:"finished"`
+	// FinishedCount is the untrimmed number of finished children; set by
+	// GET /api/state only (which trims Finished), omitted elsewhere.
+	FinishedCount *int `json:"finished_count,omitempty"`
 }
 
 type gitRefWire struct {
@@ -241,7 +245,9 @@ type stateWire struct {
 	Notifications notificationsWire `json:"notifications"`
 	Usage         []usageWire       `json:"usage"`
 	ActiveCount   int               `json:"active_count"`
-	Settings      any               `json:"settings"`
+	// FinishedCount is the untrimmed number of finished top-level agents.
+	FinishedCount int `json:"finished_count"`
+	Settings      any `json:"settings"`
 }
 
 type notificationsWire struct {
@@ -645,6 +651,114 @@ func (s *Server) agentNodesFor(ctx context.Context, roots, flat []runtime.Agent,
 	return out, nil
 }
 
+// stateFinishedCap bounds the finished agents GET /api/state returns per
+// parent (and at top level). The menubar refetches /api/state on every daemon
+// event and each node costs ~10 queries, so finished history must stay bounded.
+const stateFinishedCap = 10
+
+// statePrune is the flat agent list after pruneFinishedForState.
+type statePrune struct {
+	kept           []runtime.Agent
+	prunedByParent map[string]int // finished children dropped, by parent agent id
+	prunedTop      int            // finished top-level agents dropped
+}
+
+func agentLevelFinished(a runtime.Agent) bool {
+	return a.State == runtime.AgentFinished || a.State == runtime.AgentAcknowledged
+}
+
+// pruneFinishedForState trims finished agents BEFORE any node is built. Every
+// agent that isn't finished, and every ancestor of one, is kept. Of a live
+// parent's remaining finished children the newest stateFinishedCap (counting
+// the ones kept as ancestors) stay; a finished parent keeps only the children
+// that lead to a live agent. Finished-ness is the agent's own state, the same
+// test the menubar uses; a finished-by-session child is never pruned.
+func pruneFinishedForState(flat []runtime.Agent) statePrune {
+	byID := make(map[string]runtime.Agent, len(flat))
+	byParent := map[string][]runtime.Agent{}
+	for _, a := range flat {
+		byID[a.ID] = a
+		byParent[a.ParentAgentID] = append(byParent[a.ParentAgentID], a)
+	}
+	needed := map[string]bool{}
+	for _, a := range flat {
+		if agentLevelFinished(a) {
+			continue
+		}
+		for c, ok := a, true; ok && !needed[c.ID]; c, ok = byID[c.ParentAgentID] {
+			needed[c.ID] = true
+		}
+	}
+	at := func(a runtime.Agent) time.Time {
+		if a.FinishedAt != nil {
+			return *a.FinishedAt
+		}
+		return a.CreatedAt
+	}
+	out := statePrune{prunedByParent: map[string]int{}}
+	keep := map[string]bool{}
+	var visit func(parentID string, parentFinished bool)
+	visit = func(parentID string, parentFinished bool) {
+		var finished []runtime.Agent
+		slots := stateFinishedCap
+		for _, c := range byParent[parentID] {
+			switch {
+			case !agentLevelFinished(c) || needed[c.ID]:
+				keep[c.ID] = true
+				if agentLevelFinished(c) {
+					slots--
+				}
+			default:
+				finished = append(finished, c)
+			}
+		}
+		if parentFinished {
+			slots = 0
+		}
+		sort.Slice(finished, func(i, j int) bool {
+			if ti, tj := at(finished[i]), at(finished[j]); !ti.Equal(tj) {
+				return ti.After(tj)
+			}
+			return finished[i].ID < finished[j].ID
+		})
+		for i, c := range finished {
+			if i < slots {
+				keep[c.ID] = true
+			}
+		}
+		dropped := 0
+		for _, c := range byParent[parentID] {
+			if keep[c.ID] {
+				visit(c.ID, agentLevelFinished(c))
+			} else {
+				dropped++
+			}
+		}
+		if parentID == "" {
+			out.prunedTop = dropped
+		} else if dropped > 0 {
+			out.prunedByParent[parentID] = dropped
+		}
+	}
+	visit("", false)
+	for _, a := range flat {
+		if keep[a.ID] {
+			out.kept = append(out.kept, a)
+		}
+	}
+	return out
+}
+
+// setFinishedCounts stamps each node with its untrimmed finished-child total.
+func setFinishedCounts(nodes []agentNodeWire, pruned map[string]int) {
+	for i := range nodes {
+		n := len(nodes[i].Finished) + pruned[nodes[i].ID]
+		nodes[i].FinishedCount = &n
+		setFinishedCounts(nodes[i].Children, pruned)
+		setFinishedCounts(nodes[i].Finished, pruned)
+	}
+}
+
 // allAgents lists every agent, optionally scoped to one root key.
 func (s *Server) allAgents(ctx context.Context, rootKey string) ([]runtime.Agent, error) {
 	if rootKey != "" {
@@ -852,10 +966,18 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	live := s.livePanes(ctx)
-	agents, err := s.buildAgentTree(ctx, flat, live)
+	pruned := pruneFinishedForState(flat)
+	agents, err := s.buildAgentTree(ctx, pruned.kept, live)
 	if err != nil {
 		s.writeErr(w, err)
 		return
+	}
+	setFinishedCounts(agents, pruned.prunedByParent)
+	finishedTop := pruned.prunedTop
+	for _, a := range agents {
+		if a.State == runtime.AgentFinished || a.State == runtime.AgentAcknowledged {
+			finishedTop++
+		}
 	}
 	activeCount := countRunning(agents)
 	reqs, err := s.openRequestsWire(ctx, "", "")
@@ -893,7 +1015,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, stateWire{Agents: agents, Requests: reqs,
 		Notifications: notificationsWire{Unread: unread, Items: notifs}, Usage: usages,
-		ActiveCount: activeCount, Settings: cfg})
+		ActiveCount: activeCount, FinishedCount: finishedTop, Settings: cfg})
 }
 
 func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
