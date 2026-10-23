@@ -194,3 +194,42 @@ func TestStateFinishedCountIsZeroNotMissing(t *testing.T) {
 		t.Fatalf("finished_count = %v, want 0", body["finished_count"])
 	}
 }
+
+// Pruned agents must never reach agentNodeOut. The two oldest finished
+// top-level agents point at an item that doesn't exist, so building their node
+// (itemKeyByID) fails the whole request; /api/state only succeeds if they were
+// dropped from the flat list first.
+func TestStateNeverBuildsPrunedAgents(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	var taskID, epicID string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.TaskKey).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.RootKey).Scan(&epicID); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := s.s.DB.Conn(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(bg, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(bg, `PRAGMA foreign_keys = ON`)
+	for i := 1; i <= stateFinishedCap+2; i++ {
+		id := seedAgent(t, s, runtime.RoleOrchestrator, taskID, epicID, "", fmt.Sprintf("top-%02d", i))
+		ms := db.Millis(time.Unix(int64(500+i), 0))
+		if _, err := conn.ExecContext(bg, `UPDATE agents SET state = 'finished', created_at = ?, finished_at = ? WHERE id = ?`, ms, ms, id); err != nil {
+			t.Fatal(err)
+		}
+		if i <= 2 { // the two oldest are pruned
+			if _, err := conn.ExecContext(bg, `UPDATE agents SET item_id = 'missing-item' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rec := s.get(t, "/api/state"); rec.Code != 200 {
+		t.Fatalf("/api/state = %d; a pruned agent was built: %s", rec.Code, rec.Body.String())
+	}
+}
