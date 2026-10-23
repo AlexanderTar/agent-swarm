@@ -215,6 +215,7 @@ public final class AppModel {
         } catch DaemonError.timedOut {
             return // slow, not down: keep the current state
         } catch {
+            guard seq > appliedRefresh else { return } // a newer refresh already reached the daemon
             await markDisconnected()
         }
     }

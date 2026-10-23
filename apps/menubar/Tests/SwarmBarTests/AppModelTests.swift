@@ -875,6 +875,25 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.state.notifications.unread, 0, "the older refresh's result is dropped")
     }
 
+    /// An older refresh that fails after a newer one succeeded doesn't mark the daemon down.
+    func testStaleRefreshFailureDoesNotDisconnect() async {
+        let m = make()
+        await m.refresh()
+        let good = client.stateResult
+        client.stateResult = .failure(.unreachable)
+        var release: CheckedContinuation<Void, Never>?
+        client.beforeStateReturns = { await withCheckedContinuation { release = $0 } }
+        let stale = Task { await m.refresh() }
+        while release == nil { await Task.yield() }
+        client.beforeStateReturns = nil
+        client.stateResult = good
+        await m.refresh()
+
+        release?.resume()
+        await stale.value
+        XCTAssertTrue(m.connected)
+    }
+
     /// A failed "Read all" leaves the unread state as it was.
     func testReadAllFailureKeepsUnread() async {
         let m = make()
