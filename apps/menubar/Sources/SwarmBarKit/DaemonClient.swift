@@ -78,6 +78,8 @@ public final class MockDaemonClient: DaemonClient {
     public private(set) var handoffRequests: [HandoffRequest] = []
     public private(set) var startBodies: [StartOrchestratorBody] = []
     public var failNext: DaemonError?
+    /// What `resumeAll()` reports back (how many paused trees the daemon resumed).
+    public var resumeAllResult = 1
     /// Any error for the next call, e.g. `CancellationError()`.
     public var failNextWith: Error?
     public private(set) var calls: [String] = []
@@ -160,7 +162,7 @@ public final class MockDaemonClient: DaemonClient {
 
     public func resumeAll() async throws -> Int {
         try record("resume-all")
-        return 1
+        return resumeAllResult
     }
 
     public func setLowToken(agent: String, on: Bool) async throws -> Int {

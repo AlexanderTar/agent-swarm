@@ -81,6 +81,9 @@ public final class AppModel {
     public var usageAgent: AgentKind?
     public private(set) var pauseAllPending = false
     public private(set) var resumeAllPending = false
+    /// Ends `resumeAllPending` after `inFlightTimeout` if some orchestrator never leaves paused
+    /// (the daemon resumed the other trees and failed on, or parked, this one).
+    private var resumeAllTimer: Task<Void, Never>?
     /// Header leaf toggle: the requested default while its request is in flight (nil = none), and the
     /// orchestrators whose own low-token request is in flight.
     private var lowTokenAllRequested: Bool?
@@ -264,7 +267,7 @@ public final class AppModel {
             pauseAllPending = false
         }
         if resumeAllPending && !Self.unfinishedOrchestrators(s.agents).contains(where: { DisplayState($0) == .paused }) {
-            resumeAllPending = false
+            clearResumeAllPending()
         }
         usageAgent = UsageSection.selection(current: usageAgent, enabled: s.settings.enabledAgents)
     }
@@ -503,11 +506,26 @@ public final class AppModel {
         guard !resumeAllDisabled else { return }
         resumeAllPending = true
         do {
-            if try await client.resumeAll() == 0 { resumeAllPending = false }
+            if try await client.resumeAll() == 0 { clearResumeAllPending() } else { startResumeAllTimer() }
         } catch {
-            resumeAllPending = false
+            clearResumeAllPending()
         }
         await refresh()
+    }
+
+    private func clearResumeAllPending() {
+        resumeAllPending = false
+        resumeAllTimer?.cancel()
+        resumeAllTimer = nil
+    }
+
+    private func startResumeAllTimer() {
+        resumeAllTimer?.cancel()
+        resumeAllTimer = Task { [weak self, sleep] in
+            do { try await sleep(.seconds(Self.inFlightTimeout)) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.clearResumeAllPending()
+        }
     }
 
     public func pauseAll() async {

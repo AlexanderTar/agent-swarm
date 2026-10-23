@@ -631,6 +631,34 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(m.resumeAllPending)
     }
 
+    func testResumeAllReturningZeroClearsPending() async throws {
+        let m = make()
+        client.stateResult = .success(try allPausedState())
+        await m.refresh()
+        client.resumeAllResult = 0
+        await m.resumeAll()
+        XCTAssertEqual(client.calls.filter { $0 == "resume-all" }.count, 1)
+        XCTAssertFalse(m.resumeAllPending)
+        XCTAssertEqual(m.resumeAllLabel, "Resume all")
+        XCTAssertFalse(m.resumeAllDisabled, "the user can try again")
+    }
+
+    // The daemon may resume some trees and fail on one: that orchestrator stays paused, so the
+    // button must not sit on a disabled "Resuming…" forever.
+    func testResumeAllPendingTimesOutWhenAnOrchestratorStaysPaused() async throws {
+        let m = make(sleep: { d in
+            guard d == .seconds(AppModel.inFlightTimeout) else { return try await Task.sleep(for: .seconds(3600)) }
+            try Task.checkCancellation()
+        })
+        client.stateResult = .success(try allPausedState())
+        await m.refresh()
+        await m.resumeAll()
+        for _ in 0..<200 where m.resumeAllPending { await Task.yield() }
+        XCTAssertFalse(m.resumeAllPending)
+        XCTAssertEqual(m.resumeAllLabel, "Resume all")
+        XCTAssertFalse(m.resumeAllDisabled)
+    }
+
     func testPauseAllStaysWhenNotEveryOrchestratorIsPaused() async throws {
         let m = make()
         // The stock fixture has a running orchestrator next to the paused one.
