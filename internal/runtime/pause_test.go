@@ -2747,3 +2747,52 @@ func TestResumeAllIgnoresASupersededPausedGeneration(t *testing.T) {
 		t.Fatalf("generation = %d, want 2", got)
 	}
 }
+
+// A session-paused child under a paused parent is not part of the parent's
+// subtree pause, so Resume's cascade leaves it alone: it is its own target.
+func TestResumeAllResumesASessionPausedChildUnderAPausedParent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	markPaused(t, s, orch.ID, "session", false)
+	markPaused(t, s, w.ID, "session", false)
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("resumed = %d, want 2 -- the cascade doesn't reach a session-paused child", n)
+	}
+	for _, a := range []Agent{orch, w} {
+		if ses, _ := s.LatestSession(ctx, a.ID); !ses.State.Live() {
+			t.Fatalf("%s state = %s, want live", a.Name, ses.State)
+		}
+	}
+	if sessionRowid(t, s, orch.ID) > sessionRowid(t, s, w.ID) {
+		t.Fatal("child resumed before its parent")
+	}
+}
+
+// A nested subtree-pause root owns its own subtree: the parent's cascade
+// prunes it, so it is its own target.
+func TestResumeAllResumesANestedSubtreePauseRootUnderAPausedParent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	markPaused(t, s, orch.ID, "subtree", true)
+	markPaused(t, s, w.ID, "subtree", true)
+
+	n, err := s.ResumeAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("resumed = %d, want 2 -- the cascade prunes a nested pause root", n)
+	}
+	for _, a := range []Agent{orch, w} {
+		if ses, _ := s.LatestSession(ctx, a.ID); !ses.State.Live() {
+			t.Fatalf("%s state = %s, want live", a.Name, ses.State)
+		}
+	}
+}

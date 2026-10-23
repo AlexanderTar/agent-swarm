@@ -1241,23 +1241,33 @@ func (s *Store) PauseAll(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// resumeTarget returns the highest paused ancestor of a, or a itself if none
-// of its ancestors is paused: the mirror of pauseTarget. Like pauseTarget it
-// walks the whole chain, so a non-paused intermediate agent never hides a
-// paused one above it.
+// resumeTarget returns the agent whose Resume brings a back. Resume cascades
+// only to descendants a subtree pause paused: pause_scope 'subtree' and
+// pause_root 0 (resumeSubtree). So a is its own target unless it is such a
+// descendant, in which case the target is the nearest paused ancestor that is
+// the pause root of that subtree, found by walking past any intermediate
+// subtree-paused descendants. A session-scoped pause, or a nested pause root,
+// belongs to itself and is never folded into a paused ancestor.
 func (s *Store) resumeTarget(ctx context.Context, a Agent) (Agent, error) {
-	best, cur := a, a
-	for cur.ParentAgentID != "" {
+	cur := a
+	for {
+		ses, err := s.LatestSession(ctx, cur.ID)
+		if err != nil {
+			return Agent{}, err
+		}
+		if ses.State != Paused || ses.PauseScope != "subtree" || ses.PauseRoot || cur.ParentAgentID == "" {
+			return cur, nil
+		}
 		parent, err := s.agentByID(ctx, cur.ParentAgentID)
 		if err != nil {
 			return Agent{}, err
 		}
-		if pses, err := s.LatestSession(ctx, parent.ID); err == nil && pses.State == Paused {
-			best = parent
+		pses, err := s.LatestSession(ctx, parent.ID)
+		if err != nil || pses.State != Paused || pses.PauseScope != "subtree" {
+			return cur, nil
 		}
 		cur = parent
 	}
-	return best, nil
 }
 
 // ResumeAll resumes every paused session, grouped by resume target
@@ -1276,27 +1286,44 @@ func (s *Store) ResumeAll(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	seen := map[string]bool{}
-	var targets []string
+	type target struct {
+		name  string
+		depth int
+	}
+	var targets []target
 	for _, name := range paused {
 		a, err := s.Agent(ctx, name)
 		if err != nil {
 			s.logf("resume-all: %s: %v", name, err)
 			continue
 		}
-		target, err := s.resumeTarget(ctx, a)
+		t, err := s.resumeTarget(ctx, a)
 		if err != nil {
 			s.logf("resume-all: %s: %v", name, err)
 			continue
 		}
-		if !seen[target.ID] {
-			seen[target.ID] = true
-			targets = append(targets, target.Name)
+		if seen[t.ID] {
+			continue
 		}
+		seen[t.ID] = true
+		depth, cur := 0, t
+		for cur.ParentAgentID != "" {
+			parent, err := s.agentByID(ctx, cur.ParentAgentID)
+			if err != nil {
+				break
+			}
+			depth++
+			cur = parent
+		}
+		targets = append(targets, target{t.Name, depth})
 	}
+	// Shallowest first, so a parent's session exists when a paused
+	// descendant's "resumed" relay is sent to it.
+	slices.SortStableFunc(targets, func(x, y target) int { return x.depth - y.depth })
 	n := 0
-	for _, name := range targets {
-		if _, err := s.Resume(ctx, name, "", ""); err != nil {
-			s.logf("resume-all: %s: %v", name, err)
+	for _, t := range targets {
+		if _, err := s.Resume(ctx, t.name, "", ""); err != nil {
+			s.logf("resume-all: %s: %v", t.name, err)
 			continue
 		}
 		n++
