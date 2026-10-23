@@ -1675,6 +1675,23 @@ func (s *Store) ReclaimWorktreesLoop(ctx context.Context, every time.Duration) {
 	}
 }
 
+func (s *Store) kickChan() chan struct{} {
+	s.kickOnce.Do(func() { s.kickCh = make(chan struct{}, 1) })
+	return s.kickCh
+}
+
+// Kick asks ReconcileLoop to run a tick now instead of at its next timer. Call it when something the tick
+// acts on changed (a raised max_concurrent_agents lets EnforceCapacity, ResumeOperations and DrainQueue
+// start queued work). It never blocks, and kicks that arrive before the loop wakes coalesce into one tick.
+// Never run those steps from the caller's goroutine instead: startQueued's claim has no state guard, so
+// two concurrent drains could start the same agent twice.
+func (s *Store) Kick() {
+	select {
+	case s.kickChan() <- struct{}{}:
+	default:
+	}
+}
+
 // ReconcileLoop runs Reconcile every `every` until ctx is cancelled. The period is measured from the
 // start of a tick, so a slow tick (many live panes, a loaded machine) does not stretch the gap between
 // ticks: pause and crash detection are promised within a bound that assumes `every`. A tick that overruns
@@ -1686,6 +1703,7 @@ func (s *Store) ReconcileLoop(ctx context.Context, every time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-s.after(wait):
+		case <-s.kickChan():
 		}
 		start := s.now()
 		if err := s.Reconcile(ctx); err != nil {

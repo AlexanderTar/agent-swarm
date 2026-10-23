@@ -92,7 +92,8 @@ func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID str
 }
 
 // DrainQueue starts queued agents in FIFO order while slots are free. It runs
-// from the reconciler (§10.6) and after any agent finishes.
+// only from the reconciler (§10.6); a change that frees slots (a raised
+// max_concurrent_agents) wakes the reconciler with Kick.
 //
 // A queued agent whose root is under a live subtree pause is frozen (§10.5):
 // skipped, but without stopping the drain of other roots' queues, and without
