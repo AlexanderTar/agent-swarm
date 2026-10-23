@@ -50,6 +50,9 @@ struct AgentsSection: View {
                         .buttonStyle(.plain)
                         .padding(.leading, CGFloat(row.depth) * 16)
                         .frame(minHeight: 28)
+                    case let .trimNote(_, shown):
+                        Text(Copy.showingLatestFinished(shown)).font(.caption).foregroundStyle(.secondary)
+                            .padding(.leading, CGFloat(row.depth) * 16 + 16)
                     case let .failed(parent, count):
                         Button {
                             model.toggleFailed(parent)

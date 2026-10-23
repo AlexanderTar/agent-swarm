@@ -399,7 +399,8 @@ public final class AppModel {
     // MARK: agents
 
     public var agentRows: [AgentTree.Row] {
-        AgentTree.rows(state.agents, collapsed: collapsedAgents, openFinished: openFinished, openFailed: openFailed)
+        AgentTree.rows(state.agents, collapsed: collapsedAgents, openFinished: openFinished, openFailed: openFailed,
+                       topFinishedCount: state.finishedCount)
     }
 
     public func tmuxAlive(_ a: AgentNode) -> Bool {

@@ -118,9 +118,12 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var lowTokenEffective: Bool?
     public var children: [AgentNode]
     public var finished: [AgentNode]
+    /// Untrimmed number of finished children (`finished` holds only the latest ones); nil = older daemon.
+    public var finishedCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, model, effort, role, step, state, session, replacement, children, finished, progress, merge
+        case finishedCount = "finished_count"
         case lowToken = "low_token", lowTokenEffective = "low_token_effective"
         case roleOverrides = "role_overrides"
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
@@ -136,7 +139,8 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
                 progress: AgentProgress? = nil, merge: MergeProgress? = nil,
                 roleOverrides: [String: RoleDefault]? = nil,
                 lowToken: Bool? = nil, lowTokenEffective: Bool? = nil,
-                children: [AgentNode] = [], finished: [AgentNode] = []) {
+                children: [AgentNode] = [], finished: [AgentNode] = [], finishedCount: Int? = nil) {
+        self.finishedCount = finishedCount
         self.roleOverrides = roleOverrides
         self.lowToken = lowToken; self.lowTokenEffective = lowTokenEffective
         self.id = id; self.name = name; self.kind = kind; self.model = model; self.effort = effort
@@ -535,14 +539,18 @@ public struct StateResponse: Codable, Sendable, Equatable {
     public var notifications: NotificationList
     public var usage: [UsageSnapshot]
     public var activeCount: Int
+    /// Untrimmed number of finished top-level agents; nil = older daemon.
+    public var finishedCount: Int?
     public var settings: Settings
 
     enum CodingKeys: String, CodingKey {
         case agents, requests, notifications, usage, settings, activeCount = "active_count"
+        case finishedCount = "finished_count"
     }
 
     public init(agents: [AgentNode] = [], requests: [SwarmRequest] = [], notifications: NotificationList = NotificationList(),
-                usage: [UsageSnapshot] = [], activeCount: Int = 0, settings: Settings = .defaults) {
+                usage: [UsageSnapshot] = [], activeCount: Int = 0, finishedCount: Int? = nil, settings: Settings = .defaults) {
+        self.finishedCount = finishedCount
         self.agents = agents; self.requests = requests; self.notifications = notifications
         self.usage = usage; self.activeCount = activeCount; self.settings = settings
     }
