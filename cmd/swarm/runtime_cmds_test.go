@@ -213,6 +213,23 @@ func TestPauseVariants(t *testing.T) {
 	}
 }
 
+func TestResumeAll(t *testing.T) {
+	srv, got, home := stubDaemon(t, map[string]string{
+		"POST /api/resume-all": `{"requested":2}`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	if code := run([]string{"resume", "--home", home, "--url", srv.URL, "--all"}, &out, &out); code != 0 {
+		t.Fatalf("code = %d, output = %q", code, out.String())
+	}
+	if len(*got) != 1 || (*got)[0].path != "/api/resume-all" {
+		t.Fatalf("requests = %+v", *got)
+	}
+	if out.String() != "Resuming 2 agent(s).\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
 func TestRequestActions(t *testing.T) {
 	srv, got, home := stubDaemon(t, map[string]string{
 		"POST /api/requests/req_1/answer":          `{"id":"req_1","state":"answered"}`,

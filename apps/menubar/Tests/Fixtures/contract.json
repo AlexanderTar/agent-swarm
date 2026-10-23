@@ -251,6 +251,19 @@
       "status": 200
     },
     {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/resume-all",
+      "direction": "request"
+    },
+    {
+      "file": "resume-all.json",
+      "method": "POST",
+      "path": "/api/resume-all",
+      "direction": "response",
+      "status": 200
+    },
+    {
       "file": "answer-request.json",
       "method": "POST",
       "path": "/api/requests/{id}/answer",

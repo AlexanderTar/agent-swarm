@@ -382,7 +382,7 @@ func cmdPause(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// agentAction is the shared shape of resume/cancel: POST with no body,
+// agentAction is the shape of cancel: POST with no body,
 // AgentNode back, one confirmation line.
 func agentAction(name string, args []string, stdout, stderr io.Writer) int {
 	c, rest, code, done := connect(name, args, stderr, nil)
@@ -402,7 +402,33 @@ func agentAction(name string, args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdResume(args []string, stdout, stderr io.Writer) int {
-	return agentAction("resume", args, stdout, stderr)
+	var all *bool
+	c, rest, code, done := connect("resume", args, stderr, func(fs *flag.FlagSet) {
+		all = fs.Bool("all", false, "resume every paused agent")
+	})
+	if done {
+		return code
+	}
+	if *all {
+		var out struct {
+			Requested int `json:"requested"`
+		}
+		if err := c.do("POST", "/api/resume-all", map[string]any{}, &out); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "Resuming %d agent(s).\n", out.Requested)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(stderr, "Usage: swarm resume NAME|--all\n")
+		return 2
+	}
+	var node map[string]any
+	if err := c.do("POST", "/api/agents/"+rest[0]+"/resume", map[string]any{}, &node); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "Resume: %s.\n", rest[0])
+	return 0
 }
 func cmdCancel(args []string, stdout, stderr io.Writer) int {
 	return agentAction("cancel", args, stdout, stderr)

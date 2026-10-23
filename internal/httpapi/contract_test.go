@@ -133,6 +133,8 @@ func typeFor(key string) (any, bool) {
 		return &paneWire{}, true
 	case "response POST /api/pause-all":
 		return &pauseAllWire{}, true
+	case "response POST /api/resume-all":
+		return &resumeAllWire{}, true
 	case "response POST /api/agents/{name}/low-token":
 		return &lowTokenAgentWire{}, true
 	case "response POST /api/low-token":
@@ -155,7 +157,7 @@ func typeFor(key string) (any, bool) {
 		return &confirmReposBody{}, true
 	case "request PUT /api/settings":
 		return &settings.Settings{}, true
-	case "request POST /api/agents/{name}/pause", "request POST /api/pause-all":
+	case "request POST /api/agents/{name}/pause", "request POST /api/pause-all", "request POST /api/resume-all":
 		return &pauseBody{}, true
 	case "request POST /api/agents/{name}/terminal":
 		return &terminalBody{}, true

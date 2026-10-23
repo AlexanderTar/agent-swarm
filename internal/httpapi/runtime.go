@@ -274,6 +274,12 @@ type pauseAllWire struct {
 	Requested int `json:"requested"`
 }
 
+// resumeAllWire is POST /api/resume-all: the paused trees it resumed, each
+// counted once from its topmost paused agent.
+type resumeAllWire struct {
+	Requested int `json:"requested"`
+}
+
 // readAllWire is contracts §4 POST /api/notifications/read-all.
 type readAllWire struct {
 	Read int `json:"read"`

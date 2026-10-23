@@ -27,6 +27,7 @@ func (s *Server) spawnRoutes() []route {
 		{"POST", "/api/agents/{name}/terminal", authDaemon, s.terminal},
 		{"POST", "/api/agents/{name}/terminal-opened", authDaemon, s.terminalOpened},
 		{"POST", "/api/pause-all", authDaemon, s.pauseAll},
+		{"POST", "/api/resume-all", authDaemon, s.resumeAll},
 		{"POST", "/api/agents/{name}/low-token", authDaemon, s.setAgentLowToken},
 		{"POST", "/api/low-token", authDaemon, s.setAllLowToken},
 	}
@@ -397,4 +398,13 @@ func (s *Server) pauseAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pauseAllWire{Requested: n})
+}
+
+func (s *Server) resumeAll(w http.ResponseWriter, r *http.Request) {
+	n, err := s.RT.ResumeAll(r.Context())
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resumeAllWire{Requested: n})
 }

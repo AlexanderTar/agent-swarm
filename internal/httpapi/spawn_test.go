@@ -471,6 +471,31 @@ func TestPauseAllReportsTheCount(t *testing.T) {
 	}
 }
 
+func TestResumeAllReportsTheCount(t *testing.T) {
+	s, name := newServerWithSessionState(t, "paused")
+	rec := s.post(t, "/api/resume-all", `{}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := decode[resumeAllWire](t, rec.Body.Bytes())
+	if body.Requested != 1 {
+		t.Fatalf("requested = %d, want 1", body.Requested)
+	}
+	var state string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT ses.state FROM sessions ses JOIN agents a ON a.id = ses.agent_id
+		WHERE a.name = ? ORDER BY ses.generation DESC LIMIT 1`, name).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state == "paused" {
+		t.Fatalf("%s still paused after resume-all", name)
+	}
+	// Nothing left to resume.
+	again := decode[resumeAllWire](t, s.post(t, "/api/resume-all", `{}`).Body.Bytes())
+	if again.Requested != 0 {
+		t.Fatalf("second requested = %d, want 0", again.Requested)
+	}
+}
+
 // loadAgentStatus maps sql.ErrNoRows to 404 (agent-hover-preview spec's pane
 // route needed this; every other action route shares loadAgentStatus, so an
 // unknown agent name must not fall through to a bare 500 on any of them).
