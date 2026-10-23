@@ -31,7 +31,7 @@ Commands:
   agents [--all]                   list agents as a tree
   attach NAME                      attach to an agent's tmux session here
   pause NAME|--all [--group]       pause an agent, its group, or everything
-  resume NAME
+  resume NAME|--all                resume an agent, or every paused one
   cancel NAME
   resolve --by KEY2 KEY...         close Draft/Ready bugs, chores or epics as Done, resolved by the Done root KEY2
   retry NAME [--note TEXT]         new attempt for a failed, crashed or interrupted agent

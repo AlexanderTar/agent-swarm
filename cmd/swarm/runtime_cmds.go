@@ -430,6 +430,7 @@ func cmdResume(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Resume: %s.\n", rest[0])
 	return 0
 }
+
 func cmdCancel(args []string, stdout, stderr io.Writer) int {
 	return agentAction("cancel", args, stdout, stderr)
 }

@@ -154,7 +154,7 @@ swarm start KEY [--agent A --model M --effort E] [--repo PATH...]
 swarm agents [--all]               list agents as a tree
 swarm attach NAME                  attach to an agent's tmux session here
 swarm pause NAME|--all [--group]   pause an agent, its group, or everything
-swarm resume NAME
+swarm resume NAME|--all            resume an agent, or every paused one
 swarm cancel NAME
 swarm retry NAME [--note TEXT]     new attempt for a failed, crashed or interrupted agent
 swarm ack NAME                     move a failed, crashed or interrupted agent to history
