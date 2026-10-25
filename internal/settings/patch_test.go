@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -102,11 +103,24 @@ func TestPatchKeepsInstructionsSavedWhileItRuns(t *testing.T) {
 		})
 		return models(c, k)
 	}
-	if _, _, err := s.Patch(ctx, raw(map[string]string{"usage_poll_sec": "900"})); err != nil {
+	_, saved, err := s.Patch(ctx, raw(map[string]string{"usage_poll_sec": "900"}))
+	if err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.Get(ctx)
 	if got.Instructions != "from the agent" || got.UsagePollSec != 900 {
 		t.Fatalf("instructions = %q, usage_poll_sec = %d: the patch undid the concurrent change", got.Instructions, got.UsagePollSec)
+	}
+	// The response and the settings.changed event say what is stored, not the
+	// patch's stale copy (the menu bar adopts the response).
+	if saved.Instructions != "from the agent" || saved.UsagePollSec != 900 {
+		t.Errorf("returned instructions = %q, usage_poll_sec = %d", saved.Instructions, saved.UsagePollSec)
+	}
+	evs, _ := s.Events.After(ctx, 0, 100)
+	last := evs[len(evs)-1]
+	var published Settings
+	if err := json.Unmarshal(last.Payload, &published); err != nil || last.Type != events.SettingsChanged ||
+		published.Instructions != "from the agent" || published.UsagePollSec != 900 {
+		t.Errorf("last event = %s %s (%v)", last.Type, last.Payload, err)
 	}
 }

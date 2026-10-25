@@ -130,7 +130,14 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-func (s *Store) Get(ctx context.Context) (Settings, error) {
+func (s *Store) Get(ctx context.Context) (Settings, error) { return s.read(ctx, s.DB) }
+
+// queryer is what read needs: the store's DB, or the transaction put writes in.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Store) read(ctx context.Context, q queryer) (Settings, error) {
 	var installed []kinds.AgentKind
 	if s.Installed != nil {
 		installed = s.Installed(ctx)
@@ -139,7 +146,7 @@ func (s *Store) Get(ctx context.Context) (Settings, error) {
 	raw, _ := json.Marshal(def)
 	fields := map[string]json.RawMessage{}
 	json.Unmarshal(raw, &fields)
-	rows, err := s.DB.QueryContext(ctx, `SELECT key, value_json FROM settings`)
+	rows, err := q.QueryContext(ctx, `SELECT key, value_json FROM settings`)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -238,7 +245,8 @@ func (s *Store) Patch(ctx context.Context, fields map[string]json.RawMessage) (p
 // put validates next and writes the settings that differ from the stored
 // ones. Writing only those means a setting this call leaves as it was is
 // never rewritten, so a concurrent SetInstructions or SetLowTokenMode is not
-// undone by a stale copy.
+// undone by a stale copy. What it returns and publishes is what is stored
+// after its write, read in the same transaction, not next.
 func (s *Store) put(ctx context.Context, next Settings) (prev, saved Settings, err error) {
 	prev, err = s.Get(ctx)
 	if err != nil {
@@ -276,14 +284,17 @@ func (s *Store) put(ctx context.Context, next Settings) (prev, saved Settings, e
 				return err
 			}
 		}
-		_, err := s.Events.Append(ctx, tx, events.SettingsChanged, next)
+		if saved, err = s.read(ctx, tx); err != nil {
+			return err
+		}
+		_, err := s.Events.Append(ctx, tx, events.SettingsChanged, saved)
 		return err
 	})
 	if err != nil {
 		return prev, prev, err
 	}
 	s.Events.Notify()
-	return prev, next, nil
+	return prev, saved, nil
 }
 
 // SetLowTokenMode writes only the global low-token default.
