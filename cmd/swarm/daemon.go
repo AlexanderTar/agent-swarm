@@ -330,8 +330,8 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// the manager needs the handler and the handler needs the manager, so the
 	// handler is filled in once the API exists
 	tn := &tunnel.Manager{DB: d, SecretPath: filepath.Join(cfg.Home, "run", "tunnel.secret"), Now: now, Log: cfg.Log}
-	lm := &lan.Manager{DB: d, Registrar: &lan.DNSSD{Log: cfg.Log}, Now: now, Log: cfg.Log,
-		PrimaryIP: func() (net.IP, error) { return lan.PrimaryIPv4(ctx, execx.Run) }}
+	lm := &lan.Manager{DB: d, Registrar: plat.registrar(cfg.Log), Now: now, Log: cfg.Log,
+		PrimaryIP: func() (net.IP, error) { return plat.primaryIP(ctx, execx.Run) }}
 	api := httpapi.New(httpapi.Deps{Version: version, Tunnel: tn, LAN: lm, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
@@ -582,17 +582,26 @@ type platformDeps struct {
 	// fixed macOS folders and the user's scan_excludes, without showing up in
 	// that setting.
 	scanSkips []string
+	// registrar publishes swarm.local, and primaryIP finds the LAN address
+	// the board listens on.
+	registrar func(log func(string, ...any)) lan.Registrar
+	primaryIP func(context.Context, execx.Runner) (net.IP, error)
 }
 
 func platformFor(goos, userHome string) platformDeps {
 	if goos != "linux" {
 		// USER is the account of Claude's keychain item.
-		return platformDeps{baseEnv: spawn.BaseEnv, creds: creds.Keychain(execx.Run, os.Getenv("USER"))}
+		return platformDeps{baseEnv: spawn.BaseEnv, creds: creds.Keychain(execx.Run, os.Getenv("USER")),
+			registrar: func(log func(string, ...any)) lan.Registrar { return &lan.DNSSD{Log: log} },
+			primaryIP: lan.PrimaryIPv4}
 	}
 	// Linux's media folder and snap's per-app data, its counterparts of the
 	// walker's ~/Movies and ~/Library.
 	return platformDeps{baseEnv: spawn.LinuxBaseEnv, creds: creds.Files(userHome, os.Getenv),
-		scanSkips: []string{"~/Videos", "~/snap"}, terminal: desktop.Launcher{
+		scanSkips: []string{"~/Videos", "~/snap"},
+		registrar: func(log func(string, ...any)) lan.Registrar { return &lan.Avahi{Log: log} },
+		primaryIP: lan.PrimaryIPv4Linux,
+		terminal: desktop.Launcher{
 			Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv, Environ: os.Environ,
 			Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
 			Settle: 500 * time.Millisecond,

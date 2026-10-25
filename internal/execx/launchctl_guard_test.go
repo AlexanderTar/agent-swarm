@@ -43,6 +43,9 @@ func TestRealRunnersRefuseLaunchctlUnderGoTest(t *testing.T) {
 		"StartEnv": func(ctx context.Context, n string, a ...string) ([]byte, error) {
 			return start(StartEnv(ctx, nil, n, a...))
 		},
+		"StartMerged": func(ctx context.Context, n string, a ...string) ([]byte, error) {
+			return start(StartMerged(ctx, n, a...))
+		},
 		"StartDetached": func(_ context.Context, n string, a ...string) ([]byte, error) {
 			_, err := StartDetached(nil, n, a...)
 			return nil, err

@@ -21,6 +21,7 @@ func runLAN(t *testing.T, srvURL, home string, args ...string) (int, string, str
 const listeningJSON = `{"enabled":true,"state":"listening","ip":"192.168.1.20","hostname":"swarm.local","url":"http://swarm.local:7777"}`
 
 func TestLANEnablePrintsTheAddressAndWarnings(t *testing.T) {
+	pinGOOS(t, "darwin") // the macOS firewall copy; TestLANWarningsNameThePlatformsFirewall covers Linux
 	srv, got, home := stubDaemon(t, map[string]string{"PUT /api/lan": listeningJSON})
 	defer srv.Close()
 	code, out, errOut := runLAN(t, srv.URL, home, "enable")

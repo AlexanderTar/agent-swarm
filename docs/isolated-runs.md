@@ -49,7 +49,7 @@ env -i PATH="$S/shim:/usr/bin:/bin:/opt/homebrew/bin" HOME="$S/fakehome" USER=te
 ## Safe setup for Go tests
 
 - Never call the real `install.Install`, `install.Uninstall`, `install.Agents` or `migrate` with `execx.Run` in a test. Inject `execx.Fake` (`internal/install/isolated_test.go`) and a fake `HOME` (`fakeHome` in `internal/install/codex_test.go`). In `cmd/swarm` tests, stub `installLaunchd`, `installAgents`, `installUninstall` and `migrateRun`.
-- `execx.Run`, `execx.RunFor`, `execx.RunEnv`, `execx.Start`, `execx.StartEnv` and `execx.StartDetached` return an error for `launchctl`, `systemctl` and `loginctl` when running under `go test` (`refuseUnderTest`, guarded by `TestRealRunnersRefuseLaunchctlUnderGoTest`). A test that hits it forgot to inject a fake; fix the test, do not weaken the guard. `cmd/swarm` tests that depend on the service manager pin it with `pinGOOS`.
+- `execx.Run`, `execx.RunFor`, `execx.RunEnv`, `execx.Start`, `execx.StartEnv`, `execx.StartMerged` and `execx.StartDetached` return an error for `launchctl`, `systemctl` and `loginctl` when running under `go test` (`refuseUnderTest`, guarded by `TestRealRunnersRefuseLaunchctlUnderGoTest`). A test that hits it forgot to inject a fake; fix the test, do not weaken the guard. `cmd/swarm` tests that depend on the service manager pin it with `pinGOOS`.
 - If a test run might have touched launchd, check at once: `launchctl print gui/$(id -u)/dev.swarm.daemon | grep -E 'state|pid'`. To restore it: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.swarm.daemon.plist`.
 - On Linux, check with `systemctl --user status dev.swarm.daemon.service`, and restore it with `systemctl --user enable --now dev.swarm.daemon.service`.
 

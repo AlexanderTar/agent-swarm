@@ -101,7 +101,16 @@ func Start(ctx context.Context, name string, args ...string) (*Proc, error) {
 	if err := refuseUnderTest(name); err != nil {
 		return nil, err
 	}
-	return startCmd(exec.CommandContext(ctx, name, args...))
+	return startCmd(exec.CommandContext(ctx, name, args...), false)
+}
+
+// StartMerged is Start with the process's stderr merged into Stdout, for a
+// program that reports on stderr (avahi-publish).
+func StartMerged(ctx context.Context, name string, args ...string) (*Proc, error) {
+	if err := refuseUnderTest(name); err != nil {
+		return nil, err
+	}
+	return startCmd(exec.CommandContext(ctx, name, args...), true)
 }
 
 // StarterEnv is Starter with an extra environment map merged over the
@@ -122,10 +131,10 @@ func StartEnv(ctx context.Context, env map[string]string, name string, args ...s
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	return startCmd(cmd)
+	return startCmd(cmd, false)
 }
 
-func startCmd(cmd *exec.Cmd) (*Proc, error) {
+func startCmd(cmd *exec.Cmd, mergeStderr bool) (*Proc, error) {
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -133,6 +142,9 @@ func startCmd(cmd *exec.Cmd) (*Proc, error) {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
+	}
+	if mergeStderr {
+		cmd.Stderr = cmd.Stdout // the pipe's write end: both streams share it
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, err

@@ -236,8 +236,10 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
 
 ## Phase 5 — LAN access on Linux
 
-1. **Primary IP.** Linux: `ip -4 route get 1.1.1.1` → `src`; fall back to the
-   UDP-dial `LocalAddr` trick (no packet sent). darwin unchanged.
+1. **Primary IP.** Linux: `ip -4 route get 1.1.1.1` → `src`. darwin unchanged.
+   *Changed while implementing:* no UDP-dial fallback. iproute2's `ip` ships
+   with every systemd distribution, and a fallback that asks the real network
+   would make the offline case untestable.
 2. **mDNS.** A second `lan.Registrar` supervising two processes:
    `avahi-publish -a -R swarm.local <ip>` and `avahi-publish -s -H swarm.local
    Swarm _http._tcp <port>` (the service must point at the published host,
