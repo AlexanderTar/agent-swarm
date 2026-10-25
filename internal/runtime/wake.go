@@ -163,7 +163,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 	isExhausted := func(k AgentKind) bool {
 		e, ok := exhausted[k]
 		if !ok {
-			e = s.Usage != nil && s.Usage.Exhausted(ctx, k)
+			e = s.kindExhausted(ctx, k)
 			exhausted[k] = e
 		}
 		return e
@@ -305,7 +305,7 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 		if !ok {
 			continue
 		}
-		if s.Usage != nil && s.Usage.Exhausted(ctx, AgentKind(p.kind)) {
+		if s.kindExhausted(ctx, AgentKind(p.kind)) {
 			continue
 		}
 		clear := func() error {
