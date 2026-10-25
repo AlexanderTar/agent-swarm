@@ -261,3 +261,35 @@ func TestReclaimDryRunRunsNoGitFetch(t *testing.T) {
 		t.Fatal("expected a git status call")
 	}
 }
+
+// mergeInto merges branch into the tree at integ's path.
+func mergeInto(t *testing.T, integ worktree.Worktree, branch string) {
+	t.Helper()
+	gitOutput(t, integ.Path, "-c", "commit.gpgsign=false", "-c", "user.email=t@example.invalid",
+		"-c", "user.name=T", "merge", "--no-edit", branch)
+}
+
+// BUG-108: two clean package trees of one root, both merged into a sibling
+// worktree's integration branch (not main), are both removed.
+func TestReclaimTreatsAHeadInASiblingWorktreeBranchAsMerged(t *testing.T) {
+	f := newEvidenceFixture(t)
+	f.ghErr = errors.New("gh unavailable")
+	integ := seedReclaimWorktree(t, f.s, f.repoID, f.repoPath, "chore/integ", "owner_1", f.epic.ID)
+	a, b := f.tree(t, "task/a"), f.tree(t, "task/b")
+	// distinct commits: identical content in the same second would share a SHA
+	commitFile(t, a.Path, "a.txt", "a")
+	commitFile(t, b.Path, "b.txt", "b")
+	if state, reason := f.reclaim(t, a); state != "retained" || reason != "unmerged" {
+		t.Fatalf("A before the merge: state/reason = %s/%s, want retained/unmerged", state, reason)
+	}
+	mergeInto(t, integ, "task/a")
+	mergeInto(t, integ, "task/b")
+	for name, wt := range map[string]worktree.Worktree{"A": a, "B": b} {
+		if state, reason := f.reclaim(t, wt); state != "removed" {
+			t.Fatalf("%s merged into the sibling integration branch: state/reason = %s/%s, want removed", name, state, reason)
+		}
+	}
+	if state, _ := reclaimWorktreeState(t, f.s, integ.ID); state != "active" {
+		t.Fatalf("integration tree state = %s, want active", state)
+	}
+}

@@ -11,8 +11,9 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
-// mergeEvidence is worktree.MergeEvidence 3 and 4: a merged item_merges row's
-// head branch, or a merged GitHub PR's head OID, contains the tree's HEAD.
+// mergeEvidence is worktree.MergeEvidence 3 to 5: a merged item_merges row's
+// head branch, a merged GitHub PR's head OID, or the branch of a live sibling
+// worktree (same root and repo) contains the tree's HEAD.
 // Every failure means "no evidence".
 type mergeEvidence struct {
 	s      *Store
@@ -57,7 +58,35 @@ func (e *mergeEvidence) isDryRun() bool {
 }
 
 func (e *mergeEvidence) Merged(ctx context.Context, wt worktree.Worktree, repoPath, head string) bool {
-	return e.itemMergeContains(ctx, wt, head) || e.mergedPRContains(ctx, wt, repoPath, head)
+	return e.itemMergeContains(ctx, wt, head) || e.siblingBranchContains(ctx, wt, head) ||
+		e.mergedPRContains(ctx, wt, repoPath, head)
+}
+
+// siblingBranchContains is true when the branch of another live worktree of
+// the same root and repo contains head, e.g. the orchestrator's integration
+// tree that package branches were merged into. Safe: if that branch is never
+// merged, its tree is itself retained and keeps the commits.
+func (e *mergeEvidence) siblingBranchContains(ctx context.Context, wt worktree.Worktree, head string) bool {
+	rows, err := e.s.DB.QueryContext(ctx, `SELECT branch FROM worktrees
+		WHERE root_item_id = ? AND repo_id = ? AND id != ? AND state IN ('active', 'retained')
+		AND COALESCE(branch, '') != ''`, wt.RootItemID, wt.RepoID, wt.ID)
+	if err != nil {
+		return false
+	}
+	var branches []string
+	for rows.Next() {
+		var b string
+		if rows.Scan(&b) == nil {
+			branches = append(branches, b)
+		}
+	}
+	rows.Close()
+	for _, b := range branches {
+		if e.git(ctx, wt.Path, "merge-base", "--is-ancestor", head, "refs/heads/"+b) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *mergeEvidence) git(ctx context.Context, dir string, args ...string) error {
