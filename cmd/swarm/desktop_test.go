@@ -49,3 +49,32 @@ func TestLANWarningsNameThePlatformsFirewall(t *testing.T) {
 		}
 	}
 }
+
+// Desktop notifications run only on Linux and only with SWARM_NOTIFY=desktop,
+// which the installed unit alone sets.
+func TestNotifierRunsOnlyForTheInstalledLinuxDaemon(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(k string) string {
+			if k == "SWARM_NOTIFY" {
+				return v
+			}
+			return ""
+		}
+	}
+	linux, mac := platformFor("linux", "/home/a"), platformFor("darwin", "/Users/a")
+	for _, tc := range []struct {
+		name string
+		plat platformDeps
+		env  string
+		want bool
+	}{
+		{"linux, installed", linux, "desktop", true},
+		{"linux, dev or test daemon", linux, "", false},
+		{"linux, other value", linux, "1", false},
+		{"macOS", mac, "desktop", false},
+	} {
+		if got := notifierFor(tc.plat, env(tc.env), nil, nil, nil) != nil; got != tc.want {
+			t.Errorf("%s: notifier = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

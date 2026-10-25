@@ -158,6 +158,8 @@ type daemon struct {
 	up  *usagesvc.Poller
 	tn  *tunnel.Manager
 	lan *lan.Manager
+	// notify shows desktop notifications (Linux, installed daemon only); nil otherwise.
+	notify func(context.Context)
 }
 
 // openDaemon prepares the home folder, opens the database and wires every service.
@@ -341,7 +343,23 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	tn.Handler = api.Handler()
 	lm.Handler = tn.Handler
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
-		rt: rt, up: up, tn: tn, lan: lm}, nil
+		rt: rt, up: up, tn: tn, lan: lm, notify: notifierFor(plat, os.Getenv, ev, st, cfg.Log)}, nil
+}
+
+// notifierFor is the desktop notifier's loop, or nil. Only Linux has one (the
+// menu bar shows notifications on macOS), and only the installed daemon runs
+// it: SWARM_NOTIFY=desktop is set by the systemd unit and nowhere else, so a
+// test's, e2e's or `make dev`'s daemon never pops a banner.
+func notifierFor(plat platformDeps, getenv func(string) string, ev desktop.Feed, st *settings.Store, log func(string, ...any)) func(context.Context) {
+	if plat.launcher == nil || getenv("SWARM_NOTIFY") != "desktop" {
+		return nil
+	}
+	n := &desktop.Notifier{Events: ev, Launcher: *plat.launcher, Log: log,
+		Prefs: func(ctx context.Context) (map[string]settings.NotifyPref, error) {
+			s, err := st.Get(ctx)
+			return s.Notifications, err
+		}}
+	return n.Run
 }
 
 func serve(ctx context.Context, cfg daemonConfig) error {
@@ -393,6 +411,9 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 			func(ctx context.Context) { dm.up.Loop(ctx, nil) }, // §13 (a no-op with no sources, S-4)
 			func(ctx context.Context) { quotaResetLoop(ctx, dm.up, dm.rt, cfg.Log) },
 		)
+	}
+	if dm.notify != nil {
+		loops = append(loops, dm.notify)
 	}
 	var bg sync.WaitGroup
 	var running atomic.Int32
@@ -587,6 +608,8 @@ type platformDeps struct {
 	// the board listens on.
 	registrar func(log func(string, ...any)) lan.Registrar
 	primaryIP func(context.Context, execx.Runner) (net.IP, error)
+	// launcher reaches the desktop session (terminals, notifications); nil on macOS.
+	launcher *desktop.Launcher
 }
 
 func platformFor(goos, userHome string) platformDeps {
@@ -598,13 +621,14 @@ func platformFor(goos, userHome string) platformDeps {
 	}
 	// Linux's media folder and snap's per-app data, its counterparts of the
 	// walker's ~/Movies and ~/Library.
+	l := &desktop.Launcher{
+		Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv, Environ: os.Environ,
+		Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
+		Settle: 500 * time.Millisecond,
+	}
 	return platformDeps{baseEnv: spawn.LinuxBaseEnv, creds: creds.Files(userHome, os.Getenv),
 		scanSkips: []string{"~/Videos", "~/snap"},
 		registrar: func(log func(string, ...any)) lan.Registrar { return &lan.Avahi{Log: log} },
 		primaryIP: lan.PrimaryIPv4Linux,
-		terminal: desktop.Launcher{
-			Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv, Environ: os.Environ,
-			Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
-			Settle: 500 * time.Millisecond,
-		}.Open}
+		launcher:  l, terminal: l.Open}
 }
