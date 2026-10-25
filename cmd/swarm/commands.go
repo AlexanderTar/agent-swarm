@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,6 +26,8 @@ import (
 
 // The test seams for the P5 commands. Production values are the real functions.
 var (
+	// goos picks the service manager: launchd on macOS, systemd on Linux.
+	goos               = runtime.GOOS
 	installLaunchd     = install.Install
 	installAgents      = install.Agents
 	installUninstall   = install.Uninstall
@@ -46,22 +49,27 @@ func newConfig(home string) (install.Config, error) {
 	if err != nil {
 		return install.Config{}, err
 	}
-	return install.Config{
+	cfg := install.Config{
 		Bin: bin, Home: home, LaunchAgentsDir: filepath.Join(userHome, "Library", "LaunchAgents"),
-		Path: install.LaunchPath(os.Getenv("PATH"), userHome), UID: os.Getuid(),
+		SystemdUserDir: install.SystemdUserDir(userHome, os.Getenv("XDG_CONFIG_HOME")),
+		Path:           install.LaunchPath(os.Getenv("PATH"), userHome), UID: os.Getuid(),
 		User: os.Getenv("USER"), UserHome: userHome,
-	}, nil
+	}
+	if goos == "linux" {
+		cfg.Manager = install.Systemd
+	}
+	return cfg, nil
 }
 
 // isolate marks cfg Isolated when its home is not the default ~/.swarm, unless
-// the caller passed --live (BUG-100): the launchd labels and the agents'
+// the caller passed --live (BUG-100): the service names and the agents'
 // configuration are machine-wide, so a scratch home must not be able to stop or
 // rewrite them.
 func isolate(cfg *install.Config, live bool) {
 	cfg.Isolated = !live && filepath.Clean(cfg.Home) != filepath.Join(cfg.UserHome, ".swarm")
 }
 
-const liveUsage = "act on the live launchd job and the agents' own configuration even though --home is not ~/.swarm"
+const liveUsage = "act on the live daemon service and the agents' own configuration even though --home is not ~/.swarm"
 
 // agentsOpts builds the AgentsOpts for install and uninstall. §12.4 gives the
 // plugin commands 120 s, which execx.Run's 30 s cap would cut short.
@@ -234,7 +242,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *dry {
-		// A dry run reports the plist and stops before touching agent configuration.
+		// A dry run reports the service file and stops before touching agent configuration.
 		// An isolated install never touches either, so it doesn't claim to.
 		if !cfg.Isolated {
 			fmt.Fprintln(stdout, "Would remove the Agent Swarm 1.x integrations and write the agent configuration.")
@@ -264,7 +272,7 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	if cfg.Isolated {
 		return 0 // install.Uninstall already said it left everything alone
 	}
-	fmt.Fprintln(stdout, "Removed the launch agent and the Swarm entries in each agent's configuration. Your data in "+cfg.Home+" is untouched.")
+	fmt.Fprintln(stdout, "Removed the "+cfg.Service().Noun()+" and the Swarm entries in each agent's configuration. Your data in "+cfg.Home+" is untouched.")
 	return 0
 }
 
