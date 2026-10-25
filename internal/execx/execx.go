@@ -16,13 +16,19 @@ import (
 	"time"
 )
 
-// refuseUnderTest stops the real runners from reaching launchd inside a test
-// binary. launchd labels (dev.swarm.daemon, dev.swarm.updater) are machine-wide,
-// so a fake HOME or SWARM_HOME doesn't protect the live daemon: one unstubbed
-// `launchctl bootout` from a test stopped it (BUG-100). Tests inject a Fake.
+// serviceManagers are the commands that reach the machine-wide service
+// manager: launchd on macOS, systemd (and logind's linger) on Linux.
+var serviceManagers = map[string]bool{"launchctl": true, "systemctl": true, "loginctl": true}
+
+// refuseUnderTest stops every real runner and starter from reaching the
+// service manager inside a test binary. The service names (dev.swarm.daemon,
+// dev.swarm.updater) are machine-wide, so a fake HOME or SWARM_HOME doesn't
+// protect the live daemon: one unstubbed `launchctl bootout` from a test
+// stopped it (BUG-100), and `systemctl --user stop` would do the same on
+// Linux. Tests inject a Fake.
 func refuseUnderTest(name string) error {
-	if testing.Testing() && filepath.Base(name) == "launchctl" {
-		return fmt.Errorf("execx: refusing to run launchctl in a test; inject execx.Fake instead")
+	if base := filepath.Base(name); testing.Testing() && serviceManagers[base] {
+		return fmt.Errorf("execx: refusing to run %s in a test; inject execx.Fake instead", base)
 	}
 	return nil
 }
@@ -92,6 +98,9 @@ type Starter func(ctx context.Context, name string, args ...string) (*Proc, erro
 
 // Start is the real Starter. Kill closes stdin, kills the process and reaps it.
 func Start(ctx context.Context, name string, args ...string) (*Proc, error) {
+	if err := refuseUnderTest(name); err != nil {
+		return nil, err
+	}
 	return startCmd(exec.CommandContext(ctx, name, args...))
 }
 
@@ -105,6 +114,9 @@ type StarterEnv func(ctx context.Context, env map[string]string, name string, ar
 
 // StartEnv is the real StarterEnv.
 func StartEnv(ctx context.Context, env map[string]string, name string, args ...string) (*Proc, error) {
+	if err := refuseUnderTest(name); err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = os.Environ()
 	for k, v := range env {
