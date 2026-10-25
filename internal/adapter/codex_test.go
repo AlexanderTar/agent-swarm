@@ -129,10 +129,13 @@ func TestCodexResumeUsesTheThread(t *testing.T) {
 
 func TestCodexProcessNames(t *testing.T) {
 	a := newCodex(testDeps(t))
-	if !anyMatch(a.ProcessNames(), "codex") {
-		t.Error("codex must be accepted")
+	// node: an npm install's launcher leads the pane's process group.
+	for _, s := range []string{"codex", "node"} {
+		if !anyMatch(a.ProcessNames(), s) {
+			t.Errorf("%q must be accepted", s)
+		}
 	}
-	for _, s := range []string{"zsh", "node", "codexx"} {
+	for _, s := range []string{"zsh", "bash", "sh", "codexx", "nodejs"} {
 		if anyMatch(a.ProcessNames(), s) {
 			t.Errorf("%q should be rejected", s)
 		}
