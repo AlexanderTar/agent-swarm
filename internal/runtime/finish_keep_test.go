@@ -58,3 +58,14 @@ func TestReviewerOnInReviewRootKeepsApprovedFinish(t *testing.T) {
 		t.Fatalf("status after finishing = %s, want done", st)
 	}
 }
+
+// A root an earlier accepted checkpoint already pulled out of review is finishable again while its approval
+// still binds the newest integration and no child changed since.
+func TestInProgressRootWithCurrentApprovalIsFinishable(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	mustExec(t, s.DB, `UPDATE items SET status = 'in_progress' WHERE id = ?`, mustItemID(t, s, key))
+	finishKept(t, s, ses)
+	if st := itemStatus(t, s, key); st != items.Done {
+		t.Fatalf("status after finishing = %s, want done", st)
+	}
+}

@@ -438,6 +438,15 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 // finishStateTx checks the root is in review (or blocked from it) with an approved finish and no finishing yet,
 // and resolves its integrated repos.
 func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (items.FinishApproval, []finishRepo, error) {
+	if it.Status == items.InProgress { // BUG-116/119: reconcile puts a root with a current approval back in review
+		if err := s.Items.ReconcileTx(ctx, tx, it.Key); err != nil {
+			return items.FinishApproval{}, nil, err
+		}
+		var err error
+		if it, err = s.Items.GetTx(ctx, tx, it.Key); err != nil {
+			return items.FinishApproval{}, nil, err
+		}
+	}
 	fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID)
 	if err != nil {
 		return fa, nil, err
