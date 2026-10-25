@@ -76,6 +76,13 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 			return Item{}, err
 		}
 	}
+	// moving a root out of review by hand costs its approved finish; reconcileRoot would
+	// otherwise put it straight back (BUG-116/119)
+	if from == InReview && to == InProgress {
+		if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
+			return Item{}, err
+		}
+	}
 	// reopen: old acceptances and close approvals no longer count; cancel: nothing is left to accept
 	if (to == Ready && (from == Done || from == Cancelled)) || to == Cancelled {
 		if err := s.staleAccepts(ctx, tx, it); err != nil {
