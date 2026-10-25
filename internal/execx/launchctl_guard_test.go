@@ -43,6 +43,10 @@ func TestRealRunnersRefuseLaunchctlUnderGoTest(t *testing.T) {
 		"StartEnv": func(ctx context.Context, n string, a ...string) ([]byte, error) {
 			return start(StartEnv(ctx, nil, n, a...))
 		},
+		"StartDetached": func(_ context.Context, n string, a ...string) ([]byte, error) {
+			_, err := StartDetached(nil, n, a...)
+			return nil, err
+		},
 	} {
 		for _, name := range managers {
 			for _, argv0 := range []string{name, filepath.Join(dir, name)} {
