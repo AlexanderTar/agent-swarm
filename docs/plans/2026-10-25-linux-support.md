@@ -277,11 +277,13 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
 2. **`swarm settings`** CLI: `swarm settings` (print JSON) and `swarm
    settings set KEY VALUE` backed by a new `PATCH /api/settings` that merges
    the given top-level keys into the stored settings, validates like PUT and
-   kicks reconcile the same way. Today `settings.Store.Put` reads before its
-   transaction and rewrites every key, so PATCH gets a new store method that
-   reads, merges, validates and writes the changed keys inside one
-   transaction (a CLI edit cannot overwrite a concurrent change to another
-   key). Linux users can then change
+   kicks reconcile the same way. *As built:* `settings.Store.Patch` reads,
+   merges and validates under a write lock that `Put` shares, and both write
+   only the settings that change, so neither a concurrent PUT/PATCH nor the
+   lock-free writers (`SetInstructions`, `SetLowTokenMode`, which run inside
+   callers' transactions where the lock could deadlock against SQLite's) is
+   overwritten by a stale copy. The replaced settings are returned from under
+   the lock, so the reconcile kick compares against what the write replaced. Linux users can then change
    enabled agents, role defaults and limits without the menu bar.
 3. **`swarm notifications [--read-all]`** CLI over the existing endpoints.
 4. Out of scope (follow-ups): a web Settings page and notification list on the
@@ -359,9 +361,35 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
   board's direct address. Not taken: a status warning for a renamed service.
   The host name stays swarm.local, so the registration is fine and a log line
   is enough.
+- **Codex phase 6 review.** Taken: settings writes are limited to changed
+  keys (a concurrent `SetInstructions` survived a PATCH only after this,
+  tested), `prev` for the reconcile kick comes from under the lock, each
+  `notify-send` is waited for (failure logged, killed after 10 s or at
+  shutdown), and a body without the item key gets it appended.
 - **Codex round 3** (plan v3, "needs changes"). Taken: subscribe → `Latest`
   → drain ordering for the notifier (§6.1). Declined again, on purpose: the
   Claude-first default settings. A Codex-only Mac has the same default today,
   so it is not a Linux gap, and Phase 6's `swarm settings set` gives Linux
   users the way to change it. The plan is final at this point; each phase's
   diff gets its own Codex review.
+
+## Verification on Linux (2026-10-25, Pop!_OS 24.04, COSMIC, systemd 255)
+
+- `make test-go` (race, coverage gate) and `make lint` pass after every phase;
+  `scripts/e2e.sh` passes in full (fake adapter, real tmux 3.8).
+- systemd: `KillMode=process` probe (tmux survives SIGKILL, restart, stop);
+  unit escaping checked with a probe unit and `systemd-analyze verify`; the
+  daemon ran healthy from the unit `swarm install --dry-run` renders, and
+  restarted. Isolated `swarm install` touches no service manager; `--live`
+  with stubs runs daemon-reload/enable/restart and the linger check;
+  uninstall disables, removes and reloads; doctor shows the Linux rows.
+- Desktop: the launcher opened `x-terminal-emulator` (cosmic-term) with the
+  display variables taken from the user manager; a tmux server started
+  without a display piped a copy to `wl-copy` with the attaching client's
+  display; `notify-send` 0.8.3 accepted the notifier's argv.
+- Agents: `claude` reports `claude` as its pane command, npm-installed
+  `codex` reports `node`; the real-tty paste test passes unchanged.
+- Not verified here: a real agent session end to end (it spends tokens), a
+  real `swarm install` on this machine (it edits ~/.claude and ~/.codex), Avahi
+  publishing on the LAN, Cursor (not installed), and the GitHub Linux jobs
+  (they run on the first push).
