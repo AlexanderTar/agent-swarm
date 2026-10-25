@@ -70,7 +70,7 @@ jobs:
       - uses: ./.github/actions/setup-web
       - run: make web-build
       - name: Install tmux 3.6+ from Homebrew on Linux (apt's tmux is older)
-        # Only tmux's own bin goes on PATH, so the setup-go toolchain stays first.
+        # GITHUB_PATH prepends, so only tmux's own bin goes there: it has no go to shadow setup-go's.
         run: |
           /home/linuxbrew/.linuxbrew/bin/brew install tmux
           echo "$(/home/linuxbrew/.linuxbrew/bin/brew --prefix tmux)/bin" >> "$GITHUB_PATH"
