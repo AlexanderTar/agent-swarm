@@ -1,12 +1,14 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
 	"sync"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -25,9 +27,12 @@ func TestPatchChangesOnlyTheGivenSettings(t *testing.T) {
 	if _, err := s.Put(ctx, before); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := s.Patch(ctx, raw(map[string]string{"max_concurrent_agents": "7", "usage_poll_sec": "900"}))
+	prev, saved, err := s.Patch(ctx, raw(map[string]string{"max_concurrent_agents": "7", "usage_poll_sec": "900"}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if prev.MaxConcurrentAgents != before.MaxConcurrentAgents {
+		t.Errorf("prev = %d, want the replaced %d", prev.MaxConcurrentAgents, before.MaxConcurrentAgents)
 	}
 	again, _ := s.Get(ctx)
 	if saved.MaxConcurrentAgents != 7 || again.MaxConcurrentAgents != 7 || again.UsagePollSec != 900 {
@@ -50,7 +55,7 @@ func TestPatchRefusesUnknownMistypedAndInvalidValues(t *testing.T) {
 		{map[string]string{"max_concurrent_agents": "0"}, ""}, // Put's own validation
 	} {
 		before, _ := s.Get(ctx)
-		_, err := s.Patch(ctx, raw(tc.fields))
+		_, _, err := s.Patch(ctx, raw(tc.fields))
 		var ve *ValidationError
 		if !errors.As(err, &ve) || (tc.msg != "" && ve.Message != tc.msg) {
 			t.Errorf("%v: err = %v, want %q", tc.fields, err, tc.msg)
@@ -69,7 +74,7 @@ func TestConcurrentPatchesOfDifferentSettingsBothLand(t *testing.T) {
 		var wg sync.WaitGroup
 		for _, f := range []map[string]string{{"usage_poll_sec": "900"}, {"pause_deadline_sec": "120"}} {
 			wg.Go(func() {
-				if _, err := s.Patch(ctx, raw(f)); err != nil {
+				if _, _, err := s.Patch(ctx, raw(f)); err != nil {
 					t.Error(err)
 				}
 			})
@@ -78,5 +83,30 @@ func TestConcurrentPatchesOfDifferentSettingsBothLand(t *testing.T) {
 		if got, _ := s.Get(ctx); got.UsagePollSec != 900 || got.PauseDeadlineSec != 120 {
 			t.Fatalf("usage_poll_sec = %d, pause_deadline_sec = %d: one patch overwrote the other", got.UsagePollSec, got.PauseDeadlineSec)
 		}
+	}
+}
+
+// The other writers don't take Patch's lock. A PATCH writes only what it
+// changes, so instructions saved between its read and its write survive.
+func TestPatchKeepsInstructionsSavedWhileItRuns(t *testing.T) {
+	s := newStore(t, kinds.Claude)
+	models := s.ModelsFor
+	var once sync.Once
+	s.ModelsFor = func(c context.Context, k kinds.AgentKind) ([]catalog.CatalogModel, string, error) {
+		// validate runs after put's read and before its write: the agent's
+		// swarm_instructions call lands right then.
+		once.Do(func() {
+			if err := s.SetInstructions(c, "from the agent"); err != nil {
+				t.Error(err)
+			}
+		})
+		return models(c, k)
+	}
+	if _, _, err := s.Patch(ctx, raw(map[string]string{"usage_poll_sec": "900"})); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(ctx)
+	if got.Instructions != "from the agent" || got.UsagePollSec != 900 {
+		t.Fatalf("instructions = %q, usage_poll_sec = %d: the patch undid the concurrent change", got.Instructions, got.UsagePollSec)
 	}
 }

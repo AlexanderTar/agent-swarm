@@ -2,6 +2,7 @@
 package settings
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -121,8 +122,11 @@ type Store struct {
 	ModelsFor func(context.Context, kinds.AgentKind) ([]catalog.CatalogModel, string, error)
 	Installed func(context.Context) []kinds.AgentKind
 
-	// writeMu serializes Put and Patch: Patch's read-merge-write must not
-	// interleave with another write (the daemon is the table's only writer).
+	// writeMu serializes Put and Patch, so Patch's read-merge-write never
+	// interleaves with another of them. The other writers (SetInstructions,
+	// SetLowTokenMode, often inside a caller's transaction, where taking this
+	// lock could deadlock against SQLite's write lock) are covered instead by
+	// put writing only the settings it changes.
 	writeMu sync.Mutex
 }
 
@@ -184,6 +188,14 @@ func fillMissing(s *Settings, def Settings) {
 }
 
 func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
+	_, saved, err := s.PutChange(ctx, next)
+	return saved, err
+}
+
+// PutChange is Put that also returns the settings it replaced, read under the
+// same lock, so a caller deciding what a change sets off (a reconcile kick)
+// compares against what this write actually replaced.
+func (s *Store) PutChange(ctx context.Context, next Settings) (prev, saved Settings, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.put(ctx, next)
@@ -194,20 +206,20 @@ func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
 // merges and writes under the lock Put takes, so it never overwrites a
 // concurrent change to another setting (swarm settings set, with no menu bar
 // to edit them on Linux). low_token_mode stays with POST /api/low-token, as
-// in Put.
-func (s *Store) Patch(ctx context.Context, fields map[string]json.RawMessage) (Settings, error) {
+// in Put. Like PutChange it also returns the settings it replaced.
+func (s *Store) Patch(ctx context.Context, fields map[string]json.RawMessage) (prev, saved Settings, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	cur, err := s.Get(ctx)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, Settings{}, err
 	}
 	raw, _ := json.Marshal(cur)
 	doc := map[string]json.RawMessage{}
 	json.Unmarshal(raw, &doc)
 	for k, v := range fields {
 		if _, ok := doc[k]; !ok || k == "low_token_mode" {
-			return cur, invalid("%s isn't a setting that can be changed here.", k)
+			return cur, cur, invalid("%s isn't a setting that can be changed here.", k)
 		}
 		doc[k] = v
 	}
@@ -216,33 +228,43 @@ func (s *Store) Patch(ctx context.Context, fields map[string]json.RawMessage) (S
 	if err := json.Unmarshal(merged, &next); err != nil {
 		var te *json.UnmarshalTypeError
 		if errors.As(err, &te) {
-			return cur, invalid("%s must be a JSON %s.", te.Field, te.Type)
+			return cur, cur, invalid("%s must be a JSON %s.", te.Field, te.Type)
 		}
-		return cur, invalid("Invalid value: %v", err)
+		return cur, cur, invalid("Invalid value: %v", err)
 	}
 	return s.put(ctx, next)
 }
 
-func (s *Store) put(ctx context.Context, next Settings) (Settings, error) {
-	prev, err := s.Get(ctx)
+// put validates next and writes the settings that differ from the stored
+// ones. Writing only those means a setting this call leaves as it was is
+// never rewritten, so a concurrent SetInstructions or SetLowTokenMode is not
+// undone by a stale copy.
+func (s *Store) put(ctx context.Context, next Settings) (prev, saved Settings, err error) {
+	prev, err = s.Get(ctx)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, Settings{}, err
 	}
 	next.Roles, next.Notifications = maps.Clone(next.Roles), maps.Clone(next.Notifications)
 	next.LowTokenMode = prev.LowTokenMode
 	fillMissing(&next, Defaults(nil))
 	if err := s.switchDisabled(ctx, prev, &next); err != nil {
-		return prev, err
+		return prev, prev, err
 	}
 	if err := s.validate(ctx, prev, next); err != nil {
-		return prev, err
+		return prev, prev, err
 	}
 	raw, _ := json.Marshal(next)
 	fields := map[string]json.RawMessage{}
 	json.Unmarshal(raw, &fields)
+	raw, _ = json.Marshal(prev)
+	stored := map[string]json.RawMessage{}
+	json.Unmarshal(raw, &stored)
 	now := db.Millis(s.Now())
 	err = s.DB.Tx(ctx, func(tx *sql.Tx) error {
 		for k, v := range fields {
+			if bytes.Equal(v, stored[k]) {
+				continue
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
 				ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 				k, string(v), now); err != nil {
@@ -258,10 +280,10 @@ func (s *Store) put(ctx context.Context, next Settings) (Settings, error) {
 		return err
 	})
 	if err != nil {
-		return prev, err
+		return prev, prev, err
 	}
 	s.Events.Notify()
-	return next, nil
+	return prev, next, nil
 }
 
 // SetLowTokenMode writes only the global low-token default.

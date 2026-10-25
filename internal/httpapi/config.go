@@ -77,12 +77,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
-	prev, err := s.Settings.Get(r.Context())
-	if err != nil {
-		s.writeErr(w, err)
-		return
-	}
-	saved, err := s.Settings.Put(r.Context(), next)
+	prev, saved, err := s.Settings.PutChange(r.Context(), next)
 	if err != nil {
 		s.writeErr(w, err)
 		return
@@ -103,12 +98,7 @@ func (s *Server) patchSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Name at least one setting to change."))
 		return
 	}
-	prev, err := s.Settings.Get(r.Context())
-	if err != nil {
-		s.writeErr(w, err)
-		return
-	}
-	saved, err := s.Settings.Patch(r.Context(), fields)
+	prev, saved, err := s.Settings.Patch(r.Context(), fields)
 	if err != nil {
 		s.writeErr(w, err)
 		return
