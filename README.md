@@ -184,7 +184,7 @@ Open http://127.0.0.1:7777 (or Open board in the menu bar).
 ## CLI
 
 ```text
-swarm install [--plugins] [--yes] [--dry-run] [--live]  set up the daemon service (launchd on macOS, systemd on Linux), tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking) (--dry-run: print the service file and commands, change nothing) (--live: act on the live service and agent configuration even with a non-default --home; see docs/isolated-runs.md)
+swarm install [--plugins] [--yes] [--dry-run] [--live]  set up the daemon service (launchd on macOS, systemd on Linux), tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking) (--dry-run: print the service file and the commands it would run, and stop; --plugins ignores it) (--live: act on the live service and agent configuration even with a non-default --home; see docs/isolated-runs.md)
 swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, skills, Ollama, signing (--legacy: report Agent Swarm 1.x state still on this Mac)
 swarm status                       daemon, items, repositories, knowledge base
 swarm new --name N --intent feature|debug|chore [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
