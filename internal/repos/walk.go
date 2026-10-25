@@ -47,12 +47,16 @@ func Walk(home string, excludes []string) WalkResult {
 
 // walk is Walk that stops with ctx; a cancelled walk returns ctx's error and no repos.
 func walk(ctx context.Context, home string, excludes []string) (WalkResult, error) {
+	// macOS's media and system folders, plus Linux's counterparts (Videos,
+	// and snap's per-app data in ~/snap); each is absent on the other system.
 	skip := map[string]bool{
 		filepath.Join(home, "Library"):  true,
 		filepath.Join(home, ".Trash"):   true,
 		filepath.Join(home, "Music"):    true,
 		filepath.Join(home, "Pictures"): true,
 		filepath.Join(home, "Movies"):   true,
+		filepath.Join(home, "Videos"):   true,
+		filepath.Join(home, "snap"):     true,
 	}
 	for _, e := range excludes {
 		skip[ExpandHome(e, home)] = true
