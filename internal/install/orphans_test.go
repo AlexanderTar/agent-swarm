@@ -70,7 +70,7 @@ func TestListProcsParsesPsEnvOutput(t *testing.T) {
 		"ps -axEww -o pid=,ppid=,command=": {Out: "  42     1 /usr/bin/node vite --port 5173 PATH=/usr/bin SWARM_SESSION=ses_abc HOME=/Users/x\n" +
 			" 43   42 sleep 5 HOME=/Users/x\n"},
 	}}
-	got, err := ListProcs(context.Background(), fake.Runner())
+	got, err := ListProcs(context.Background(), fake.Runner(), Launchd)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -80,5 +80,42 @@ func TestListProcsParsesPsEnvOutput(t *testing.T) {
 	}
 	if got[1].Session != "" || got[1].Command != "sleep 5" {
 		t.Fatalf("got %+v", got[1])
+	}
+}
+
+// procps on Linux rejects -E; the same listing is `ps axeww` there.
+func TestListProcsUsesProcpsArgumentsUnderSystemd(t *testing.T) {
+	fake := &execx.Fake{Responses: map[string]execx.Result{
+		"ps axeww -o pid=,ppid=,command=": {Out: " 2293     1 /usr/lib/systemd/systemd --user LANG=C.UTF-8\n" +
+			" 77  2293 /usr/bin/node vite SWARM_SESSION=ses_abc HOME=/home/x\n"},
+	}}
+	got, err := ListProcs(context.Background(), fake.Runner(), Systemd)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if want := (Proc{PID: 77, PPID: 2293, Session: "ses_abc", Command: "/usr/bin/node vite"}); got[1] != want {
+		t.Fatalf("got %+v, want %+v", got[1], want)
+	}
+}
+
+// Under systemd an orphan's new parent is the user manager, a subreaper, not
+// pid 1. Children of anything else (the tmux server, a shell) are not orphans.
+func TestOrphanCheckCountsProcessesAdoptedByTheSystemdUserManager(t *testing.T) {
+	d := orphanDoctor([]Proc{
+		{PID: 2293, PPID: 1, Command: "/usr/lib/systemd/systemd --user"},
+		{PID: 500, PPID: 1, Command: "/usr/lib/systemd/systemd"}, // not --user: still not an adopter
+		{PID: 77, PPID: 2293, Session: "ses_done", Command: "/usr/bin/node vite"},
+		{PID: 78, PPID: 500, Session: "ses_done", Command: "/usr/bin/python3 -m http.server"},
+		{PID: 79, PPID: 2293, Session: "ses_done", Command: "/usr/bin/dockerd --group docker"},
+		{PID: 80, PPID: 2293, Session: "ses_done", Command: "/usr/bin/containerd-shim-runc-v2 -namespace moby"},
+	}, map[string]SessionRef{"ses_done": {Agent: "build-coder", State: "failed"}})
+	got := d.orphans(context.Background())
+	if len(got) != 1 || !strings.Contains(got[0].Detail, "1 from finished sessions") || !strings.Contains(got[0].Detail, "pid 77") {
+		t.Fatalf("checks = %+v", got)
+	}
+	for _, bad := range []string{"http.server", "dockerd", "containerd"} {
+		if strings.Contains(got[0].Detail, bad) {
+			t.Errorf("detail should not mention %q: %s", bad, got[0].Detail)
+		}
 	}
 }

@@ -342,3 +342,53 @@ func TestDoctorServiceRowUnderSystemd(t *testing.T) {
 		}
 	}
 }
+
+// On Linux the terminal row names what the daemon will open, and the fix
+// hints point at what Linux has (Homebrew on Linux or a source build for tmux,
+// Astral's installer for uv) instead of macOS's Homebrew casks.
+func TestDoctorLinuxRows(t *testing.T) {
+	e := newDoctorEnv(t)
+	e.d.Cfg = systemdConfig(t)
+	rows := func() map[string]Check {
+		m := map[string]Check{}
+		for _, c := range e.d.Checks(bg) {
+			m[c.Name] = c
+		}
+		return m
+	}
+	e.found["kitty"], e.found["xterm"] = true, true
+	r := rows()
+	if c := r["Terminal"]; !c.OK || c.Detail != "kitty" {
+		t.Errorf("Terminal = %+v", c)
+	}
+	if _, ok := r["Ghostty"]; ok {
+		t.Error("Linux doctor still checks for Ghostty.app")
+	}
+	delete(e.found, "kitty")
+	delete(e.found, "xterm")
+	if c := rows()["Terminal"]; c.OK || !strings.Contains(c.Detail, "No terminal emulator found. Install one of ghostty") {
+		t.Errorf("no terminal = %+v", c)
+	}
+	e.fake.Responses["tmux -V"] = execx.Result{Out: "tmux 3.4\n"}
+	if c := rows()["tmux"]; c.OK || c.Detail != "tmux 3.4 is too old. Install tmux 3.6 or later: brew install tmux (Homebrew on Linux) or build it from source; distribution packages are often older" {
+		t.Errorf("old tmux = %+v", c)
+	}
+	e.fake.Responses["tmux -V"] = execx.Result{Err: errors.New("not found")}
+	if c := rows()["tmux"]; c.OK || !strings.HasPrefix(c.Detail, "tmux isn't installed. Install tmux 3.6 or later: brew install tmux (Homebrew on Linux)") {
+		t.Errorf("no tmux = %+v", c)
+	}
+	e.fake.Responses["graphify --version"] = execx.Result{Err: errors.New("not found")}
+	if c := rows()["graphify"]; c.OK || c.Detail != "uv isn't installed. Install it: curl -LsSf https://astral.sh/uv/install.sh | sh, then run swarm install." {
+		t.Errorf("no uv = %+v", c)
+	}
+}
+
+func TestGraphifyLineNamesTheUvInstallerForThePlatform(t *testing.T) {
+	g := GraphifyResult{Action: "failed", Detail: "uv missing"}
+	if got := graphifyLine(g, testConfig(t)); !strings.Contains(got, "Install it: brew install uv, then") {
+		t.Errorf("macOS = %q", got)
+	}
+	if got := graphifyLine(g, systemdConfig(t)); !strings.Contains(got, "Install it: curl -LsSf https://astral.sh/uv/install.sh | sh, then") {
+		t.Errorf("Linux = %q", got)
+	}
+}
