@@ -83,3 +83,15 @@ func TestStartDetachedGivesTheChildOnlyItsEnv(t *testing.T) {
 		t.Fatalf("child saw %q, want only the given variable", b)
 	}
 }
+
+func TestStartDetachedKillStopsIt(t *testing.T) {
+	d, err := StartDetached(nil, "sleep", "30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Kill()
+	waitDone(t, d)
+	if d.Err() == nil {
+		t.Fatal("a killed process reported success")
+	}
+}

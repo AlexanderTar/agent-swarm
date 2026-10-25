@@ -73,6 +73,8 @@ func notification(level, title, body string) map[string]any {
 }
 
 type notifierEnv struct {
+	// proc decides how each notify-send ends; nil exits at once with status 0.
+	proc  func() *execx.Detached
 	feed  *feed
 	prefs map[string]settings.NotifyPref
 	mu    sync.Mutex
@@ -93,9 +95,12 @@ func newNotifierEnv(t *testing.T) *notifierEnv {
 		defer e.mu.Unlock()
 		e.sent = append(e.sent, append([]string{name}, args...))
 		e.envs = append(e.envs, env)
+		if e.proc != nil {
+			return e.proc(), nil
+		}
 		done := make(chan struct{})
 		close(done)
-		return &execx.Detached{Done: done, Err: func() error { return nil }}, nil
+		return &execx.Detached{Done: done, Err: func() error { return nil }, Kill: func() {}}, nil
 	}
 	e.n = &Notifier{Events: e.feed, Launcher: l,
 		Prefs: func(context.Context) (map[string]settings.NotifyPref, error) { return e.prefs, nil },
@@ -223,4 +228,81 @@ func TestNotifierShowsWhenSettingsCantBeRead(t *testing.T) {
 	if sent := waitSends(t, e, 1); slices.Contains(sent[0], "--hint=string:sound-name:message-new-instant") {
 		t.Fatalf("sent = %q", sent)
 	}
+}
+
+// A body that leaves the item out gets its key; one that has it does not get it twice.
+func TestNotifierAddsTheItemKeyWhenTheBodyLacksIt(t *testing.T) {
+	e := newNotifierEnv(t)
+	e.run(t)
+	queued := notification("info", "Agent queued", "coder starts when an agent slot becomes available.")
+	queued["item_key"] = "TASK-7"
+	failed := notification("info", "Agent failed", "coder couldn't finish TASK-2.")
+	failed["item_key"] = "TASK-2"
+	e.feed.add(events.NotificationCreated, queued, false)
+	e.feed.add(events.NotificationCreated, failed, false)
+	sent := waitSends(t, e, 2)
+	if got := sent[0][len(sent[0])-1]; got != "coder starts when an agent slot becomes available. (TASK-7)" {
+		t.Errorf("queued body = %q", got)
+	}
+	if got := sent[1][len(sent[1])-1]; got != "coder couldn't finish TASK-2." {
+		t.Errorf("failed body = %q", got)
+	}
+}
+
+// A notify-send that fails is logged with its reason; one that hangs is
+// stopped after the timeout, and so is one still running at shutdown.
+func TestNotifierWatchesEachNotifySend(t *testing.T) {
+	e := newNotifierEnv(t)
+	done := make(chan struct{})
+	close(done)
+	e.proc = func() *execx.Detached {
+		return &execx.Detached{Done: done, Kill: func() {},
+			Err: func() error { return errors.New("exit status 1: GDBus.Error: no notification daemon") }}
+	}
+	e.run(t)
+	e.feed.add(events.NotificationCreated, notification("info", "One", "x"), false)
+	waitLog(t, e, "no notification daemon")
+
+	e2 := newNotifierEnv(t)
+	e2.n.Timeout = 30 * time.Millisecond
+	var killed sync.WaitGroup
+	killed.Add(2)
+	e2.proc = func() *execx.Detached {
+		var once sync.Once
+		return &execx.Detached{Done: make(chan struct{}), Err: func() error { return nil },
+			Kill: func() { once.Do(killed.Done) }}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); e2.n.Run(ctx) }()
+	<-e2.feed.read
+	e2.feed.add(events.NotificationCreated, notification("info", "Hangs", "x"), false)
+	waitLog(t, e2, "took over 30ms; stopped it")
+	e2.n.Timeout = time.Hour
+	e2.feed.add(events.NotificationCreated, notification("info", "Hangs at shutdown", "x"), false)
+	waitSends(t, e2, 2)
+	cancel()
+	<-stopped
+	both := make(chan struct{})
+	go func() { killed.Wait(); close(both) }()
+	select {
+	case <-both: // both hung processes were killed: by the timeout, then by shutdown
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung notify-send outlived the notifier")
+	}
+}
+
+func waitLog(t *testing.T, e *notifierEnv, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		e.mu.Lock()
+		logs := strings.Join(e.logs, "\n")
+		e.mu.Unlock()
+		if strings.Contains(logs, want) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("never logged %q", want)
 }

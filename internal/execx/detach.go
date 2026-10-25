@@ -13,6 +13,7 @@ import (
 type Detached struct {
 	Done <-chan struct{} // closed when the process exits
 	Err  func() error    // after Done: its exit error with the start of its stderr, or nil
+	Kill func()          // stops it; Done closes once it is reaped
 }
 
 // Detacher starts a process detached from the daemon. env is the child's
@@ -52,7 +53,7 @@ func StartDetached(env []string, name string, args ...string) (*Detached, error)
 			return nil
 		}
 		return fmt.Errorf("%w: %s", waitErr, strings.TrimSpace(stderr.String()))
-	}}, nil
+	}, Kill: func() { _ = cmd.Process.Kill() }}, nil
 }
 
 // capped keeps the first max bytes written to it.

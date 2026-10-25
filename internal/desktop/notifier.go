@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
@@ -30,6 +32,8 @@ type Notifier struct {
 	// talks to the session's notification daemon over D-Bus.
 	Launcher Launcher
 	Log      func(string, ...any)
+	// Timeout bounds one notify-send; 0 means notifyTimeout.
+	Timeout time.Duration
 
 	mu     sync.Mutex
 	warned map[string]bool
@@ -37,6 +41,11 @@ type Notifier struct {
 
 // notifyBatch is how many events one read takes, as the SSE stream does.
 const notifyBatch = 500
+
+// notifyTimeout is how long one notify-send may take: it normally returns at
+// once, and one stuck on an unresponsive notification daemon must not hold up
+// the next notification.
+const notifyTimeout = 10 * time.Second
 
 // Run shows notifications until ctx ends. Like the SSE handler it subscribes
 // before reading the cursor and drains once before its first wait, so an
@@ -85,9 +94,10 @@ func (n *Notifier) drain(ctx context.Context, cursor int64) int64 {
 
 func (n *Notifier) show(ctx context.Context, payload json.RawMessage) {
 	var p struct {
-		Level string `json:"level"`
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Level   string `json:"level"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		ItemKey string `json:"item_key"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		n.logf("desktop notifications: %v", err)
@@ -114,9 +124,31 @@ func (n *Notifier) show(ctx context.Context, payload json.RawMessage) {
 		n.logf("desktop notifications: %v", err)
 		return
 	}
-	args := NotifyArgs(p.Level, p.Title, p.Body, pref.Sound)
-	if _, err := n.Launcher.Start(childEnv(n.Launcher.Environ(), session), "notify-send", args...); err != nil {
+	body := p.Body
+	if p.ItemKey != "" && !strings.Contains(body, p.ItemKey) {
+		body += " (" + p.ItemKey + ")" // some bodies leave the item out, e.g. agent.queued
+	}
+	proc, err := n.Launcher.Start(childEnv(n.Launcher.Environ(), session), "notify-send", NotifyArgs(p.Level, p.Title, body, pref.Sound)...)
+	if err != nil {
 		n.logf("desktop notifications: notify-send: %v", err)
+		return
+	}
+	timeout := n.Timeout
+	if timeout == 0 {
+		timeout = notifyTimeout
+	}
+	// Wait for it, so a failure (no notification daemon on the bus) is
+	// logged and no notify-send outlives the daemon's shutdown.
+	select {
+	case <-proc.Done:
+		if err := proc.Err(); err != nil {
+			n.logf("desktop notifications: notify-send: %v", err)
+		}
+	case <-time.After(timeout):
+		proc.Kill()
+		n.logf("desktop notifications: notify-send took over %s; stopped it", timeout)
+	case <-ctx.Done():
+		proc.Kill()
 	}
 }
 
