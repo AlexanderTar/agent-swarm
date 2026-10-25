@@ -1,10 +1,17 @@
-GO ?= /opt/homebrew/bin/go
+UNAME_S := $(shell uname -s)
+# Homebrew's Go on a Mac, otherwise whatever go is on PATH (Linux, CI).
+GO ?= $(or $(wildcard /opt/homebrew/bin/go),go)
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 PREFIX ?= $(HOME)/.swarm
 # Pinned: the newest staticcheck that reads Go 1.27 export data. CI runs the same version through `make lint`.
 STATICCHECK ?= honnef.co/go/tools/cmd/staticcheck@v0.8.2
+ifeq ($(UNAME_S),Darwin)
 DEFAULT_SIGN_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | grep -q '"Swarm Dev"' && echo "Swarm Dev" || echo "-")
 SWARM_SIGN_IDENTITY ?= $(DEFAULT_SIGN_IDENTITY)
+endif
+# The menu bar app is macOS-only: on Linux `test` and `install` leave it out.
+MENUBAR_TEST := $(if $(filter Darwin,$(UNAME_S)),test-menubar)
+MENUBAR_INSTALL := $(if $(filter Darwin,$(UNAME_S)),install-app)
 
 .PHONY: build web-build vet fmt staticcheck web-lint lint test test-go test-web test-menubar e2e dev dev-seed install install-daemon install-app app skills-sync
 
@@ -12,7 +19,9 @@ APP_DIR ?= /Applications
 
 build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
+ifeq ($(UNAME_S),Darwin)
 	codesign --force --sign "$(SWARM_SIGN_IDENTITY)" --identifier dev.swarm.daemon bin/swarm
+endif
 
 web-build:
 	cd web && pnpm install --frozen-lockfile && pnpm build
@@ -33,7 +42,7 @@ web-lint:
 lint: fmt vet staticcheck web-lint
 
 # §23.1's order, minus `swarm doctor`, which only runs on a real machine (Task 23).
-test: test-go test-web test-menubar
+test: test-go test-web $(MENUBAR_TEST)
 
 # -race is several times slower; Go's 10m default timeout is too tight for internal/runtime.
 test-go: vet fmt web-build
@@ -65,9 +74,9 @@ e2e:
 
 # §19: builds and installs both. Kept as two independent targets below so
 # reinstalling one never rebuilds or touches the other.
-install: install-daemon install-app
+install: install-daemon $(MENUBAR_INSTALL)
 
-# Builds swarm into ~/.swarm/bin. `build` already signed bin/swarm; the signed bytes are copied to a
+# Builds swarm into ~/.swarm/bin. On a Mac `build` already signed bin/swarm; the signed bytes are copied to a
 # temp file and renamed over the target, so the installed inode is never rewritten or re-signed in
 # place (that left launchd's respawn failing with OS_REASON_CODESIGNING, BUG-74/76).
 install-daemon: build
