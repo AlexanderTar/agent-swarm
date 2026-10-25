@@ -92,9 +92,11 @@ func TestTerminalReportsWhyNoWindowOpened(t *testing.T) {
 	}
 }
 
-// swarm attach attaches in its own terminal: no window is opened for it, on
-// either flow.
-func TestTerminalInPlaceOpensNoWindow(t *testing.T) {
+// swarm attach attaches in its own terminal: the daemon opens no window for
+// it, neither the Linux launcher nor the macOS Ghostty fallback. (The
+// terminal.open event is still published, so a macOS menu bar still reacts
+// to it as before; that is outside the daemon.)
+func TestTerminalInPlaceMakesTheDaemonOpenNoWindow(t *testing.T) {
 	for _, wired := range []bool{true, false} {
 		sp := &terminalSpy{}
 		s, _ := newRuntimeServerWith(t, func(d *Deps) {

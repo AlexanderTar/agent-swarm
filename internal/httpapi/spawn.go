@@ -321,8 +321,9 @@ func (s *Server) ghosttyFallback(ctx context.Context, tmuxName string) error {
 
 func (s *Server) terminal(w http.ResponseWriter, r *http.Request) {
 	ctx, name := r.Context(), r.PathValue("name")
-	// in_place: the caller (swarm attach) attaches in its own terminal, so no
-	// window is opened for it.
+	// in_place: the caller (swarm attach) attaches in its own terminal, so the
+	// daemon opens no window for it. The terminal.open event still goes out,
+	// so on macOS the menu bar reacts to it as it always has.
 	var req struct {
 		InPlace bool `json:"in_place"`
 	}

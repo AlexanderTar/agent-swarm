@@ -183,11 +183,13 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
    window 1.5 s later when no menu bar answers; on Linux that would be every
    time). The `terminal.open` event is unchanged, so the menu bar behaves as
    before.
-3. **tmux.conf copy-command.** darwin: `pbcopy` (unchanged); linux: none.
-   *Changed while implementing:* a clipboard tool would run in the tmux
-   server's environment, which under systemd has no display or a stale one,
-   while tmux's default `set-clipboard external` already sends the selection
-   to the attached terminal over OSC 52.
+3. **tmux.conf clipboard.** darwin: `copy-command pbcopy` (unchanged);
+   linux: a `copy-command` that runs `wl-copy` under Wayland, else `xclip` or
+   `xsel` under X11, else drains, plus `update-environment` gains
+   `WAYLAND_DISPLAY`: tmux runs the copy job with the session environment,
+   which an attaching client refreshes, so the tool sees the live display, not
+   the daemon's (absent or stale under systemd). OSC 52 still goes to the
+   terminal too (tmux's default). Settled after the phase 3 review.
 4. **Agent pane env (`spawn.BaseEnv`).** `TMPDIR` only when set (Linux usually
    leaves it unset; an explicit empty `TMPDIR=` makes Rust's `temp_dir()`
    return `""`). `LANG`: darwin keeps `en_US.UTF-8`; linux uses the daemon's
@@ -203,12 +205,11 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
    (procps rejects `-E`), and an orphan is a process whose parent is pid 1
    *or* the user's `systemd --user` (a subreaper); add `dockerd`,
    `containerd`, `containerd-shim` to the shared-daemon list.
-6. **Linux defaults and hints.** The walker's fixed skips gain the Linux
-   counterparts (`~/snap`, `~/Videos`; `~/.local/share/Trash` is already a
-   dot-dir). *Changed while implementing:* only the fixed skips, not the
-   `scan_excludes` setting default, so macOS's Settings list is unchanged
-   (both folders are absent there). The missing-`uv` hint in
-   `install/agents.go` and doctor is OS-aware.
+6. **Linux defaults and hints.** On Linux the daemon also skips `~/Videos`
+   and `~/snap` when scanning (`platformDeps.scanSkips`, added to the user's
+   `scan_excludes` without appearing in that setting, so macOS's Settings and
+   scan are unchanged; `~/.local/share/Trash` is already a dot-dir). The
+   missing-`uv` hint in `install/agents.go` and doctor is OS-aware.
 
 ## Phase 4 — Usage tokens and agent processes on Linux
 
@@ -338,6 +339,17 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
   `Render`, `Commands`, `Start`, `Stop`, `Removed` instead of §2.1's sketch,
   and doctor's launchd row keeps its own plist check (unchanged macOS code);
   the systemd row goes through `systemdCheck(Config)`.
+- **Codex phase 3 review.** Taken: the terminal's environment is now built
+  whole (`StartDetached` takes the full environment; graphical keys the live
+  session lacks are removed, not inherited); Linux gets a clipboard tool after
+  all (`wl-copy`/`xclip`/`xsel` by display, with `WAYLAND_DISPLAY` added to
+  `update-environment` so tmux's copy job sees the attaching client's live
+  display; checked on a real tmux server started without a display), since
+  VTE terminals ignore OSC 52; the `~/Videos`/`~/snap` skips are Linux-only
+  (`platformDeps.scanSkips`); the in-place test no longer claims more than
+  the daemon does. Not taken: re-sourcing tmux.conf into a running server on
+  upgrade. No Linux install predates this branch, and on macOS that behaviour
+  is unchanged and outside the port.
 - **Codex round 3** (plan v3, "needs changes"). Taken: subscribe → `Latest`
   → drain ordering for the notifier (§6.1). Declined again, on purpose: the
   Claude-first default settings. A Codex-only Mac has the same default today,
