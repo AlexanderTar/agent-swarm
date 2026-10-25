@@ -51,8 +51,6 @@ func fixtureHome(t *testing.T) string {
 	repo("Music/album/repo")
 	repo("Pictures/photo/repo")
 	repo("Movies/film/repo")
-	repo("Videos/clip/repo")    // Linux's Movies
-	repo("snap/firefox/common") // snap's per-app data on Linux
 	repo("locked/repo")
 	dir("loop")
 	link(filepath.Join(home, "loop"), "loop/self") // symlink loop

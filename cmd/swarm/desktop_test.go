@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // macOS leaves windows to the menu bar, keeps BaseEnv and reads sign-ins from
 // the keychain; Linux opens windows from the daemon, uses LinuxBaseEnv and
@@ -15,5 +18,9 @@ func TestPlatformForPicksThePlatformPieces(t *testing.T) {
 	linux := platformFor("linux", "/home/a")
 	if linux.terminal == nil || linux.baseEnv(none)["LANG"] != "C.UTF-8" || linux.creds.Where != "/home/a/.claude/.credentials.json" {
 		t.Errorf("linux: terminal set = %v, LANG = %q, creds = %q", linux.terminal != nil, linux.baseEnv(none)["LANG"], linux.creds.Where)
+	}
+	// Linux's media and snap folders are skipped there only: a Mac may keep repositories in ~/Videos.
+	if len(mac.scanSkips) != 0 || !slices.Equal(linux.scanSkips, []string{"~/Videos", "~/snap"}) {
+		t.Errorf("scan skips: darwin %q, linux %q", mac.scanSkips, linux.scanSkips)
 	}
 }

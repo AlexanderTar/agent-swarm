@@ -210,9 +210,9 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 			s, err := st.Get(ctx)
 			if err != nil {
 				cfg.Log("scan excludes: %v", err)
-				return nil
+				return plat.scanSkips
 			}
-			return s.ScanExcludes
+			return append(append([]string{}, plat.scanSkips...), s.ScanExcludes...)
 		}}
 	idx := &kb.Index{DB: d, Dir: filepath.Join(cfg.Home, "kb"), Emb: cfg.Embedder, Now: now}
 	if err := idx.Load(ctx); err != nil {
@@ -223,7 +223,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// tmux.conf is (re)written whenever it is missing or stale, so an upgrade
 	// that changes TmuxConf reaches an existing ~/.swarm without a reinstall.
 	confPath := filepath.Join(cfg.Home, "tmux.conf")
-	want := spawn.TmuxConf(spawn.CopyCommand(goos))
+	want := spawn.TmuxConf(spawn.ClipboardConf(goos))
 	if got, err := os.ReadFile(confPath); err != nil || string(got) != string(want) {
 		if err := os.WriteFile(confPath, want, 0o644); err != nil {
 			d.Close()
@@ -578,6 +578,10 @@ type platformDeps struct {
 	baseEnv  func(func(string) string) map[string]string
 	terminal func(context.Context, []string) error // nil: the menu bar opens it (macOS)
 	creds    creds.Sources
+	// scanSkips are skipped by the repository scan on top of the walker's
+	// fixed macOS folders and the user's scan_excludes, without showing up in
+	// that setting.
+	scanSkips []string
 }
 
 func platformFor(goos, userHome string) platformDeps {
@@ -585,9 +589,12 @@ func platformFor(goos, userHome string) platformDeps {
 		// USER is the account of Claude's keychain item.
 		return platformDeps{baseEnv: spawn.BaseEnv, creds: creds.Keychain(execx.Run, os.Getenv("USER"))}
 	}
-	return platformDeps{baseEnv: spawn.LinuxBaseEnv, creds: creds.Files(userHome, os.Getenv), terminal: desktop.Launcher{
-		Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv,
-		Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
-		Settle: 500 * time.Millisecond,
-	}.Open}
+	// Linux's media folder and snap's per-app data, its counterparts of the
+	// walker's ~/Movies and ~/Library.
+	return platformDeps{baseEnv: spawn.LinuxBaseEnv, creds: creds.Files(userHome, os.Getenv),
+		scanSkips: []string{"~/Videos", "~/snap"}, terminal: desktop.Launcher{
+			Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv, Environ: os.Environ,
+			Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
+			Settle: 500 * time.Millisecond,
+		}.Open}
 }
