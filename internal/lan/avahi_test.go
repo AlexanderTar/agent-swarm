@@ -4,6 +4,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -114,7 +115,9 @@ func TestAvahiReportsAMissingAvahiPublish(t *testing.T) {
 	r := &Avahi{StartProc: f.start, After: f.after}
 	r.Start(avahiIP, 7777)
 	t.Cleanup(func() { r.Stop() })
-	eventually(t, "the install hint", func() bool { return strings.Contains(r.Status().Err, "install avahi-utils") })
+	eventually(t, "the install hint", func() bool {
+		return strings.Contains(r.Status().Err, "install avahi-utils") && strings.Contains(r.Status().Err, "the board is still at http://192.168.1.42:7777")
+	})
 	if f.starts() != 1 {
 		t.Errorf("starts = %d: the service publisher must not start without the address one", f.starts())
 	}
@@ -136,5 +139,51 @@ func TestAvahiRestartsBothWithBackoff(t *testing.T) {
 	eventually(t, "a second restart", func() bool { return f.starts() >= 6 })
 	if b := f.backoffs(); len(b) < 2 || !slices.Equal(b[:2], []time.Duration{time.Second, 2 * time.Second}) {
 		t.Errorf("backoffs = %v", b)
+	}
+}
+
+// With avahi-daemon down both publishers fail and exit. Whichever exits
+// first, the other's reason is what Status reports, not a bare "stopped".
+func TestAvahiKeepsTheOtherPublishersReasonWhenOneExitsFirst(t *testing.T) {
+	f := &fakeDNSSD{hold: true}
+	r := startAvahi(t, f)
+	f.proc(0).out.Close() // the address publisher exits without a word
+	f.line(1, "Failed to create client object: Daemon not running")
+	f.proc(1).out.Close()
+	want := "Avahi refused swarm.local: Daemon not running"
+	eventually(t, want, func() bool { return r.Status().Err == want })
+	time.Sleep(exitGrace + 50*time.Millisecond)
+	if st := r.Status(); st.Err != want {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
+// If one publisher exits and the other stays up, the survivor is stopped
+// after the grace period so both restart together.
+func TestAvahiStopsTheSurvivorAfterTheGrace(t *testing.T) {
+	f := &fakeDNSSD{hold: true}
+	startAvahi(t, f)
+	f.proc(0).out.Close()
+	eventually(t, "the service publisher stopped", func() bool { return f.proc(1).killed() })
+}
+
+// Concurrent Starts never leave a pair running that Stop can't reach.
+func TestAvahiConcurrentStartsLeaveNothingBehind(t *testing.T) {
+	f := &fakeDNSSD{hold: true}
+	r := &Avahi{StartProc: f.start, After: f.after}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() { r.Start(avahiIP, 7777) })
+	}
+	wg.Wait()
+	eventually(t, "a pair running", func() bool { return f.starts() >= 2 })
+	r.Stop()
+	f.mu.Lock()
+	procs := append([]*fakeProc(nil), f.procs...)
+	f.mu.Unlock()
+	for i, p := range procs {
+		if !p.killed() {
+			t.Errorf("publisher %d of %d was left running", i, len(procs))
+		}
 	}
 }

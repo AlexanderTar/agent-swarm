@@ -247,7 +247,8 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
    here merges stderr into the stream the registrar reads (new `execx`
    option; the fake gets the same). Status: registered only once both print
    "Established under name"; an address collision is an error status (not a
-   silently renamed host); a renamed service is a warning. Both processes are
+   silently renamed host); a renamed service is logged and still counts as
+   registered, since the board's host name, swarm.local, is unaffected. Both processes are
    killed on Stop and restarted together with the existing backoff. Missing
    `avahi-publish` → status error "Install avahi-utils to publish
    swarm.local; the board is still at http://<ip>:<port>".
@@ -352,6 +353,12 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
   the daemon does. Not taken: re-sourcing tmux.conf into a running server on
   upgrade. No Linux install predates this branch, and on macOS that behaviour
   is unchanged and outside the port.
+- **Codex phase 5 review.** Taken: after one publisher exits the other's last
+  lines are read for 200 ms, so "Daemon not running" is reported rather than
+  "stopped"; Start and Stop are serialized; the missing-avahi error names the
+  board's direct address. Not taken: a status warning for a renamed service.
+  The host name stays swarm.local, so the registration is fine and a log line
+  is enough.
 - **Codex round 3** (plan v3, "needs changes"). Taken: subscribe → `Latest`
   → drain ordering for the notifier (§6.1). Declined again, on purpose: the
   Claude-first default settings. A Codex-only Mac has the same default today,

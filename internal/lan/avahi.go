@@ -26,6 +26,7 @@ type Avahi struct {
 	After     func(time.Duration) <-chan time.Time // nil means time.After
 	Log       func(string, ...any)
 
+	life   sync.Mutex // serializes Start and Stop, so no run is ever orphaned
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -36,7 +37,9 @@ type Avahi struct {
 // Start (re)starts the advertisement for ip:port and returns at once; whether
 // Avahi accepted it shows up in Status.
 func (r *Avahi) Start(ip net.IP, port int) error {
-	r.Stop()
+	r.life.Lock()
+	defer r.life.Unlock()
+	r.stop()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	r.mu.Lock()
@@ -48,6 +51,12 @@ func (r *Avahi) Start(ip net.IP, port int) error {
 
 // Stop ends the advertisement and waits for both processes to be gone.
 func (r *Avahi) Stop() error {
+	r.life.Lock()
+	defer r.life.Unlock()
+	return r.stop()
+}
+
+func (r *Avahi) stop() error {
 	r.mu.Lock()
 	cancel, done, procs := r.cancel, r.done, r.procs
 	r.cancel, r.done, r.st = nil, nil, RegStatus{}
@@ -90,9 +99,10 @@ func (r *Avahi) run(ctx context.Context, ip net.IP, port int) {
 	}
 	addr := []string{"-a", "-R", hostname, ip.String()}
 	svc := []string{"-s", "-H", hostname, "Swarm", "_http._tcp", strconv.Itoa(port)}
+	board := "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(port))
 	delay := minBackoff
 	for ctx.Err() == nil {
-		if r.once(ctx, start, addr, svc) {
+		if r.once(ctx, start, addr, svc, board) {
 			delay = minBackoff
 		}
 		select {
@@ -113,9 +123,14 @@ type avahiLine struct {
 	ok      bool
 }
 
+// exitGrace is how long, after one publisher exits, the other's last lines
+// are still read: when avahi-daemon is down both exit, and the second one's
+// "Failed …" says why.
+const exitGrace = 200 * time.Millisecond
+
 // once runs one pair of publishers until either exits or the address is
 // taken, and reports whether both got established.
-func (r *Avahi) once(ctx context.Context, start execx.Starter, addr, svc []string) (registered bool) {
+func (r *Avahi) once(ctx context.Context, start execx.Starter, addr, svc []string, board string) (registered bool) {
 	var procs []*execx.Proc
 	for _, args := range [][]string{addr, svc} {
 		p, err := start(ctx, "avahi-publish", args...)
@@ -123,7 +138,8 @@ func (r *Avahi) once(ctx context.Context, start execx.Starter, addr, svc []strin
 			for _, p := range procs {
 				p.Kill()
 			}
-			r.set(ctx, RegStatus{Err: "Can't run avahi-publish (install avahi-utils to publish " + hostname + "): " + err.Error()})
+			r.set(ctx, RegStatus{Err: "Can't run avahi-publish (install avahi-utils to publish " + hostname +
+				"; the board is still at " + board + "): " + err.Error()})
 			return false
 		}
 		procs = append(procs, p)
@@ -173,15 +189,25 @@ func (r *Avahi) once(ctx context.Context, start execx.Starter, addr, svc []strin
 		}(i == 1, p)
 	}
 	var addrUp, svcUp bool
+	var exited int
+	var grace <-chan time.Time // nil until the first publisher exits
 	for {
 		var l avahiLine
 		select {
 		case <-ctx.Done():
 			return registered
+		case <-grace:
+			return registered
 		case l = <-lines:
 		}
 		if !l.ok {
-			return registered
+			if exited++; exited == len(procs) {
+				return registered
+			}
+			if grace == nil {
+				grace = time.After(exitGrace)
+			}
+			continue
 		}
 		switch {
 		case strings.HasPrefix(l.text, "Established under name "):
