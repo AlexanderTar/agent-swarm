@@ -74,3 +74,23 @@ func TestDueResetsIgnoresASlidingResetOnAnUnusedWindow(t *testing.T) {
 		}
 	}
 }
+
+// A kind marked exhausted from its pane alone (Store.noteUsageLimit, which the
+// usage poller may never see) holds relays until WakeOnQuotaReset runs, so its
+// reset must reach the same reset loop: due a minute after the reset, for an hour.
+func TestPaneUsageLimitResetFiresTheQuotaResetWake(t *testing.T) {
+	seen := map[string]map[int64]bool{}
+	reset := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	notePaneResets(seen, []runtime.UsageLimitReset{{Kind: runtime.Muse, ResetsAt: reset}})
+
+	if fires := dueResets(seen, nil, reset.Add(30*time.Second)); len(fires) != 0 {
+		t.Fatalf("fires inside the 1-minute grace = %v, want none", fires)
+	}
+	fires := dueResets(seen, nil, reset.Add(2*time.Minute))
+	if len(fires) != 1 || fires[0].Kind != runtime.Muse || !fires[0].Cutoff.Equal(reset) {
+		t.Fatalf("fires = %+v, want one fire for %s at %s", fires, runtime.Muse, reset)
+	}
+	if fires := dueResets(seen, nil, reset.Add(2*time.Hour)); len(fires) != 0 {
+		t.Fatalf("fires past the 1-hour window = %v, want none", fires)
+	}
+}

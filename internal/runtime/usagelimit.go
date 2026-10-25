@@ -40,6 +40,26 @@ func (s *Store) noteUsageLimit(kind AgentKind, resetsAt time.Time) {
 	s.usageLimits[kind] = resetsAt
 }
 
+// UsageLimitReset is one kind's pane-noted usage limit and when it lifts.
+type UsageLimitReset struct {
+	Kind     AgentKind
+	ResetsAt time.Time
+}
+
+// UsageLimitResets lists every pane-noted limit so the daemon's quota-reset loop
+// can call WakeOnQuotaReset for it: relays held while the kind read exhausted
+// (holdIfExhausted) are flushed only there, and the usage poller never saw a
+// pane-only limit's reset.
+func (s *Store) UsageLimitResets() []UsageLimitReset {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	out := make([]UsageLimitReset, 0, len(s.usageLimits))
+	for kind, at := range s.usageLimits {
+		out = append(out, UsageLimitReset{Kind: kind, ResetsAt: at})
+	}
+	return out
+}
+
 // endIfUsageLimited ends a session whose pane shows its kind's usage-limit line
 // (adapter.UsageLimiter): the kind is marked exhausted until the line's reset,
 // and the session fails with a reason naming the limit and what happens next.

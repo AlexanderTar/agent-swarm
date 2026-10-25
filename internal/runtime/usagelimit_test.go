@@ -283,3 +283,18 @@ func TestWorkflowStepRespawnsOnTheFallbackAfterAUsageLimit(t *testing.T) {
 		t.Fatalf("latest session = %+v, want a new live one", ses)
 	}
 }
+
+// UsageLimitResets hands the daemon's quota-reset loop every pane-noted reset,
+// so the relays held for that kind are flushed once it passes.
+func TestUsageLimitResetsListsNotedLimits(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	if got := s.UsageLimitResets(); len(got) != 0 {
+		t.Fatalf("resets = %v, want none before any limit is noted", got)
+	}
+	reset := s.Now().Add(time.Hour)
+	s.noteUsageLimit(Claude, reset)
+	got := s.UsageLimitResets()
+	if len(got) != 1 || got[0].Kind != Claude || !got[0].ResetsAt.Equal(reset) {
+		t.Fatalf("resets = %+v, want claude at %s", got, reset)
+	}
+}

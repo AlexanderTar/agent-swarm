@@ -509,6 +509,19 @@ type quotaResetFire struct {
 	Cutoff time.Time
 }
 
+// notePaneResets records each pane-noted usage limit's reset into seen (key
+// "kind|pane") for dueResets, so held relays are flushed for a kind the usage
+// poller never saw exhausted.
+func notePaneResets(seen map[string]map[int64]bool, limits []runtime.UsageLimitReset) {
+	for _, l := range limits {
+		key := string(l.Kind) + "|pane"
+		if seen[key] == nil {
+			seen[key] = map[int64]bool{}
+		}
+		seen[key][l.ResetsAt.UnixMilli()] = true
+	}
+}
+
 // dueResets records every used meter's ResetsAt into seen (keyed by "kind|meter
 // id"), then returns every remembered cutoff currently inside the
 // (now-1h, now-1m] detection window, pruning anything older than that.
@@ -555,9 +568,10 @@ func dueResets(seen map[string]map[int64]bool, snaps []usagesvc.Snapshot, now ti
 }
 
 func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Store, seen map[string]map[int64]bool, now time.Time, log logf) {
+	notePaneResets(seen, rt.UsageLimitResets())
 	snaps, err := up.Snapshots(ctx)
 	if err != nil {
-		return
+		snaps = nil // pane-noted resets still come due
 	}
 	for _, fire := range dueResets(seen, snaps, now) {
 		if n, err := rt.WakeOnQuotaReset(ctx, fire.Kind, fire.Cutoff); err != nil {
