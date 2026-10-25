@@ -1641,3 +1641,36 @@ func TestResolvedByAbandonUnmerged(t *testing.T) {
 	}
 	t.Fatal("no item.resolved event")
 }
+
+// Only moving a root out of review by hand costs its approved finish; the
+// daemon's own InReview -> InProgress (workflow tryTransition) must keep it.
+func TestMoveOutOfReviewStalesApprovedFinishOnlyForAnExplicitActor(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		by        func(items.Item) items.Actor
+		wantStale int
+	}{
+		{"daemon", func(items.Item) items.Actor { return items.Daemon() }, 0},
+		{"orchestrator", func(b items.Item) items.Actor { return items.Orchestrator("agt_o", b.ID) }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			b := mk(t, s, items.Bug, "", "Crash")
+			task := mk(t, s, items.Task, b.Key, "Fix")
+			setStatus(t, s, b, items.InProgress)
+			setStatus(t, s, task, items.Done)
+			seedCheckpoint(t, s.DB, b, "integrated", 1, later(s), gitJSON)
+			s.Reconcile(ctx, b.Key)
+			wantStatus(t, s, b.Key, items.InReview)
+			exec(t, s.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ? AND state = 'open'`, b.ID)
+
+			if err := move(t, s, b.Key, items.InProgress, tc.by(b)); err != nil {
+				t.Fatal(err)
+			}
+			states, _ := acceptRequests(t, s, b)
+			if got := count(states, "accept_fix:stale"); got != tc.wantStale {
+				t.Fatalf("stale approvals = %d (%v), want %d", got, states, tc.wantStale)
+			}
+		})
+	}
+}

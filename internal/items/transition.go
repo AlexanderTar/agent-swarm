@@ -77,8 +77,9 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 		}
 	}
 	// moving a root out of review by hand costs its approved finish; reconcileRoot would
-	// otherwise put it straight back (BUG-116/119)
-	if from == InReview && to == InProgress {
+	// otherwise put it straight back (BUG-116/119). The daemon's own move (workflow
+	// tryTransition) is not by hand and keeps the approval.
+	if from == InReview && to == InProgress && by.Kind != ActorDaemon {
 		if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
 			return Item{}, err
 		}
