@@ -361,6 +361,10 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
   board's direct address. Not taken: a status warning for a renamed service.
   The host name stays swarm.local, so the registration is fine and a log line
   is enough.
+- **Codex phase 7 review.** Taken: PUT/PATCH return and publish the
+  settings as stored after the write (read in the same transaction), so a
+  concurrent instructions change is not reported back stale; README CLI and
+  LAN corrections; the notification check recorded as what was observed.
 - **Codex phase 6 review.** Taken: settings writes are limited to changed
   keys (a concurrent `SetInstructions` survived a PATCH only after this,
   tested), `prev` for the reconcile kick comes from under the lock, each
@@ -386,7 +390,10 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
 - Desktop: the launcher opened `x-terminal-emulator` (cosmic-term) with the
   display variables taken from the user manager; a tmux server started
   without a display piped a copy to `wl-copy` with the attaching client's
-  display; `notify-send` 0.8.3 accepted the notifier's argv.
+  display; `notify-send` 0.8.3 with the notifier's argv reached the
+  desktop's notification server (`cosmic-notifications`), which answered the
+  `Notify` call with a notification id (watched with `dbus-monitor`; the
+  banner itself was not looked at).
 - Agents: `claude` reports `claude` as its pane command, npm-installed
   `codex` reports `node`; the real-tty paste test passes unchanged.
 - Not verified here: a real agent session end to end (it spends tokens), a

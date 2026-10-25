@@ -43,7 +43,7 @@ Open an issue with the **Bug report** template. Include the Swarm version (`git 
 
 ### Let your agents report Swarm bugs upstream
 
-When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_report_bug`. That report stays on your Mac (`swarm bugs` lists them). To send one to this repository, run:
+When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_report_bug`. That report stays on your computer (`swarm bugs` lists them). To send one to this repository, run:
 
 ```bash
 swarm bugs --issue <id>              # the id is in swarm_report_bug's result and in `swarm bugs`

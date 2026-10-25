@@ -150,7 +150,7 @@ What differs from macOS:
 - **Notifications** show as desktop notifications (`notify-send`), following the same per-level center and sound settings. Only the installed daemon shows them.
 - **Terminal button** on the board opens the agent's tmux session in your terminal emulator on the current desktop session. Over SSH or with no desktop, use `swarm attach NAME`.
 - **Usage numbers**: Claude's come from `~/.claude/.credentials.json` instead of the keychain. Cursor's are not available yet on Linux.
-- **LAN access** publishes swarm.local through Avahi. If a firewall such as ufw is on, allow the port.
+- **LAN access** (`swarm auth set`, then `swarm lan enable`) publishes swarm.local through Avahi, which needs `avahi-daemon` running and `avahi-utils` installed; without them the board is still at the address `swarm lan status` prints. If a firewall such as ufw is on, allow the port.
 - `swarm migrate` is for Agent Swarm 1.x, which only ran on macOS; on Linux it has nothing to do.
 
 ### Upgrading from Agent Swarm 1.x
@@ -184,9 +184,9 @@ Open http://127.0.0.1:7777 (or Open board in the menu bar).
 ## CLI
 
 ```text
-swarm install [--plugins] [--yes]  set up the daemon service (launchd on macOS, systemd on Linux), tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking)
+swarm install [--plugins] [--yes] [--dry-run] [--live]  set up the daemon service (launchd on macOS, systemd on Linux), tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking) (--dry-run: print the service file and commands, change nothing) (--live: act on the live service and agent configuration even with a non-default --home; see docs/isolated-runs.md)
 swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, skills, Ollama, signing (--legacy: report Agent Swarm 1.x state still on this Mac)
-swarm status                       daemon, active agents, open requests
+swarm status                       daemon, items, repositories, knowledge base
 swarm new --name N --intent feature|debug|chore [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
 swarm start KEY [--agent A --model M --effort E] [--repo PATH...]
 swarm agents [--all]               list agents as a tree
