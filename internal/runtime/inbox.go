@@ -103,11 +103,14 @@ func (s *Store) enqueueRaw(ctx context.Context, tx *sql.Tx, m Message) (Message,
 }
 
 // holdIfExhausted reports whether a daemon relay/digest/advice to toAgentID must
-// be held instead of enqueued: the target's kind is confirmed exhausted via
-// Store.Usage (2026-09-23: queueing hundreds of relays to a quota-dead parent
-// burns its whole reset window on wakeup). When holding, it upserts one
-// suppressed_relays row per (agent, event) and returns true; the caller skips
-// its enqueue. Nil Usage never holds (fail open: tests, SWARM_USAGE unset).
+// be held instead of enqueued: the target's kind reads exhausted (kindExhausted:
+// the usage poller via Store.Usage, or a usage-limit line a pane showed) --
+// 2026-09-23: queueing hundreds of relays to a quota-dead parent burns its whole
+// reset window on wakeup. When holding, it upserts one suppressed_relays row per
+// (agent, event) and returns true; the caller skips its enqueue. With nil Usage
+// (tests, SWARM_USAGE unset) only a pane-noted limit holds. Held rows are
+// flushed by WakeOnQuotaReset, which the daemon's quota-reset loop calls for
+// poller cutoffs and pane-noted resets alike.
 // sample is stored (truncated) on first hold so the quota-reset digest can name it.
 func (s *Store) holdIfExhausted(ctx context.Context, tx *sql.Tx, toAgentID, event string, sample json.RawMessage) (bool, error) {
 	a, err := s.agentByIDTx(ctx, tx, toAgentID)
