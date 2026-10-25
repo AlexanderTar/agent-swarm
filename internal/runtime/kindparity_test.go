@@ -62,6 +62,17 @@ var advisorDisabled = map[kinds.AgentKind]string{
 // usageNone lists kinds with no usage source. Every kind has one today.
 var usageNone = map[kinds.AgentKind]string{}
 
+// usageLimitNone lists kinds whose adapter has no adapter.UsageLimiter, with why:
+// a kind with a known hard-stop line in its pane implements the method, so a
+// session showing it is ended and re-admitted on the usage fallback (BUG-110).
+var usageLimitNone = map[kinds.AgentKind]string{
+	kinds.Claude: "no hard-stop pane line captured yet; the poller's 100% headline gates it",
+	kinds.Codex:  "its rate-limit picker offers a model switch, not a stop",
+	kinds.Agy:    "no hard-stop pane line captured yet",
+	kinds.Cursor: "no hard-stop pane line captured yet",
+	kinds.Grok:   "its usage-limit card is a Needs-you row that marks grok exhausted (Grok.ObserveCapture)",
+}
+
 // superpowersFixture is a path (under the user home, or the Swarm home for
 // grok) whose presence makes each kind's superpowers check pass.
 var superpowersFixture = map[kinds.AgentKind]struct {
@@ -97,6 +108,13 @@ func TestKindParity(t *testing.T) {
 			a, err := adapter.New(k, adapter.Deps{})
 			if err != nil || a.Kind() != k {
 				t.Errorf("no registered adapter for %s: %v", k, err)
+			}
+			// usage-limit pane line
+			_, hasLimit := a.(adapter.UsageLimiter)
+			if why, none := usageLimitNone[k]; !hasLimit && !none {
+				t.Error("adapter has no UsageLimit and usageLimitNone has no entry")
+			} else if hasLimit && none {
+				t.Errorf("usageLimitNone says %q but the adapter implements UsageLimit", why)
 			}
 			// catalog fetcher
 			if !fetchers[k] {

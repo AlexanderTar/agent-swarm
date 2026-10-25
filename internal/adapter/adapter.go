@@ -184,6 +184,18 @@ type SessionRenamer interface {
 	RenameCommand(name string) (line string, ok bool)
 }
 
+// UsageLimiter is an optional Adapter capability: a kind whose pane shows a
+// hard "usage limit reached" line says so here. line is that line; resetsAt is
+// the reset it names (zero when the line names none or it does not parse).
+// The runtime ends a session that shows it before its first checkpoint and
+// marks the kind exhausted until resetsAt. A kind with no known line leaves it
+// out. Grok's usage-limit card stays a Needs-you row that marks grok exhausted
+// (Grok.ObserveCapture); Codex's rate-limit picker is a model-switch offer, not
+// a stop.
+type UsageLimiter interface {
+	UsageLimit(capture string, now time.Time) (line string, resetsAt time.Time, ok bool)
+}
+
 // base carries what every adapter needs and supplies the shared Idle rule.
 type base struct {
 	d    Deps

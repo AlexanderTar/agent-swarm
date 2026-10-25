@@ -416,6 +416,38 @@ var (
 	museQuestionDialog = regexp.MustCompile(`Enter to select`)
 )
 
+// museUsageLimit is Muse's hard stop, drawn above an ordinary idle ❯ prompt:
+// "◆ Usage limit reached · /upgrade (...) for increased limits, or wait for
+// usage to reset at Oct 26 at 12:00 AM" (live 2026-10-21, weekly cap). The
+// reset is local time with no year.
+var (
+	museUsageLimit = regexp.MustCompile(`(?m)^\s*◆?\s*Usage limit reached\b.*$`)
+	museLimitReset = regexp.MustCompile(`reset at ([A-Z][a-z]{2} \d{1,2}) at (\d{1,2}:\d\d [AP]M)`)
+)
+
+// UsageLimit implements UsageLimiter. A reset already behind now is next
+// year's (the line carries no year).
+func (m *Muse) UsageLimit(capture string, now time.Time) (string, time.Time, bool) {
+	line := strings.TrimSpace(museUsageLimit.FindString(StripANSI(capture)))
+	if line == "" {
+		return "", time.Time{}, false
+	}
+	var resetsAt time.Time
+	if r := museLimitReset.FindStringSubmatch(line); r != nil {
+		for _, year := range []int{now.Year(), now.Year() + 1} {
+			t, err := time.ParseInLocation("2006 Jan 2 3:04 PM", fmt.Sprintf("%d %s %s", year, r[1], r[2]), now.Location())
+			if err != nil {
+				break
+			}
+			if t.After(now) {
+				resetsAt = t
+				break
+			}
+		}
+	}
+	return line, resetsAt, true
+}
+
 func (m *Muse) ProcessNames() []*regexp.Regexp { return museProcess }
 func (m *Muse) IdlePrompt() *regexp.Regexp     { return museIdle }
 func (m *Muse) Busy() *regexp.Regexp           { return museBusy }

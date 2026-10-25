@@ -427,8 +427,9 @@ type Store struct {
 	pasteAttempts      map[string]int
 	museSeq            map[string]int64 // last muse log position recorded as an end-of-turn context sample (muse is polled; grok is hooked and samples at Stop, so it needs none)
 	lastPasteAttemptAt map[string]time.Time
-	noticeSeen         map[string]bool // sessions that already got an inbox notice (and its trailer)
-	batchPastes        map[string]int  // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)
+	usageLimits        map[AgentKind]time.Time // kind -> reset of a usage limit its pane showed (usagelimit.go)
+	noticeSeen         map[string]bool         // sessions that already got an inbox notice (and its trailer)
+	batchPastes        map[string]int          // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)
 	wakeSubs           map[string][]chan string
 	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw
 	// each live session's pane present and correctly owned (§10.6's resolveDead

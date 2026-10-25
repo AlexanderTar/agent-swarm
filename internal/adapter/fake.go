@@ -44,6 +44,11 @@ type Fake struct {
 	LastReplyText                     string
 	LastReplyFound, LastReplyReadable bool
 
+	// UsageLimitText, when set, makes a capture containing it a usage-limit
+	// line (see UsageLimiter) that resets at UsageLimitReset (zero: unnamed).
+	UsageLimitText  string
+	UsageLimitReset time.Time
+
 	// NoRename makes RenameCommand report ok=false, so a test about wake
 	// notices is not preceded by a session-rename paste.
 	NoRename bool
@@ -114,6 +119,13 @@ func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
 
 func (f *Fake) ObservedAnswer(string, string, string, time.Time) (string, string, bool) {
 	return f.ObservedAnswerLabel, f.ObservedAnswerNote, f.ObservedAnswerOK
+}
+
+func (f *Fake) UsageLimit(capture string, _ time.Time) (string, time.Time, bool) {
+	if f.UsageLimitText == "" || !strings.Contains(capture, f.UsageLimitText) {
+		return "", time.Time{}, false
+	}
+	return f.UsageLimitText, f.UsageLimitReset, true
 }
 
 func (f *Fake) LastReply(string, time.Time) (string, bool, bool) {

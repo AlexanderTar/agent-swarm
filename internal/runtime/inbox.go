@@ -59,7 +59,7 @@ func (s *Store) enqueue(ctx context.Context, tx *sql.Tx, m Message) (Message, er
 		if err != nil {
 			return m, err
 		}
-		if s.Usage != nil && s.Usage.Exhausted(ctx, a.Kind) {
+		if s.kindExhausted(ctx, a.Kind) {
 			event := string(m.Kind)
 			var p struct {
 				Event string `json:"event"`
@@ -110,14 +110,11 @@ func (s *Store) enqueueRaw(ctx context.Context, tx *sql.Tx, m Message) (Message,
 // its enqueue. Nil Usage never holds (fail open: tests, SWARM_USAGE unset).
 // sample is stored (truncated) on first hold so the quota-reset digest can name it.
 func (s *Store) holdIfExhausted(ctx context.Context, tx *sql.Tx, toAgentID, event string, sample json.RawMessage) (bool, error) {
-	if s.Usage == nil {
-		return false, nil
-	}
 	a, err := s.agentByIDTx(ctx, tx, toAgentID)
 	if err != nil {
 		return false, err
 	}
-	if !s.Usage.Exhausted(ctx, a.Kind) {
+	if !s.kindExhausted(ctx, a.Kind) {
 		return false, nil
 	}
 	now := db.Millis(s.Now())
@@ -922,6 +919,9 @@ func summarizeFor(kind MessageKind, payload json.RawMessage) string {
 		}
 		if q, ok := str("question"); ok && q != "" {
 			line += ": " + quote(q)
+		}
+		if r, ok := str("reason"); ok && r != "" {
+			line += ": " + quote(r)
 		}
 		return line
 	case "digest":

@@ -35,7 +35,7 @@ import (
 // no quota left, guaranteeing the exact stall this feature exists to
 // prevent.
 func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model, effort string) (AgentKind, string, string, bool, error) {
-	if s.Usage == nil || !s.Usage.Exhausted(ctx, kind) {
+	if !s.kindExhausted(ctx, kind) {
 		return kind, model, effort, false, nil
 	}
 	cfg, err := s.Settings.Get(ctx)
@@ -47,7 +47,7 @@ func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model,
 	fb := cfg.FallbackDefault
 	unusable := fb.Agent == "" || fb.Agent == kind ||
 		!slices.Contains(cfg.EnabledAgents, fb.Agent) ||
-		s.Usage.Exhausted(ctx, fb.Agent)
+		s.kindExhausted(ctx, fb.Agent)
 	if unusable {
 		return kind, model, effort, false, fmt.Errorf("%s is out of usage, and no other agent is available right now.", kind.Display())
 	}

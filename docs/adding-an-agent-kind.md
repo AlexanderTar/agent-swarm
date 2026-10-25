@@ -117,7 +117,7 @@ Do the areas in this order. "Caught" says what notices a miss: **C** compile err
 | Hooked versus unhooked question set; `answer_text` handling for unhooked kinds | `internal/runtime/requests.go`, `internal/runtime/native.go` | - |
 | Wake: native, hook notice or tmux paste (and when the pane is paste-ready) | `internal/runtime/wake.go` | - |
 | Resume-with-kickoff, launch-limit and low-token branches | `internal/runtime/agents.go` | - |
-| Fallback is generic, but only fires for kinds with a usage source | `internal/runtime/fallback.go` | - |
+| Fallback is generic, but fires only for kinds with a usage source or a pane usage-limit line (`adapter.UsageLimiter`, `kindExhausted`) | `internal/runtime/fallback.go`, `internal/runtime/usagelimit.go` | T |
 
 **Hooks, usage, advisor and other daemon pieces**
 
@@ -160,6 +160,7 @@ Do the areas in this order. "Caught" says what notices a miss: **C** compile err
 - Login hints live in three places and must agree: `loginCommand` in `internal/runtime/agents.go`, `AGENT_LOGIN_CMD` in `web/src/copy.ts`, and `loginCommand` in `apps/menubar/Sources/SwarmBarKit/Copy.swift`.
 - Usage source: prefer one that never prompts for a keychain password. Muse went export reader, then MSP probe, then keychain mint, then back (reverted the next day) because the keychain item's team-id partition prompted users. A kind with no source is never "exhausted", so `internal/runtime/fallback.go` never substitutes it; say so in the spec instead of leaving it implicit. Document the credential in the README keychain table.
 - A free account may expose its quota only as a 429 or an in-TUI card. Capture that text; the adapter needs it as a dialog matcher.
+- **Declare the hard-stop line.** The usage gate reads only the headline meter at 100%, and a kind's blocking cap need not be the headline (muse's weekly cap is account-wide and read 99% while the pane said "Usage limit reached ... wait for usage to reset at Oct 26 at 12:00 AM", BUG-110), so the pane is the primary signal. Capture the kind's usage-limit line and implement `adapter.UsageLimiter` (`UsageLimit(capture, now) (line, resetsAt, ok)`; muse's is `Muse.UsageLimit`). The runtime (`endIfUsageLimited`, `internal/runtime/usagelimit.go`) then ends a session that shows it before its first checkpoint, from both `watchStartup` and the reconcile tick, marks the kind exhausted until the reset (`kindExhausted` is what every gate caller asks), and re-admits a workflow step through the usage fallback. A kind with no known line gets a reasoned entry in `usageLimitNone` in `TestKindParity`. A modal that needs a person (grok's card, codex's picker) is not a hard stop; keep it a dialog.
 
 ## 6. Icons
 
@@ -215,6 +216,7 @@ From muse (2026-09-23 to 2026-10-09):
 - Usage source churned because the keychain prompted users.
 - A hook plugin shipped before proving the CLI passes env to hook processes, and was reverted.
 - The advisor was never added, and nothing flagged it.
+- A muse session blocked on its weekly usage cap sat "running" for hours: the poller read the cap as 99%, the pane's limit line sat above an ordinary idle `❯`, and the only relay was `no_ack`. Cause: the gate checks the headline meter at 100% and no kind read its pane for a limit line. Detect: `sqlite3 -readonly ~/.swarm/swarm.db "select meters_json, headline_id from usage_snapshots where agent_kind='muse'"` shows a non-headline meter near 100, and `sqlite3 -readonly ~/.swarm/swarm.db "select a.name, s.state from sessions s join agents a on a.id = s.agent_id where s.first_sync_at is null and s.state in ('spawning','running')"` lists a running agent that never synced, whose pane (`tmux capture-pane`) shows the limit line. Guards: `go test ./internal/runtime/ -run 'UsageLimit|TestKindParity' -count=1` and `go test ./internal/adapter/ -run UsageLimit -count=1`. Gaps: the exhaustion record is in memory (a daemon restart forgets it until the next session shows the line again), and a line that names no reset marks the kind exhausted for one hour.
 
 From grok (probed 2026-10-16 against grok 1.0.60; findings, not code):
 

@@ -1685,13 +1685,18 @@ func firstReadableLine(pane string) string {
 }
 
 func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText string) error {
+	reason := "Couldn't start agent."
+	if firstLine := firstReadableLine(paneText); firstLine != "" {
+		reason = firstLine + " " + reason
+	}
+	return s.failSessionWith(ctx, a, ses, paneText, reason)
+}
+
+// failSessionWith is failSession with the reason given: the notification and
+// the parent's failed relay both carry it.
+func (s *Store) failSessionWith(ctx context.Context, a Agent, ses Session, paneText, reason string) error {
 	if err := s.SetSessionState(ctx, ses.ID, Failed); err != nil {
 		return err
-	}
-	firstLine := firstReadableLine(paneText)
-	reason := "Couldn't start agent."
-	if firstLine != "" {
-		reason = firstLine + " " + reason
 	}
 	// The orchestrator otherwise never learns a child failed to start: it just
 	// sees no ack and has no event to act on (unlike interrupted/crashed,
@@ -1714,7 +1719,7 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 		if err != nil {
 			return err
 		}
-		payload, err := json.Marshal(map[string]any{"event": "failed", "agent": a.Name, "item": itemKey})
+		payload, err := json.Marshal(map[string]any{"event": "failed", "agent": a.Name, "item": itemKey, "reason": reason})
 		if err != nil {
 			return err
 		}
@@ -1892,6 +1897,11 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		// doing agent work", already trusted everywhere idle() uses it to rule out
 		// a false idle read, so reusing it here to rule in "done starting" is the
 		// same signal, not a new one.
+		// A kind's usage-limit line sits above an ordinary idle prompt, so this
+		// has to come before the idle check below reads the session as healthy.
+		if limited, err := s.endIfUsageLimited(ctx, a, ses, ad, capture); limited || err != nil {
+			return err
+		}
 		if ad.Idle(capture) || (ad.Busy() != nil && ad.Busy().MatchString(stripANSI(capture))) {
 			for i, d := range ad.StartupDialogs() {
 				if dst := st[i]; dst != nil && dst.reqID != "" {

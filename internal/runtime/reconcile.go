@@ -1198,6 +1198,13 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		}); ok {
 			o.ObserveCapture(r.SessionID, capture)
 		}
+		// A kind's usage-limit line over a healthy-looking idle prompt, before the
+		// first checkpoint: the session can never start, so end it now.
+		if !ownedByWatchStartup {
+			if limited, err := s.endIfUsageLimitedLive(ctx, r, ad, capture); limited || err != nil {
+				return err
+			}
+		}
 		// A pane can read idle for a moment while a queued turn has already
 		// started: a leader that says a turn is running wins.
 		if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(r.SessionID) {
