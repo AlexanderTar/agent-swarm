@@ -216,3 +216,30 @@ func TestAgyOAuthTokenRejectsAnUnparsableExpiry(t *testing.T) {
 		t.Fatal("an unparsable expiry must be an error, not a silently zero-valued (forever-expired-looking) time")
 	}
 }
+
+// Linux: Claude's token and millisecond expiry come from Claude Code's
+// credentials file, read through creds.Files like the keychain item on macOS,
+// and Cursor reports that its Linux sign-in can't be read yet.
+func TestTokensReadThroughTheLinuxCredentialsFile(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"claudeAiOauth":{"accessToken":"sk-file","refreshToken":"r","expiresAt":1767225600000,"scopes":["user:inference"]},"mcpOAuth":{}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cs := creds.Files(home, func(string) string { return "" })
+	token, expiresAt, err := claudeToken(cs.Claude, "Claude Code-credentials")(context.Background())
+	if err != nil || token != "sk-file" || !expiresAt.Equal(time.UnixMilli(1767225600000)) {
+		t.Fatalf("claude = %q %v %v", token, expiresAt, err)
+	}
+	if _, _, err := cursorToken(cs.Cursor, "cursor-access-token")(context.Background()); !errors.Is(err, creds.ErrUnsupported) {
+		t.Fatalf("cursor err = %v, want the unsupported reason", err)
+	}
+	os.Remove(path)
+	if _, _, err := claudeToken(cs.Claude, "Claude Code-credentials")(context.Background()); !os.IsNotExist(err) {
+		t.Fatalf("missing file err = %v", err)
+	}
+}

@@ -303,9 +303,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	it.CheckWorkflowBriefs = rt.CheckLiveWorkflowBriefs // refuse a brief update that would overflow a live workflow's later step kickoff
 	it.CheckLanded = rt.CheckLanded                     // refuse a resolved-by close whose integrated sha never reached the default branch
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
-	// which only the installed launchd plist sets. Every other daemon — a
-	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no
-	// sources, so it reads no keychain and calls no vendor endpoint. This is
+	// which only the installed launchd plist or systemd unit sets. Every other
+	// daemon — a test's, e2e's, `make dev`'s, one started by hand in a
+	// worktree — gets no sources, so it reads no keychain or credentials file
+	// and calls no vendor endpoint. This is
 	// the only call site, and cfg.Dev never enters this decision (F1).
 	grokExhaustion := &usagesvc.GrokExhaustion{} // the hook handler and the leader pushes fill it, the grok usage source reads it
 	if g, ok := rt.Adapters[runtime.Grok].(interface{ OnExhausted(func(text string)) }); ok {

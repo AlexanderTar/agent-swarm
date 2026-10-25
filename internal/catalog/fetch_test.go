@@ -107,8 +107,8 @@ func TestClaudeFetcherFailuresNeverLeakTheToken(t *testing.T) {
 	empty := keychain(map[string]execx.Result{
 		"security find-generic-password -s Claude Code-credentials -a alex -w": {Out: `{"claudeAiOauth":{}}`},
 	})
-	f.Run = empty.Runner()
-	if _, err := f.Fetch(bg); err == nil || strings.Contains(err.Error(), secret) {
+	f.Creds = creds.Keychain(empty.Runner(), "alex").Claude
+	if _, err := f.Fetch(bg); err == nil || err.Error() != "Claude isn't signed in." {
 		t.Fatalf("empty token err = %v", err)
 	}
 }
