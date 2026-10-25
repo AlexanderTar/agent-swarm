@@ -183,9 +183,11 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
    window 1.5 s later when no menu bar answers; on Linux that would be every
    time). The `terminal.open` event is unchanged, so the menu bar behaves as
    before.
-3. **tmux.conf copy-command.** darwin: `pbcopy` (unchanged); linux: `wl-copy`
-   when found, else `xclip -selection clipboard -in`, else `xsel -ib`, else
-   leave it unset (tmux falls back to OSC 52 `set-clipboard`).
+3. **tmux.conf copy-command.** darwin: `pbcopy` (unchanged); linux: none.
+   *Changed while implementing:* a clipboard tool would run in the tmux
+   server's environment, which under systemd has no display or a stale one,
+   while tmux's default `set-clipboard external` already sends the selection
+   to the attached terminal over OSC 52.
 4. **Agent pane env (`spawn.BaseEnv`).** `TMPDIR` only when set (Linux usually
    leaves it unset; an explicit empty `TMPDIR=` makes Rust's `temp_dir()`
    return `""`). `LANG`: darwin keeps `en_US.UTF-8`; linux uses the daemon's
@@ -201,10 +203,12 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
    (procps rejects `-E`), and an orphan is a process whose parent is pid 1
    *or* the user's `systemd --user` (a subreaper); add `dockerd`,
    `containerd`, `containerd-shim` to the shared-daemon list.
-6. **Linux defaults and hints.** Default `scan_excludes` and the walker's
-   fixed skips gain the Linux counterparts (`~/snap`, `~/Videos`,
-   `~/.local/share/Trash` is already a dot-dir) when built for Linux; the
-   missing-`uv` hint in `install/agents.go` and doctor is OS-aware.
+6. **Linux defaults and hints.** The walker's fixed skips gain the Linux
+   counterparts (`~/snap`, `~/Videos`; `~/.local/share/Trash` is already a
+   dot-dir). *Changed while implementing:* only the fixed skips, not the
+   `scan_excludes` setting default, so macOS's Settings list is unchanged
+   (both folders are absent there). The missing-`uv` hint in
+   `install/agents.go` and doctor is OS-aware.
 
 ## Phase 4 — Usage tokens and agent processes on Linux
 
