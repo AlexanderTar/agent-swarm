@@ -192,7 +192,7 @@ func reconcileLimited(t *testing.T, s *Store, tm *fakeTmux) (Agent, Session) {
 
 // The limit line can draw after the session was already marked running: the
 // reconcile tick ends it while it has no checkpoint.
-func TestReconcileEndsARunningSessionThatShowsTheLimitBeforeItsFirstCheckpoint(t *testing.T) {
+func TestReconcileEndsARunningSessionThatShowsTheUsageLimitBeforeItsFirstCheckpoint(t *testing.T) {
 	s, tm := limitStore(t, false)
 	ctx := context.Background()
 	w, _ := reconcileLimited(t, s, tm)
@@ -209,7 +209,7 @@ func TestReconcileEndsARunningSessionThatShowsTheLimitBeforeItsFirstCheckpoint(t
 
 // A session that has checkpointed may merely print the words (quoting a log, a
 // test fixture): it is left alone.
-func TestReconcileLeavesACheckpointedSessionAloneWhenItPrintsTheLimitText(t *testing.T) {
+func TestReconcileLeavesACheckpointedSessionAloneWhenItPrintsTheUsageLimitText(t *testing.T) {
 	s, tm := limitStore(t, false)
 	ctx := context.Background()
 	w, wSes := reconcileLimited(t, s, tm)
