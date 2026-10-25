@@ -42,13 +42,15 @@ type Spawner struct {
 // remain-on-exit keeps a dead pane readable for the reconciler (§10.6);
 // mouse on enables wheel scroll to enter copy-mode and scroll conversation history
 // rather than sending Up/Down arrow keys that cycle prompt history in Codex/agy/Cursor;
-// copy-command pbcopy makes a mouse-drag selection land in the macOS clipboard.
+// copy-command (CopyCommand: pbcopy on macOS) makes a mouse-drag selection land
+// in the system clipboard; with none, tmux's default set-clipboard external
+// still hands the selection to the attached terminal over OSC 52.
 // set-titles-string is '#W' (the window name), not a literal: the reconciler
 // renames each session's window every tick to the fun title (status/role/tree
 // emoji + name, see runtime.sessionTitle), and automatic-rename off stops tmux
 // fighting that by renaming the window back to the foreground command itself.
-func TmuxConf() []byte {
-	return []byte(strings.Join([]string{
+func TmuxConf(copyCommand string) []byte {
+	lines := []string{
 		"# Written by `swarm install`. Swarm's tmux server only.",
 		"set -g set-titles on",
 		"set -g set-titles-string '#W'",
@@ -57,9 +59,22 @@ func TmuxConf() []byte {
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
 		"set -g mouse on",
-		"set -s copy-command pbcopy",
-		"",
-	}, "\n"))
+	}
+	if copyCommand != "" {
+		lines = append(lines, "set -s copy-command "+copyCommand)
+	}
+	return []byte(strings.Join(append(lines, ""), "\n"))
+}
+
+// CopyCommand is tmux's copy-command for goos. On Linux there is none: a
+// clipboard tool (wl-copy, xclip) would run in the tmux server's environment,
+// which under systemd has no display or a stale one, while OSC 52 goes
+// through whatever terminal is attached.
+func CopyCommand(goos string) string {
+	if goos == "darwin" {
+		return "pbcopy"
+	}
+	return ""
 }
 
 // BaseEnv is the environment every spawn copies (L9). USER is what the keychain
@@ -78,6 +93,31 @@ func BaseEnv(osEnv func(string) string) map[string]string {
 	env["LANG"] = "en_US.UTF-8"
 	if v := osEnv("GNUPGHOME"); v != "" {
 		env["GNUPGHOME"] = v // empty means "the user's default", which we must not pass on as a value
+	}
+	return env
+}
+
+// LinuxBaseEnv is BaseEnv for a daemon under systemd on Linux. TMPDIR is
+// usually unset there, and an explicit empty TMPDIR makes Rust's temp_dir()
+// (codex) return "", so it is passed only when set. en_US.UTF-8 may not be
+// generated, so LANG is the daemon's own when it is UTF-8, else C.UTF-8,
+// which glibc always has. XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are
+// stable for the user's whole session and let an agent reach the Secret
+// Service keyring; DISPLAY and WAYLAND_DISPLAY are left out, since a
+// long-lived pane would keep them after the desktop moved on.
+func LinuxBaseEnv(osEnv func(string) string) map[string]string {
+	env := BaseEnv(osEnv)
+	if env["TMPDIR"] == "" {
+		delete(env, "TMPDIR")
+	}
+	env["LANG"] = "C.UTF-8"
+	if l := osEnv("LANG"); strings.Contains(strings.ToLower(strings.ReplaceAll(l, "-", "")), "utf8") {
+		env["LANG"] = l
+	}
+	for _, k := range []string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"} {
+		if v := osEnv(k); v != "" {
+			env[k] = v
+		}
 	}
 	return env
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/desktop"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/hook"
@@ -218,9 +219,9 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	}
 
 	// tmux.conf is (re)written whenever it is missing or stale, so an upgrade
-	// that changes TmuxConf() reaches an existing ~/.swarm without a reinstall.
+	// that changes TmuxConf reaches an existing ~/.swarm without a reinstall.
 	confPath := filepath.Join(cfg.Home, "tmux.conf")
-	want := spawn.TmuxConf()
+	want := spawn.TmuxConf(spawn.CopyCommand(goos))
 	if got, err := os.ReadFile(confPath); err != nil || string(got) != string(want) {
 		if err := os.WriteFile(confPath, want, 0o644); err != nil {
 			d.Close()
@@ -265,6 +266,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// plist this task writes sets SWARM_TMUX_SOCKET=swarm — so a daemon started
 	// by hand from a worktree, by a test, or by `make dev` can never reach the
 	// live server.
+	desk := desktopFor(goos)
 	spawner := &spawn.Spawner{Socket: spawn.SocketFromEnv(os.Getenv), Conf: confPath,
 		Tmux: lookTmux(), Run: execx.Run, Log: cfg.Log, LaunchDir: filepath.Join(cfg.Home, "run", "launch")}
 	wt := &worktree.Service{DB: d, Run: execx.Run, Now: now, Log: cfg.Log, Home: cfg.Home}
@@ -274,7 +276,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	rt := &runtime.Store{DB: d, Events: ev, Items: it, Repos: rp, Settings: st, Catalog: cat,
 		Home: cfg.Home, Now: now, Log: cfg.Log, Tmux: spawner, Worktree: wt, Notify: nt,
 		Bin: selfPath(), DaemonURL: fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
-		OSEnv: os.Getenv, BaseEnv: spawn.BaseEnv,
+		OSEnv: os.Getenv, BaseEnv: desk.baseEnv,
 		// The two strings `swarm attach` and the Ghostty fallback need, so
 		// neither writes `-L swarm` as a literal (safety invariant S-1, R11).
 		// They come from the same Spawner the daemon spawns through, so they
@@ -333,7 +335,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
 		Auth: webauth.New(d, now),
-		Run:  execx.Run, After: time.After, Web: web.Handler(web.Dist)})
+		Run:  execx.Run, After: time.After, Terminal: desk.terminal, Web: web.Handler(web.Dist)})
 	tn.Handler = api.Handler()
 	lm.Handler = tn.Handler
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
@@ -566,4 +568,22 @@ func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Stor
 			log("quota reset wake %s: woke %d session(s)", fire.Kind, n)
 		}
 	}
+}
+
+// desktopDeps are the daemon's OS-specific pieces: the agents' base
+// environment and who opens a terminal window.
+type desktopDeps struct {
+	baseEnv  func(func(string) string) map[string]string
+	terminal func(context.Context, []string) error // nil: the menu bar opens it (macOS)
+}
+
+func desktopFor(goos string) desktopDeps {
+	if goos != "linux" {
+		return desktopDeps{baseEnv: spawn.BaseEnv}
+	}
+	return desktopDeps{baseEnv: spawn.LinuxBaseEnv, terminal: desktop.Launcher{
+		Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv,
+		Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
+		Settle: 500 * time.Millisecond,
+	}.Open}
 }

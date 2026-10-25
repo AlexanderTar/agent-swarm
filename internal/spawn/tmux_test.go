@@ -23,7 +23,7 @@ func newSpawner(t *testing.T) *Spawner {
 	}
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "tmux.conf")
-	if err := os.WriteFile(conf, TmuxConf(), 0o644); err != nil {
+	if err := os.WriteFile(conf, TmuxConf(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := &Spawner{Socket: fmt.Sprintf("swarm-test-%d-%s", os.Getpid(), t.Name()),
@@ -409,7 +409,7 @@ func TestPaneFormatSurvivesLocaleSanitizationOfControlCharacters(t *testing.T) {
 // remain-on-exit keeps a dead pane visible so the reconciler can read its status.
 // mouse on enables wheel scrolling through conversation history rather than cycling prompt history.
 func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
-	conf := string(TmuxConf())
+	conf := string(TmuxConf(CopyCommand("darwin")))
 	for _, want := range []string{
 		"set -g set-titles on",
 		"set -g set-titles-string '#W'",
@@ -624,5 +624,52 @@ func TestLauncherKeepsShortArgsAndQuotesThem(t *testing.T) {
 	}
 	if _, err := (&Spawner{}).launcher("ses_1", []string{long}); err == nil {
 		t.Fatal("a long arg with no launch dir must fail, not silently overflow tmux's line")
+	}
+}
+
+// pbcopy on macOS; on Linux no copy-command at all, so tmux's OSC 52 default
+// carries the selection through the attached terminal.
+func TestTmuxConfCopyCommandFollowsThePlatform(t *testing.T) {
+	if conf := string(TmuxConf(CopyCommand("darwin"))); !strings.Contains(conf, "set -s copy-command pbcopy\n") {
+		t.Errorf("macOS tmux.conf lacks pbcopy:\n%s", conf)
+	}
+	conf := string(TmuxConf(CopyCommand("linux")))
+	if strings.Contains(conf, "copy-command") {
+		t.Errorf("Linux tmux.conf sets a copy-command:\n%s", conf)
+	}
+	if !strings.Contains(conf, "set -g mouse on\n") || !strings.HasSuffix(conf, "\n") {
+		t.Errorf("Linux tmux.conf lost its other settings:\n%s", conf)
+	}
+}
+
+func TestLinuxBaseEnv(t *testing.T) {
+	env := func(vars map[string]string) map[string]string {
+		return LinuxBaseEnv(func(k string) string { return vars[k] })
+	}
+	got := env(map[string]string{"USER": "u", "HOME": "/home/u", "PATH": "/usr/bin", "LANG": "C",
+		"XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+		"DISPLAY": ":1", "WAYLAND_DISPLAY": "wayland-1", "GNUPGHOME": "/tmp/g"})
+	for k, want := range map[string]string{"USER": "u", "HOME": "/home/u", "PATH": "/usr/bin", "LANG": "C.UTF-8",
+		"TERM": "xterm-256color", "XDG_RUNTIME_DIR": "/run/user/1000",
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus", "GNUPGHOME": "/tmp/g"} {
+		if got[k] != want {
+			t.Errorf("%s = %q, want %q", k, got[k], want)
+		}
+	}
+	for _, k := range []string{"TMPDIR", "DISPLAY", "WAYLAND_DISPLAY"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s is set: %q", k, got[k])
+		}
+	}
+	if _, ok := got["USER"]; !ok {
+		t.Error("USER must stay present, as in BaseEnv")
+	}
+	if got := env(map[string]string{"TMPDIR": "/var/tmp/u"}); got["TMPDIR"] != "/var/tmp/u" {
+		t.Errorf("a set TMPDIR = %q", got["TMPDIR"])
+	}
+	for lang, want := range map[string]string{"en_GB.UTF-8": "en_GB.UTF-8", "de_DE.utf8": "de_DE.utf8", "": "C.UTF-8", "POSIX": "C.UTF-8"} {
+		if got := env(map[string]string{"LANG": lang}); got["LANG"] != want {
+			t.Errorf("LANG %q -> %q, want %q", lang, got["LANG"], want)
+		}
 	}
 }
