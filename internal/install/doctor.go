@@ -61,7 +61,7 @@ var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
 // per-agent blocks, superpowers, and the one legacy item §11.1 says must fail.
 func (d Doctor) Checks(ctx context.Context) []Check {
 	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
-		d.launchAgent(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
+		d.service(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
 	out = append(out, d.orphans(ctx)...)
 	if d.Tunnel != nil {
 		out = append(out, d.tunnel(ctx))
@@ -302,6 +302,15 @@ func (d Doctor) signing(ctx context.Context) Check {
 		return Check{"Commit signing", false, "Commit signing is off. Enable it in git config."}
 	}
 	return Check{"Commit signing", true, "commit.gpgsign is true."}
+}
+
+// service is the daemon's service row: the launch agent on macOS, the
+// systemd user unit on Linux.
+func (d Doctor) service() Check {
+	if d.Cfg.Manager == Systemd {
+		return systemdCheck(d.Cfg)
+	}
+	return d.launchAgent()
 }
 
 func (d Doctor) launchAgent() Check {

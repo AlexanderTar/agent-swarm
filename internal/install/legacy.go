@@ -41,7 +41,8 @@ var legacyShellScripts = []string{"swarmd-start.sh", "swarm-update.sh"}
 func RemoveLegacyShared(ctx context.Context, c Config, run execx.Runner, confirm func(string) bool) ([]string, error) {
 	var changed []string
 
-	if !c.Isolated {
+	// The updater only ever existed under launchd: Agent Swarm 1.x was macOS-only.
+	if !c.Isolated && c.Manager == Launchd {
 		target := fmt.Sprintf("gui/%d/%s", c.UID, UpdaterLabel)
 		if _, err := run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
 			return changed, fmt.Errorf("launchctl bootout %s: %w", UpdaterLabel, err)
