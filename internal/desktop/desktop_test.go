@@ -90,7 +90,7 @@ type launcherEnv struct {
 	getenv  map[string]string
 	exists  map[string]bool
 	started [][]string
-	envs    []map[string]string
+	envs    [][]string
 	exit    error // nil: still running; set: exits at once with this error
 	exitOK  bool  // exits at once with status 0
 }
@@ -99,7 +99,7 @@ func (e *launcherEnv) launcher() Launcher {
 	f := &execx.Fake{Responses: map[string]execx.Result{"systemctl --user show-environment": e.showEnv}}
 	return Launcher{
 		Run: f.Runner(),
-		Start: func(env map[string]string, name string, args ...string) (*execx.Detached, error) {
+		Start: func(env []string, name string, args ...string) (*execx.Detached, error) {
 			e.started = append(e.started, append([]string{name}, args...))
 			e.envs = append(e.envs, env)
 			done := make(chan struct{})
@@ -110,8 +110,11 @@ func (e *launcherEnv) launcher() Launcher {
 		},
 		LookPath: have("kitty"),
 		Getenv:   func(k string) string { return e.getenv[k] },
-		Exists:   func(p string) bool { return e.exists[p] },
-		Settle:   20 * time.Millisecond,
+		Environ: func() []string {
+			return []string{"PATH=/usr/bin", "HOME=/home/a", "WAYLAND_DISPLAY=wayland-stale", "XAUTHORITY=/run/stale/Xauthority"}
+		},
+		Exists: func(p string) bool { return e.exists[p] },
+		Settle: 20 * time.Millisecond,
 	}
 }
 
@@ -126,16 +129,11 @@ func TestOpenStartsTheTerminalOnTheCurrentSession(t *testing.T) {
 	if len(e.started) != 1 || !slices.Equal(e.started[0], append([]string{"kitty"}, attach...)) {
 		t.Fatalf("started = %q", e.started)
 	}
-	want := map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1", "DISPLAY": ":1",
-		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
-	if got := e.envs[0]; len(got) != len(want) {
-		t.Errorf("env = %q, want only the session keys %q", got, want)
-	} else {
-		for k, v := range want {
-			if got[k] != v {
-				t.Errorf("env %s = %q, want %q", k, got[k], v)
-			}
-		}
+	// The daemon's environment, with every graphical key from the live session.
+	want := []string{"PATH=/usr/bin", "HOME=/home/a", "WAYLAND_DISPLAY=wayland-1", "DISPLAY=:1",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", "XDG_RUNTIME_DIR=/run/user/1000"}
+	if got := e.envs[0]; !slices.Equal(got, want) {
+		t.Errorf("env = %q, want %q", got, want)
 	}
 }
 
@@ -198,7 +196,7 @@ func TestOpenAcceptsATerminalThatHandsOffAndExitsZero(t *testing.T) {
 func TestOpenReportsAStartFailureAndAMissingTerminal(t *testing.T) {
 	e := &launcherEnv{showEnv: execx.Result{Out: liveSession}, exists: map[string]bool{"/tmp/.X11-unix/X1": true}}
 	l := e.launcher()
-	l.Start = func(map[string]string, string, ...string) (*execx.Detached, error) {
+	l.Start = func([]string, string, ...string) (*execx.Detached, error) {
 		return nil, errors.New("permission denied")
 	}
 	if err := l.Open(bg, attach); err == nil || !strings.Contains(err.Error(), "Couldn't start kitty: permission denied") {
@@ -207,5 +205,18 @@ func TestOpenReportsAStartFailureAndAMissingTerminal(t *testing.T) {
 	l.LookPath = have()
 	if err := l.Open(bg, attach); !errors.Is(err, ErrNoTerminal) {
 		t.Fatalf("no terminal = %v", err)
+	}
+}
+
+// A display variable the live session lacks never reaches the terminal at the
+// daemon's stale value: it is removed, not inherited.
+func TestOpenDropsTheDaemonsStaleDisplayVariables(t *testing.T) {
+	e := &launcherEnv{showEnv: execx.Result{Out: "DISPLAY=:1\n"}, exists: map[string]bool{"/tmp/.X11-unix/X1": true}}
+	if err := e.launcher().Open(bg, attach); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"PATH=/usr/bin", "HOME=/home/a", "DISPLAY=:1"}
+	if got := e.envs[0]; !slices.Equal(got, want) {
+		t.Fatalf("env = %q, want %q (no stale WAYLAND_DISPLAY or XAUTHORITY)", got, want)
 	}
 }

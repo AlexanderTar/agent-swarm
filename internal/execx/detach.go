@@ -3,7 +3,6 @@ package execx
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -16,9 +15,10 @@ type Detached struct {
 	Err  func() error    // after Done: its exit error with the start of its stderr, or nil
 }
 
-// Detacher starts a process detached from the daemon, with env merged over
-// the ambient environment.
-type Detacher func(env map[string]string, name string, args ...string) (*Detached, error)
+// Detacher starts a process detached from the daemon. env is the child's
+// whole environment (os.Environ's format): nothing is inherited, so a caller
+// can leave a stale variable out instead of only overriding it.
+type Detacher func(env []string, name string, args ...string) (*Detached, error)
 
 // detachedStderr is how much of a detached process's stderr Err reports.
 const detachedStderr = 4096
@@ -28,15 +28,12 @@ const detachedStderr = 4096
 // deadline, unlike Run's 30 s, which would kill a terminal that stays in the
 // foreground. It is reaped when it exits. Refused for the service managers
 // under `go test`, like every other entry point.
-func StartDetached(env map[string]string, name string, args ...string) (*Detached, error) {
+func StartDetached(env []string, name string, args ...string) (*Detached, error) {
 	if err := refuseUnderTest(name); err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(name, args...)
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = append([]string{}, env...) // non-nil: a nil Env would inherit the daemon's
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	stderr := &capped{max: detachedStderr}
 	cmd.Stderr = stderr

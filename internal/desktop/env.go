@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -48,6 +49,25 @@ func (l Launcher) SessionEnv(ctx context.Context) (map[string]string, error) {
 		return nil, ErrNoSession
 	}
 	return env, nil
+}
+
+// childEnv is base with every session key replaced by session's: a key the
+// session lacks (a display found dead, an XAUTHORITY the desktop no longer
+// sets) is removed, never left at the daemon's possibly stale value.
+func childEnv(base []string, session map[string]string) []string {
+	var out []string
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(sessionKeys, k) {
+			out = append(out, kv)
+		}
+	}
+	for _, k := range sessionKeys {
+		if v, ok := session[k]; ok {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
 }
 
 // waylandSocket is where a Wayland compositor listens: WAYLAND_DISPLAY is a

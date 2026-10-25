@@ -17,8 +17,8 @@ func waitDone(t *testing.T, d *Detached) {
 	}
 }
 
-func TestStartDetachedReportsAFailureWithItsStderrAndMergedEnv(t *testing.T) {
-	d, err := StartDetached(map[string]string{"SWARM_DETACH_PROBE": "from-env"}, "sh", "-c", `echo "no display: $SWARM_DETACH_PROBE" >&2; exit 3`)
+func TestStartDetachedReportsAFailureWithItsStderr(t *testing.T) {
+	d, err := StartDetached([]string{"SWARM_DETACH_PROBE=from-env"}, "sh", "-c", `echo "no display: $SWARM_DETACH_PROBE" >&2; exit 3`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,5 +66,20 @@ func TestStartDetachedKeepsOnlyTheStartOfStderr(t *testing.T) {
 func TestStartDetachedReportsAMissingProgram(t *testing.T) {
 	if _, err := StartDetached(nil, filepath.Join(t.TempDir(), "no-such-terminal")); err == nil {
 		t.Fatal("started a program that does not exist")
+	}
+}
+
+// The child sees exactly the environment it is given: nothing of the
+// daemon's leaks through, so a stale variable can be left out.
+func TestStartDetachedGivesTheChildOnlyItsEnv(t *testing.T) {
+	t.Setenv("SWARM_DETACH_STALE", "from-the-daemon")
+	out := filepath.Join(t.TempDir(), "env")
+	d, err := StartDetached([]string{"SWARM_DETACH_GIVEN=yes"}, "sh", "-c", `echo "${SWARM_DETACH_STALE-unset} ${SWARM_DETACH_GIVEN-unset}" > "$0"`, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, d)
+	if b, _ := os.ReadFile(out); strings.TrimSpace(string(b)) != "unset yes" {
+		t.Fatalf("child saw %q, want only the given variable", b)
 	}
 }

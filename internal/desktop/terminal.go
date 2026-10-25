@@ -60,6 +60,7 @@ type Launcher struct {
 	Start    execx.Detacher // starts the terminal in its own session
 	LookPath func(string) (string, error)
 	Getenv   func(string) string
+	Environ  func() []string // the daemon's environment, the base of the terminal's
 	Exists   func(path string) bool
 	// Settle is how long Open watches a started terminal for an early failure
 	// (bad arguments, a display that refuses it).
@@ -75,11 +76,11 @@ func (l Launcher) Open(ctx context.Context, command []string) error {
 	if err != nil {
 		return err
 	}
-	env, err := l.SessionEnv(ctx)
+	session, err := l.SessionEnv(ctx)
 	if err != nil {
 		return err
 	}
-	p, err := l.Start(env, argv[0], argv[1:]...)
+	p, err := l.Start(childEnv(l.Environ(), session), argv[0], argv[1:]...)
 	if err != nil {
 		return fmt.Errorf("Couldn't start %s: %w", argv[0], err)
 	}
