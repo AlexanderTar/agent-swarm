@@ -2,16 +2,18 @@ package main
 
 import "testing"
 
-// macOS leaves windows to the menu bar and keeps BaseEnv; Linux opens them
-// from the daemon and uses LinuxBaseEnv.
-func TestDesktopForPicksThePlatformPieces(t *testing.T) {
+// macOS leaves windows to the menu bar, keeps BaseEnv and reads sign-ins from
+// the keychain; Linux opens windows from the daemon, uses LinuxBaseEnv and
+// reads Claude's credentials file.
+func TestPlatformForPicksThePlatformPieces(t *testing.T) {
 	none := func(string) string { return "" }
-	mac := desktopFor("darwin")
-	if mac.terminal != nil || mac.baseEnv(none)["LANG"] != "en_US.UTF-8" {
-		t.Errorf("darwin: terminal set = %v, LANG = %q", mac.terminal != nil, mac.baseEnv(none)["LANG"])
+	mac := platformFor("darwin", "/Users/a")
+	if mac.terminal != nil || mac.baseEnv(none)["LANG"] != "en_US.UTF-8" || mac.creds.Where != "the keychain" {
+		t.Errorf("darwin: terminal set = %v, LANG = %q, creds = %q", mac.terminal != nil, mac.baseEnv(none)["LANG"], mac.creds.Where)
 	}
-	linux := desktopFor("linux")
-	if linux.terminal == nil || linux.baseEnv(none)["LANG"] != "C.UTF-8" {
-		t.Errorf("linux: terminal set = %v, LANG = %q", linux.terminal != nil, linux.baseEnv(none)["LANG"])
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	linux := platformFor("linux", "/home/a")
+	if linux.terminal == nil || linux.baseEnv(none)["LANG"] != "C.UTF-8" || linux.creds.Where != "/home/a/.claude/.credentials.json" {
+		t.Errorf("linux: terminal set = %v, LANG = %q, creds = %q", linux.terminal != nil, linux.baseEnv(none)["LANG"], linux.creds.Where)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/desktop"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
@@ -201,7 +202,8 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 
 	now := time.Now
 	ev := events.New(d, now)
-	cat := &catalog.Service{DB: d, Events: ev, Fetchers: catalog.DefaultFetchers(userHome, cfg.Home, os.Getenv("USER")), Now: now, Log: cfg.Log, Home: userHome, SwarmHome: cfg.Home}
+	plat := platformFor(goos, userHome)
+	cat := &catalog.Service{DB: d, Events: ev, Fetchers: catalog.DefaultFetchers(userHome, cfg.Home, plat.creds), Now: now, Log: cfg.Log, Home: userHome, SwarmHome: cfg.Home}
 	st := &settings.Store{DB: d, Events: ev, Now: now, ModelsFor: cat.ModelsFor, Installed: cat.Installed}
 	rp := &repos.Service{DB: d, Events: ev, Run: execx.Run, Home: cfg.ScanRoot, Now: now, Log: cfg.Log,
 		Excludes: func(ctx context.Context) []string {
@@ -266,7 +268,6 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// plist this task writes sets SWARM_TMUX_SOCKET=swarm — so a daemon started
 	// by hand from a worktree, by a test, or by `make dev` can never reach the
 	// live server.
-	desk := desktopFor(goos)
 	spawner := &spawn.Spawner{Socket: spawn.SocketFromEnv(os.Getenv), Conf: confPath,
 		Tmux: lookTmux(), Run: execx.Run, Log: cfg.Log, LaunchDir: filepath.Join(cfg.Home, "run", "launch")}
 	wt := &worktree.Service{DB: d, Run: execx.Run, Now: now, Log: cfg.Log, Home: cfg.Home}
@@ -276,7 +277,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	rt := &runtime.Store{DB: d, Events: ev, Items: it, Repos: rp, Settings: st, Catalog: cat,
 		Home: cfg.Home, Now: now, Log: cfg.Log, Tmux: spawner, Worktree: wt, Notify: nt,
 		Bin: selfPath(), DaemonURL: fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
-		OSEnv: os.Getenv, BaseEnv: desk.baseEnv,
+		OSEnv: os.Getenv, BaseEnv: plat.baseEnv,
 		// The two strings `swarm attach` and the Ghostty fallback need, so
 		// neither writes `-L swarm` as a literal (safety invariant S-1, R11).
 		// They come from the same Spawner the daemon spawns through, so they
@@ -311,7 +312,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		g.OnExhausted(func(text string) { grokExhaustion.Note(text, now()) })
 	}
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
-		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
+		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, plat.creds,
 			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d,
 			&usagesvc.Grok{BaseURL: usagesvc.GrokBillingURL, HTTP: &http.Client{Timeout: 10 * time.Second},
 				AuthPaths: usagesvc.GrokAuthPaths(cfg.Home, userHome), Refresh: usagesvc.GrokRefresh(execx.RunEnv),
@@ -335,7 +336,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
 		Auth: webauth.New(d, now),
-		Run:  execx.Run, After: time.After, Terminal: desk.terminal, Web: web.Handler(web.Dist)})
+		Run:  execx.Run, After: time.After, Terminal: plat.terminal, Web: web.Handler(web.Dist)})
 	tn.Handler = api.Handler()
 	lm.Handler = tn.Handler
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
@@ -570,18 +571,21 @@ func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Stor
 	}
 }
 
-// desktopDeps are the daemon's OS-specific pieces: the agents' base
-// environment and who opens a terminal window.
-type desktopDeps struct {
+// platformDeps are the daemon's OS-specific pieces: the agents' base
+// environment, who opens a terminal window, and where the agents' sign-ins
+// are read from.
+type platformDeps struct {
 	baseEnv  func(func(string) string) map[string]string
 	terminal func(context.Context, []string) error // nil: the menu bar opens it (macOS)
+	creds    creds.Sources
 }
 
-func desktopFor(goos string) desktopDeps {
+func platformFor(goos, userHome string) platformDeps {
 	if goos != "linux" {
-		return desktopDeps{baseEnv: spawn.BaseEnv}
+		// USER is the account of Claude's keychain item.
+		return platformDeps{baseEnv: spawn.BaseEnv, creds: creds.Keychain(execx.Run, os.Getenv("USER"))}
 	}
-	return desktopDeps{baseEnv: spawn.LinuxBaseEnv, terminal: desktop.Launcher{
+	return platformDeps{baseEnv: spawn.LinuxBaseEnv, creds: creds.Files(userHome, os.Getenv), terminal: desktop.Launcher{
 		Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv,
 		Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
 		Settle: 500 * time.Millisecond,

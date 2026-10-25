@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -108,14 +109,14 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // prompt kept coming back on Muse's own unpredictable refresh cadence. Back
 // to the MSP probe (muse.go), which was live-verified 2026-09-23 and never
 // touched the Keychain to begin with.
-func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB, grok *Grok) []Source {
+func DefaultSources(userHome string, cs creds.Sources, hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB, grok *Grok) []Source {
 	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: claudeCLIVersion(run),
-		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}
+		ReadToken: claudeToken(cs.Claude, "Claude Code-credentials"), Now: time.Now}
 	codexSrc := &Codex{Start: start, UserHome: userHome, Timeout: 10 * time.Second, Now: time.Now}
 	agySrc := &Agy{BaseURL: "https://daily-cloudcode-pa.googleapis.com", HTTP: hc,
 		ReadToken: agyOAuthToken(userHome), Now: time.Now}
 	cursorSrc := &Cursor{BaseURL: "https://api2.cursor.sh", HTTP: hc,
-		ReadToken: cursorKeychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
+		ReadToken: cursorToken(cs.Cursor, "cursor-access-token"), Now: time.Now}
 	museSrc := &Muse{Start: execx.StartEnv, Dir: userHome, Now: time.Now,
 		SessionIndex: filepath.Join(userHome, ".local/share/muse/session-index.db")}
 	if d != nil {
@@ -138,21 +139,6 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 		}},
 		{Agent: runtime.Muse, Fetch: museSrc.Fetch, ObservedAt: museSrc.ObservedAt},
 		{Agent: runtime.Grok, Fetch: grok.Fetch},
-	}
-}
-
-// keychainToken reads an OAuth token through `security find-generic-password
-// -s <service> -a <account> -w`, run via the injected Runner, and parses the
-// JSON for accessToken/expiresAt. Only DefaultSources calls this, and nothing
-// in this package's tests calls DefaultSources (S-4).
-// keychainBytes runs `security find-generic-password`, shared by both real
-// keychain-based token readers below.
-func keychainBytes(run execx.Runner, service, account string) func(context.Context) ([]byte, error) {
-	return func(ctx context.Context) ([]byte, error) {
-		if run == nil {
-			return nil, fmt.Errorf("usage: no runner configured for the %s keychain entry", service)
-		}
-		return run(ctx, "security", "find-generic-password", "-s", service, "-a", account, "-w")
 	}
 }
 
@@ -211,13 +197,13 @@ func claudeCLIVersion(run execx.Runner) func(context.Context) (string, error) {
 	}
 }
 
-// claudeKeychainToken parses the real "Claude Code-credentials" keychain item,
-// which nests everything under "claudeAiOauth" (the same shape
-// internal/catalog.ClaudeFetcher.token already unwraps) — a flat
+// claudeToken parses Claude Code's credentials (the "Claude Code-credentials"
+// keychain item on macOS, ~/.claude/.credentials.json on Linux: the same
+// JSON), which nest everything under "claudeAiOauth" (the shape
+// internal/catalog.ClaudeFetcher.token also unwraps) — a flat
 // {accessToken, expiresAt} parse silently zero-values expiresAt, which reads
 // as "already expired" forever regardless of the real token's validity.
-func claudeKeychainToken(run execx.Runner, service, account string) func(context.Context) (string, time.Time, error) {
-	read := keychainBytes(run, service, account)
+func claudeToken(read creds.Reader, service string) func(context.Context) (string, time.Time, error) {
 	return func(ctx context.Context) (string, time.Time, error) {
 		out, err := read(ctx)
 		if err != nil {
@@ -236,12 +222,11 @@ func claudeKeychainToken(run execx.Runner, service, account string) func(context
 	}
 }
 
-// cursorKeychainToken parses the real "cursor-access-token" keychain item,
+// cursorToken parses the real "cursor-access-token" keychain item,
 // which is a bare JWT string, not JSON — json.Unmarshal-ing it directly fails
 // outright. Its expiry comes from the standard "exp" claim (RFC 7519, seconds
 // since epoch) in the token's own payload segment.
-func cursorKeychainToken(run execx.Runner, service, account string) func(context.Context) (string, time.Time, error) {
-	read := keychainBytes(run, service, account)
+func cursorToken(read creds.Reader, service string) func(context.Context) (string, time.Time, error) {
 	return func(ctx context.Context) (string, time.Time, error) {
 		out, err := read(ctx)
 		if err != nil {
@@ -269,15 +254,15 @@ func cursorKeychainToken(run execx.Runner, service, account string) func(context
 // SourcesFromEnv is the single decision point for whether this daemon talks
 // to the real world (S-4). The default is NO sources: a daemon started by a
 // test, by scripts/e2e.sh, by `make dev`, or by hand from a worktree polls
-// nothing, reads no keychain and makes no request. Production is opt-in —
-// `swarm install`'s launchd plist sets SWARM_USAGE=live, and that is the only
-// place it is set.
-func SourcesFromEnv(osEnv func(string) string, userHome, user string,
+// nothing, reads no keychain or credential file and makes no request.
+// Production is opt-in — `swarm install`'s launchd plist or systemd unit sets
+// SWARM_USAGE=live, and those are the only places it is set.
+func SourcesFromEnv(osEnv func(string) string, userHome string, cs creds.Sources,
 	hc *http.Client, run execx.Runner, start execx.Starter, d *db.DB, grok *Grok) []Source {
 	if osEnv("SWARM_USAGE") != "live" {
 		return nil
 	}
-	return DefaultSources(userHome, user, hc, run, start, d, grok)
+	return DefaultSources(userHome, cs, hc, run, start, d, grok)
 }
 
 // Poller fetches every enabled source on a schedule and keeps the latest
