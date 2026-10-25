@@ -166,7 +166,7 @@ func TestRemoteWithoutCredentials(t *testing.T) {
 		}
 		for _, p := range []string{"/api/health", "/api/items", "/api/nope"} {
 			rec := serve(remoteReq(origin, "GET", p, daemonToken))
-			wantErr(t, rec.Code, rec.Body.Bytes(), 503, "setup_required", "Run `swarm auth set` on the Mac to turn on remote access.")
+			wantErr(t, rec.Code, rec.Body.Bytes(), 503, "setup_required", "Run `swarm auth set` on the computer running Swarm to turn on remote access.")
 		}
 		// local-only routes stay invisible
 		wantErrRec := serve(remoteReq(origin, "GET", "/api/bootstrap", ""))

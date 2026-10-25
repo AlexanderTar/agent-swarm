@@ -174,14 +174,14 @@ func (s *Store) Preflight(ctx context.Context, in PreflightInput) error {
 		return err
 	}
 	if !slices.Contains(cfg.EnabledAgents, in.Kind) {
-		return fmt.Errorf("%s isn't installed on this Mac.", in.Kind.Display())
+		return fmt.Errorf("%s isn't installed on this computer.", in.Kind.Display())
 	}
 	a, ok := s.Adapters[in.Kind]
 	if !ok {
-		return fmt.Errorf("%s isn't installed on this Mac.", in.Kind.Display())
+		return fmt.Errorf("%s isn't installed on this computer.", in.Kind.Display())
 	}
 	if _, ok := a.Installed(ctx); !ok {
-		return fmt.Errorf("%s isn't installed on this Mac.", in.Kind.Display())
+		return fmt.Errorf("%s isn't installed on this computer.", in.Kind.Display())
 	}
 	// Fail safe (I5): AuthOK returns an error both for "signed out" and for output
 	// it cannot parse, so a flag that changed under us blocks the spawn with a

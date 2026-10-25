@@ -256,7 +256,7 @@ const offlineIcon = "PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB2aWV3Qm94PSIwIDA
 var offlinePage = `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <link rel=icon href="data:image/svg+xml;base64,` + offlineIcon + `">
 <title>Swarm is offline</title><body style="font:16px system-ui;max-width:28em;margin:20vh auto;padding:0 1em">
-<h1>Swarm is offline</h1><p>The Mac running Swarm is not connected. Try again in a minute.</p>`
+<h1>Swarm is offline</h1><p>The computer running Swarm is not connected. Try again in a minute.</p>`
 
 func (h *handler) proxy(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Upgrade") != "" {

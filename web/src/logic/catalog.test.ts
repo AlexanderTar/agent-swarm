@@ -441,7 +441,7 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     ).toEqual({ advisor: "gone-2 is no longer offered by Claude." });
     const broken = [entry({ kind: "claude", models: catalog[0]!.models, installed: false })];
     expect(validateChoice(ok, "none", broken, ["claude"], "orchestrator")).toEqual({
-      agent: "Claude isn't installed on this Mac.",
+      agent: "Claude isn't installed on this computer.",
     });
     const signedOut = [entry({ kind: "claude", models: catalog[0]!.models, auth_ok: false })];
     expect(validateChoice(ok, "none", signedOut, ["claude"], "orchestrator")).toEqual({

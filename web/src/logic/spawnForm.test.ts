@@ -59,10 +59,10 @@ describe("spawn form rules (§16.3, §16.10)", () => {
       ),
     ).toEqual({ name: "Enter a name containing a letter or number." });
     expect(
-      mapSubmitError(new ApiError(422, "preflight_failed", "Codex isn't installed on this Mac.")),
+      mapSubmitError(new ApiError(422, "preflight_failed", "Codex isn't installed on this computer.")),
     ).toEqual({
       banner: "Couldn't start orchestrator. Your entries are saved.",
-      detail: "Codex isn't installed on this Mac.",
+      detail: "Codex isn't installed on this computer.",
     });
     expect(
       mapSubmitError(new ApiError(409, "conflict", "This item already has an orchestrator.")),

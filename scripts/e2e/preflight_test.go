@@ -38,8 +38,8 @@ func TestScenario12PreflightFailures(t *testing.T) {
 	}, &spikeResp)
 	agent, _ := spikeResp["agent"].(map[string]any)
 	preErr, _ := agent["preflight_error"].(string)
-	if !strings.Contains(preErr, "isn't installed on this Mac.") {
-		t.Fatalf("preflight_error = %q, want \"isn't installed on this Mac.\"", preErr)
+	if !strings.Contains(preErr, "isn't installed on this computer.") {
+		t.Fatalf("preflight_error = %q, want \"isn't installed on this computer.\"", preErr)
 	}
 	// §10.7: a preflight failure never spawns a session at all; the agent
 	// stays "active" with session:null, offering only retry/cancel.

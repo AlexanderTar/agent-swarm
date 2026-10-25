@@ -115,7 +115,7 @@ func localOnlyRoute(rt route) bool {
 		rt.auth == authSession || rt.auth == authLoopback
 }
 
-const setupMessage = "Run `swarm auth set` on the Mac to turn on remote access."
+const setupMessage = "Run `swarm auth set` on the computer running Swarm to turn on remote access."
 
 // setupRequired answers 503 and reports true while a lan or tunnel caller has
 // no login to use yet: HTML for pages, the JSON error envelope under /api/.
