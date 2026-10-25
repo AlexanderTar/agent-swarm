@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -541,6 +542,20 @@ func TestGrokQuestionCardBlocksPasteButIsNoDialog(t *testing.T) {
 	for _, d := range a.StartupDialogs() {
 		if d.Match.MatchString(plain) && (d.Exclude == nil || !d.Exclude.MatchString(plain)) {
 			t.Errorf("startup dialog %q matches the question card", d.Title)
+		}
+	}
+}
+
+// UsageLimit is ObserveCapture's test as a seam: the open usage-limit card
+// (title and footer), not the upgrade modal.
+func TestGrokUsageLimit(t *testing.T) {
+	a := newGrok(testDeps(t))
+	if line, r, ok := a.UsageLimit(grokPane(t, "free-usage-limit-card"), time.Now()); !ok || !strings.Contains(line, "usage limit") || !r.IsZero() {
+		t.Errorf("limit card = %q, %v, %v", line, r, ok)
+	}
+	for _, f := range []string{"usage-modal", "idle"} {
+		if _, _, ok := a.UsageLimit(grokPane(t, f), time.Now()); ok {
+			t.Errorf("%s is not a usage-limit stop", f)
 		}
 	}
 }

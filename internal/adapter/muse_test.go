@@ -1143,3 +1143,37 @@ func TestMuseLastReply(t *testing.T) {
 		t.Fatal("missing log must be unreadable (fail open)")
 	}
 }
+
+// Live pane 2026-10-21 (BUG-110): a muse blocked on its weekly cap draws the
+// limit line and then an ordinary idle ❯ prompt, so Idle alone reads it healthy.
+// UsageLimit must see the line and read the reset in the caller's zone.
+func TestMuseUsageLimit(t *testing.T) {
+	a := newMuse(testDeps(t))
+	zone := time.FixedZone("test", 3600)
+	now := time.Date(2026, 10, 21, 9, 0, 0, 0, zone)
+	line, resetsAt, ok := a.UsageLimit(pane(t, "muse", "pane-usage-limit.txt"), now)
+	if !ok {
+		t.Fatal("limit line not detected")
+	}
+	if !strings.HasPrefix(line, "◆ Usage limit reached") {
+		t.Errorf("line = %q", line)
+	}
+	if want := time.Date(2026, 10, 26, 0, 0, 0, 0, zone); !resetsAt.Equal(want) {
+		t.Errorf("resetsAt = %v, want %v", resetsAt, want)
+	}
+	if !a.Idle(pane(t, "muse", "pane-usage-limit.txt")) {
+		t.Error("fixture should read idle, the bug being that idle hides the limit")
+	}
+	if _, _, ok := a.UsageLimit(pane(t, "muse", "pane-idle.txt"), now); ok {
+		t.Error("a healthy idle pane is not usage-limited")
+	}
+	// A reset month already behind now is next year's.
+	late := time.Date(2026, 12, 30, 9, 0, 0, 0, zone)
+	if _, r, _ := a.UsageLimit("◆ Usage limit reached · wait for usage to reset at Jan 2 at 3:30 PM", late); !r.Equal(time.Date(2027, 1, 2, 15, 30, 0, 0, zone)) {
+		t.Errorf("year roll = %v", r)
+	}
+	// No parseable reset: still a limit, with a zero reset.
+	if _, r, ok := a.UsageLimit("◆ Usage limit reached · /upgrade", now); !ok || !r.IsZero() {
+		t.Errorf("unparseable reset = %v, %v", r, ok)
+	}
+}
