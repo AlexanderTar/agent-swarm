@@ -189,7 +189,9 @@ type SessionRenamer interface {
 // the reset it names (zero when the line names none or it does not parse).
 // The runtime ends a session that shows it before its first checkpoint and
 // marks the kind exhausted until resetsAt. A kind with no known line leaves it
-// out; Codex's rate-limit picker is a model-switch offer, not a stop.
+// out. Grok's usage-limit card stays a Needs-you row that marks grok exhausted
+// (Grok.ObserveCapture); Codex's rate-limit picker is a model-switch offer, not
+// a stop.
 type UsageLimiter interface {
 	UsageLimit(capture string, now time.Time) (line string, resetsAt time.Time, ok bool)
 }

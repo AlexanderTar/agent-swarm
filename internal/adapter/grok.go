@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -388,17 +387,6 @@ func (g *Grok) ParseHook(event string, stdin []byte) (HookInput, error) {
 		}
 	}
 	return in, nil
-}
-
-// UsageLimit implements UsageLimiter: the open usage-limit card, which names no
-// reset. Same test as ObserveCapture: title in the gutter and footer both present.
-func (g *Grok) UsageLimit(capture string, _ time.Time) (string, time.Time, bool) {
-	plain := StripANSI(capture)
-	line := strings.TrimSpace(grokUsageLimit.FindString(plain))
-	if line == "" || !grokCard.MatchString(plain) {
-		return "", time.Time{}, false
-	}
-	return line, time.Time{}, true
 }
 
 // ObserveCapture is told of every pane capture reconcile reads. The usage-limit

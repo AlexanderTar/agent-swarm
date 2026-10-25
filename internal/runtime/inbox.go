@@ -920,6 +920,9 @@ func summarizeFor(kind MessageKind, payload json.RawMessage) string {
 		if q, ok := str("question"); ok && q != "" {
 			line += ": " + quote(q)
 		}
+		if r, ok := str("reason"); ok && r != "" {
+			line += ": " + quote(r)
+		}
 		return line
 	case "digest":
 		if lines, ok := raw["lines"].([]any); ok && len(lines) > 0 {
