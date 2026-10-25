@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -49,6 +50,7 @@ func (s *Server) configRoutes() []route {
 	return []route{
 		{"GET", "/api/settings", authDaemon, s.getSettings},
 		{"PUT", "/api/settings", authDaemon, s.putSettings},
+		{"PATCH", "/api/settings", authDaemon, s.patchSettings},
 		{"GET", "/api/catalog", authDaemon, s.getCatalog},
 		{"POST", "/api/catalog/refresh", authDaemon, s.refreshCatalog},
 		{"GET", "/api/repos", authDaemon, s.getRepos},
@@ -85,6 +87,38 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	s.settingsSaved(prev, saved)
+	writeJSON(w, http.StatusOK, saved)
+}
+
+// patchSettings changes only the settings named in the body (swarm settings
+// set), leaving every other one as stored; see settings.Store.Patch.
+func (s *Server) patchSettings(w http.ResponseWriter, r *http.Request) {
+	var fields map[string]json.RawMessage
+	if err := readJSON(r, &fields); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	if len(fields) == 0 {
+		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Name at least one setting to change."))
+		return
+	}
+	prev, err := s.Settings.Get(r.Context())
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	saved, err := s.Settings.Patch(r.Context(), fields)
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	s.settingsSaved(prev, saved)
+	writeJSON(w, http.StatusOK, saved)
+}
+
+// settingsSaved is what a settings change sets off, for PUT and PATCH alike.
+func (s *Server) settingsSaved(prev, saved settings.Settings) {
 	if !slices.Equal(prev.ScanExcludes, saved.ScanExcludes) {
 		s.Repos.Trigger()
 	}
@@ -93,7 +127,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if s.RT != nil && prev.MaxConcurrentAgents != saved.MaxConcurrentAgents {
 		s.RT.Kick()
 	}
-	writeJSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) getCatalog(w http.ResponseWriter, r *http.Request) {

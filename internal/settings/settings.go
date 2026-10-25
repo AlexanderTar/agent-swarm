@@ -5,10 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -118,6 +120,10 @@ type Store struct {
 	Now       func() time.Time
 	ModelsFor func(context.Context, kinds.AgentKind) ([]catalog.CatalogModel, string, error)
 	Installed func(context.Context) []kinds.AgentKind
+
+	// writeMu serializes Put and Patch: Patch's read-merge-write must not
+	// interleave with another write (the daemon is the table's only writer).
+	writeMu sync.Mutex
 }
 
 func (s *Store) Get(ctx context.Context) (Settings, error) {
@@ -178,6 +184,46 @@ func fillMissing(s *Settings, def Settings) {
 }
 
 func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.put(ctx, next)
+}
+
+// Patch changes only the given top-level settings (by JSON name) and keeps
+// every other one as stored, validating the result like Put. It reads,
+// merges and writes under the lock Put takes, so it never overwrites a
+// concurrent change to another setting (swarm settings set, with no menu bar
+// to edit them on Linux). low_token_mode stays with POST /api/low-token, as
+// in Put.
+func (s *Store) Patch(ctx context.Context, fields map[string]json.RawMessage) (Settings, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	cur, err := s.Get(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	raw, _ := json.Marshal(cur)
+	doc := map[string]json.RawMessage{}
+	json.Unmarshal(raw, &doc)
+	for k, v := range fields {
+		if _, ok := doc[k]; !ok || k == "low_token_mode" {
+			return cur, invalid("%s isn't a setting that can be changed here.", k)
+		}
+		doc[k] = v
+	}
+	merged, _ := json.Marshal(doc)
+	var next Settings
+	if err := json.Unmarshal(merged, &next); err != nil {
+		var te *json.UnmarshalTypeError
+		if errors.As(err, &te) {
+			return cur, invalid("%s must be a JSON %s.", te.Field, te.Type)
+		}
+		return cur, invalid("Invalid value: %v", err)
+	}
+	return s.put(ctx, next)
+}
+
+func (s *Store) put(ctx context.Context, next Settings) (Settings, error) {
 	prev, err := s.Get(ctx)
 	if err != nil {
 		return Settings{}, err
