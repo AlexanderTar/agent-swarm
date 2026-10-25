@@ -293,3 +293,82 @@ func TestReclaimTreatsAHeadInASiblingWorktreeBranchAsMerged(t *testing.T) {
 		t.Fatalf("integration tree state = %s, want active", state)
 	}
 }
+
+// siblingFixture is a root with an integration tree and a package tree A
+// holding one commit that no ref contains yet.
+func newSiblingFixture(t *testing.T) (*evidenceFixture, worktree.Worktree, worktree.Worktree) {
+	t.Helper()
+	f := newEvidenceFixture(t)
+	f.ghErr = errors.New("gh unavailable")
+	integ := seedReclaimWorktree(t, f.s, f.repoID, f.repoPath, "chore/integ", "owner_1", f.epic.ID)
+	a := f.tree(t, "task/a")
+	commitFile(t, a.Path, "a.txt", "a") // its own commit: f.tree's is shared by same-second siblings
+	return f, integ, a
+}
+
+func (f *evidenceFixture) wantRetainedUnmerged(t *testing.T, wt worktree.Worktree, why string) {
+	t.Helper()
+	if state, reason := f.reclaim(t, wt); state != "retained" || reason != "unmerged" {
+		t.Fatalf("%s: state/reason = %s/%s, want retained/unmerged", why, state, reason)
+	}
+}
+
+func TestReclaimRetainsATreeNoSiblingBranchContains(t *testing.T) {
+	f, integ, a := newSiblingFixture(t)
+	b := f.tree(t, "task/b")
+	commitFile(t, b.Path, "b.txt", "b")
+	mergeInto(t, integ, "task/b") // contains B, not A
+	f.wantRetainedUnmerged(t, a, "HEAD in no sibling branch")
+}
+
+func TestReclaimIgnoresASiblingOfAnotherRoot(t *testing.T) {
+	f, _, a := newSiblingFixture(t)
+	other := seedEpicWithTask(t, f.s)
+	seedReclaimAgent(t, f.s, "owner_2", other.ID, "")
+	finishReclaimAgent(t, f.s, "owner_2", f.s.Now())
+	integ2 := seedReclaimWorktree(t, f.s, f.repoID, f.repoPath, "chore/other-root", "owner_2", other.ID)
+	mergeInto(t, integ2, "task/a")
+	f.wantRetainedUnmerged(t, a, "branch of a sibling in another root")
+}
+
+func TestReclaimIgnoresASiblingOfAnotherRepo(t *testing.T) {
+	f, _, a := newSiblingFixture(t)
+	repo2 := seedRepo(t, f.s, "other")
+	seedReclaimWorktree(t, f.s, repo2, repoPathFor(t, f.s, repo2), "chore/other-repo", "owner_1", f.epic.ID)
+	// the name exists in A's repo too, holding A's commit
+	gitOutput(t, f.repoPath, "branch", "chore/other-repo", "task/a")
+	f.wantRetainedUnmerged(t, a, "branch of a sibling row in another repo")
+}
+
+func TestReclaimIgnoresARemovedSibling(t *testing.T) {
+	f, integ, a := newSiblingFixture(t)
+	mergeInto(t, integ, "task/a")
+	mustExec(t, f.s.DB, `UPDATE worktrees SET state = 'removed' WHERE id = ?`, integ.ID)
+	f.wantRetainedUnmerged(t, a, "branch of a removed sibling row")
+}
+
+func TestReclaimCountsARetainedSibling(t *testing.T) {
+	f, integ, a := newSiblingFixture(t)
+	mergeInto(t, integ, "task/a")
+	mustExec(t, f.s.DB, `UPDATE worktrees SET state = 'retained', retained_reason = 'unmerged' WHERE id = ?`, integ.ID)
+	if state, _ := f.reclaim(t, a); state != "removed" {
+		t.Fatalf("branch of a retained sibling: state = %s, want removed", state)
+	}
+}
+
+func TestReclaimTreatsADetachedHeadInASiblingBranchAsMerged(t *testing.T) {
+	f, integ, _ := newSiblingFixture(t)
+	sha := strings.TrimSpace(gitOutput(t, f.repoPath, "rev-parse", "HEAD"))
+	rev, err := f.s.Worktree.Review(context.Background(), worktree.CreateInput{RepoID: f.repoID,
+		RepoPath: f.repoPath, OwnerAgentID: "owner_1", RootItemID: f.epic.ID}, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, rev.Path, "rev.txt", "rev") // moves HEAD off detached_sha
+	head := strings.TrimSpace(gitOutput(t, rev.Path, "rev-parse", "HEAD"))
+	f.wantRetainedUnmerged(t, rev, "detached HEAD in no branch")
+	mergeInto(t, integ, head)
+	if state, _ := f.reclaim(t, rev); state != "removed" {
+		t.Fatalf("detached HEAD in a sibling branch: state = %s, want removed", state)
+	}
+}
