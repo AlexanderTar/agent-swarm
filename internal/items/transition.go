@@ -76,6 +76,13 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 			return Item{}, err
 		}
 	}
+	// moving a root out of review by hand costs its approved finish; reconcileRoot would
+	// otherwise put it straight back (BUG-116/119)
+	if from == InReview && to == InProgress {
+		if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
+			return Item{}, err
+		}
+	}
 	// reopen: old acceptances and close approvals no longer count; cancel: nothing is left to accept
 	if (to == Ready && (from == Done || from == Cancelled)) || to == Cancelled {
 		if err := s.staleAccepts(ctx, tx, it); err != nil {
@@ -998,8 +1005,25 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	}
 	seen, err := exists(ctx, tx, `SELECT 1 FROM requests WHERE item_id = ? AND kind = ?
 		AND json_extract(binding_json, '$.integrated_checkpoint') = ?`, it.ID, kind, st.ckpID)
-	if err != nil || seen {
+	if err != nil {
 		return err
+	}
+	if seen {
+		// BUG-116/119: a root pulled out of review while its approval still binds the newest
+		// integration (and no PR was closed) goes back, so the approved finish isn't lost.
+		if it.Status != InProgress {
+			return nil
+		}
+		approved, merge, err := s.approvedCurrent(ctx, tx, it, st)
+		if err != nil || !approved {
+			return err
+		}
+		if merge != "" {
+			if _, _, closed, err := s.mergeState(ctx, tx, it, st); err != nil || closed {
+				return err
+			}
+		}
+		return s.setStatus(ctx, tx, &it, InReview)
 	}
 	if err := s.setStatus(ctx, tx, &it, InReview); err != nil {
 		return err
