@@ -1930,8 +1930,13 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if it.Status == items.Blocked {
 				to = it.StatusBeforeBlock
 			}
-			if err := s.tryTransition(ctx, tx, itemKey, to); err != nil {
-				return err
+			// BUG-116/119: a resumed orchestrator or a reviewer on the root writes accepted too;
+			// that is no reason to pull a root out of review and drop its approved finish.
+			keepInReview := it.Status == items.InReview && it.ID == it.RootID && it.Type != items.Task
+			if !keepInReview {
+				if err := s.tryTransition(ctx, tx, itemKey, to); err != nil {
+					return err
+				}
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?
 				WHERE to_agent_id = ? AND kind = 'assignment' AND state = 'delivered'`,
