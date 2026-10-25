@@ -396,7 +396,17 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
   banner itself was not looked at).
 - Agents: `claude` reports `claude` as its pane command, npm-installed
   `codex` reports `node`; the real-tty paste test passes unchanged.
-- Not verified here: a real agent session end to end (it spends tokens), a
-  real `swarm install` on this machine (it edits ~/.claude and ~/.codex), Avahi
-  publishing on the LAN, Cursor (not installed), and the GitHub Linux jobs
-  (they run on the first push).
+- Real install: `swarm install --yes` wrote, enabled and started the unit
+  (active, `KillMode=process`); `swarm doctor` passes except Ollama (not
+  installed); `swarm usage --refresh` read Claude's usage from
+  `~/.claude/.credentials.json`.
+- Real agents end to end, on a Flutter repo's four open issues: a Claude
+  orchestrator worked in a worktree from `origin/main`, asked its questions
+  (board request, desktop notification, answered in the terminal), ran a
+  coder, a reviewer and a UI reviewer, merged, ran the repo's checks and
+  asked the finish question; the chosen PR was pushed and opened. The
+  board's Terminal button opened Ghostty once it was installed (cosmic-term
+  before). A Codex orchestrator finished a chore, and pause and resume
+  worked on another.
+- Not verified here: Avahi publishing on the LAN, Cursor (not installed),
+  and the GitHub Linux jobs (they run on the first push).
