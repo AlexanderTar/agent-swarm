@@ -50,7 +50,7 @@ func TestSystemdUnitContent(t *testing.T) {
 		`ExecStart="/Users/a/.swarm/bin/swarm" "daemon" "--home" "` + c.Home + `"` + "\n",
 		"WorkingDirectory=" + c.Home + "\n",
 		// The unit is the only place the production switches are set (S-1, S-4, R9).
-		`Environment="PATH=/Users/a/bin:/usr/bin&x" "SWARM_HOME=` + c.Home + `" "SWARM_TMUX_SOCKET=swarm" "SWARM_USAGE=live"` + "\n",
+		`Environment="PATH=/Users/a/bin:/usr/bin&x" "SWARM_HOME=` + c.Home + `" "SWARM_TMUX_SOCKET=swarm" "SWARM_USAGE=live" "SWARM_NOTIFY=desktop"` + "\n",
 		"\nRestart=on-failure\nRestartSec=10\n",
 		// The tmux server and every agent must survive a restart (see SystemdUnit).
 		"\nKillMode=process\n",

@@ -328,6 +328,12 @@ Baseline (Pop!_OS 24.04, Go 1.27.3 and tmux 3.8 from Homebrew on Linux):
   (§2.1). Dropped the `systemd-run --scope` fallback because the probe passed,
   so it needs no guard. Still not taken: Codex-only default settings (same on
   macOS, separate change).
+- **Codex phase 2 review.** Taken: `SWARM_NOTIFY=desktop` in the unit now,
+  read from Phase 6 on; `XDG_CONFIG_HOME` and macOS-only migrate notes in
+  `docs/isolated-runs.md`. Not taken: the `Service` interface is `Noun`, `Path`,
+  `Render`, `Commands`, `Start`, `Stop`, `Removed` instead of §2.1's sketch,
+  and doctor's launchd row keeps its own plist check (unchanged macOS code);
+  the systemd row goes through `systemdCheck(Config)`.
 - **Codex round 3** (plan v3, "needs changes"). Taken: subscribe → `Latest`
   → drain ordering for the notifier (§6.1). Declined again, on purpose: the
   Claude-first default settings. A Codex-only Mac has the same default today,

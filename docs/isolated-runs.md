@@ -7,7 +7,7 @@ Use this for any e2e, probe or experiment that runs the `swarm` binary with its 
 `SWARM_HOME` (or `--home`) moves Swarm's data. It does not move the machine-wide things Swarm also owns:
 
 - the launchd labels `dev.swarm.daemon` and `dev.swarm.updater` (`internal/install/launchd.go` `Label`, `internal/install/legacy.go` `UpdaterLabel`): they are fixed, so `launchctl bootout gui/<uid>/dev.swarm.daemon` from a scratch run stops the **live** daemon, whatever `HOME` is;
-- on Linux, the systemd user unit `dev.swarm.daemon.service` (`internal/install/service.go` `Unit`): `systemctl --user disable --now dev.swarm.daemon.service` stops the live daemon the same way. A fake `HOME` moves the unit file (`~/.config/systemd/user`) but not the running user manager, which still has the live unit loaded;
+- on Linux, the systemd user unit `dev.swarm.daemon.service` (`internal/install/service.go` `Unit`): `systemctl --user disable --now dev.swarm.daemon.service` stops the live daemon the same way. A fake `HOME` moves the unit file only when `XDG_CONFIG_HOME` is unset or scratch too (the unit goes to `$XDG_CONFIG_HOME/systemd/user` when it is set), and it never moves the running user manager, which still has the live unit loaded;
 - the agents' own configuration (`~/.claude`, `~/.codex`, `~/.cursor`, `~/.gemini`, `~/.grok`, muse) and `~/.local/bin/swarm`;
 - `~/.swarm/research` (agents write research notes there regardless of `SWARM_HOME`).
 
@@ -37,14 +37,14 @@ env -i PATH="$S/shim:/usr/bin:/bin:/opt/homebrew/bin" HOME="$S/fakehome" USER=te
   SWARM_HOME="$S/home" SWARM_TMUX_SOCKET=swarm-e2e-mine swarm install
 ```
 
-- On Linux, stub `systemctl` and `loginctl` the same way (same script, one file each) and put Homebrew on Linux's prefix in place of `/opt/homebrew/bin`; the shim log must stay absent just the same.
+- On Linux, stub `systemctl` and `loginctl` the same way (same script, one file each) and put Homebrew on Linux's prefix in place of `/opt/homebrew/bin`; the shim log must stay absent just the same. `env -i` also clears `XDG_CONFIG_HOME`; if you don't use it, unset `XDG_CONFIG_HOME` or point it inside `$S`, or a `--live` run writes the unit into your real `~/.config/systemd/user`.
 - `HOME` is a fake folder, `PATH` starts with the `launchctl` stub, and `SWARM_HOME` is scratch. Do not set `SWARM_USAGE=live`.
 - After the run, `$S/launchctl-shim.log` must not exist (an isolated run never calls `launchctl`). If you pass `--live`, it lists exactly what would have hit the live job.
 - Never use `--live` without the fake `HOME` and the stub.
 - An agent started inside the run can still guess the real home from its work-dir path and write to `~/.swarm/research`; check the live folder afterwards and remove strays.
 - `scripts/e2e.sh` follows this rule for the fake adapter: it never runs `swarm install`.
 - An isolated `swarm install` writes no plist and starts no daemon, so here it only proves nothing live is touched. To run an isolated daemon, start it yourself under the same `env -i ...` prefix: `swarm daemon --home "$S/home" --port 17778` (any free port other than 7777), and stop it with Ctrl-C.
-- `swarm migrate` (the one-time 1.x upgrade) always acts on the fixed launchd labels, so it refuses a non-default `--home` (exit 2, in every mode including `--dry-run`) unless you pass `--live`. Never run it for real with a scratch home; `TestMigrateRefusesANonDefaultHomeWithoutLive` (`cmd/swarm`) guards the refusal.
+- `swarm migrate` (the one-time 1.x upgrade, macOS only: on Linux it prints that there is nothing to migrate and exits 0 without touching anything) always acts on the fixed launchd labels, so it refuses a non-default `--home` (exit 2, in every mode including `--dry-run`) unless you pass `--live`. Never run it for real with a scratch home; `TestMigrateRefusesANonDefaultHomeWithoutLive` (`cmd/swarm`) guards the refusal.
 
 ## Safe setup for Go tests
 

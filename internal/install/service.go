@@ -141,7 +141,9 @@ func unitMissing(err error) bool {
 
 // SystemdUnit renders the user unit. Like the plist it is the only place the
 // production switches SWARM_TMUX_SOCKET=swarm and SWARM_USAGE=live are set
-// (S-1, S-4, R9). systemd sets HOME and USER for user units itself.
+// (S-1, S-4, R9), plus SWARM_NOTIFY=desktop: on Linux the daemon shows desktop
+// notifications itself, which only the installed daemon may do (macOS leaves
+// them to the menu bar app). systemd sets HOME and USER for user units itself.
 //
 // KillMode=process: the daemon starts the private tmux server, which stays
 // in the unit's cgroup. The default (control-group) would kill tmux and every
@@ -152,7 +154,7 @@ func unitMissing(err error) bool {
 // plist's KeepAlive{SuccessfulExit: false, Crashed: true} with ThrottleInterval 10.
 func SystemdUnit(c Config) []byte {
 	logs := filepath.Join(c.Home, "logs")
-	env := []string{"PATH=" + c.Path, "SWARM_HOME=" + c.Home, "SWARM_TMUX_SOCKET=swarm", "SWARM_USAGE=live"}
+	env := []string{"PATH=" + c.Path, "SWARM_HOME=" + c.Home, "SWARM_TMUX_SOCKET=swarm", "SWARM_USAGE=live", "SWARM_NOTIFY=desktop"}
 	for i, kv := range env {
 		env[i] = systemdQuote(kv, false)
 	}
