@@ -861,6 +861,8 @@ func gitRepo(t *testing.T, sign bool, keyID string) string {
 	if sign {
 		run("config", "user.signingkey", keyID)
 		run("config", "commit.gpgsign", "true")
+		// The key is a GPG key id: a global gpg.format=ssh would read it as a key file.
+		run("config", "gpg.format", "openpgp")
 		run("config", "gpg.program", "gpg")
 	} else {
 		run("config", "commit.gpgsign", "false")

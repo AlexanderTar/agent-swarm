@@ -23,7 +23,7 @@ func newSpawner(t *testing.T) *Spawner {
 	}
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "tmux.conf")
-	if err := os.WriteFile(conf, TmuxConf(), 0o644); err != nil {
+	if err := os.WriteFile(conf, TmuxConf(nil), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := &Spawner{Socket: fmt.Sprintf("swarm-test-%d-%s", os.Getpid(), t.Name()),
@@ -409,7 +409,7 @@ func TestPaneFormatSurvivesLocaleSanitizationOfControlCharacters(t *testing.T) {
 // remain-on-exit keeps a dead pane visible so the reconciler can read its status.
 // mouse on enables wheel scrolling through conversation history rather than cycling prompt history.
 func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
-	conf := string(TmuxConf())
+	conf := string(TmuxConf(ClipboardConf("darwin")))
 	for _, want := range []string{
 		"set -g set-titles on",
 		"set -g set-titles-string '#W'",
@@ -624,5 +624,98 @@ func TestLauncherKeepsShortArgsAndQuotesThem(t *testing.T) {
 	}
 	if _, err := (&Spawner{}).launcher("ses_1", []string{long}); err == nil {
 		t.Fatal("a long arg with no launch dir must fail, not silently overflow tmux's line")
+	}
+}
+
+// pbcopy on macOS. On Linux a copy-command that picks a clipboard tool, and
+// WAYLAND_DISPLAY added to what an attaching client refreshes.
+func TestClipboardConfFollowsThePlatform(t *testing.T) {
+	if conf := string(TmuxConf(ClipboardConf("darwin"))); !strings.HasSuffix(conf, "set -g mouse on\nset -s copy-command pbcopy\n") {
+		t.Errorf("macOS tmux.conf:\n%s", conf)
+	}
+	conf := string(TmuxConf(ClipboardConf("linux")))
+	for _, want := range []string{"set -g mouse on\n", "set -ga update-environment WAYLAND_DISPLAY\n", "set -s copy-command 'if [ -n \"$WAYLAND_DISPLAY\" ]"} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("Linux tmux.conf lacks %q:\n%s", want, conf)
+		}
+	}
+	if strings.Contains(conf, "pbcopy") {
+		t.Errorf("Linux tmux.conf uses pbcopy:\n%s", conf)
+	}
+}
+
+// The Linux copy-command, run as tmux runs it (sh -c), against stub tools:
+// the session's display decides the tool, and with none installed the copy
+// is drained rather than left blocking tmux.
+func TestLinuxCopyCommandPicksTheToolForTheDisplay(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tools []string
+		env   []string
+		want  string
+	}{
+		{"wayland", []string{"wl-copy", "xclip"}, []string{"WAYLAND_DISPLAY=wayland-1", "DISPLAY=:1"}, "wl-copy"},
+		{"x11", []string{"wl-copy", "xclip", "xsel"}, []string{"DISPLAY=:1"}, "xclip -selection clipboard -in"},
+		{"x11 with xsel only", []string{"xsel"}, []string{"DISPLAY=:1"}, "xsel --clipboard --input"},
+		{"wayland without wl-copy", []string{"xclip"}, []string{"WAYLAND_DISPLAY=wayland-1", "DISPLAY=:1"}, "xclip -selection clipboard -in"},
+		{"no display", []string{"wl-copy", "xclip"}, nil, ""},
+		{"no tool", nil, []string{"DISPLAY=:1"}, ""},
+	} {
+		dir := t.TempDir()
+		out := filepath.Join(dir, "copied")
+		for _, tool := range tc.tools {
+			stub := "#!/bin/sh\nprintf '%s ' \"$(basename \"$0\")\" \"$@\" > " + out + "\ncat >> " + out + "\n"
+			if err := os.WriteFile(filepath.Join(dir, tool), []byte(stub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.Command("/bin/sh", "-c", linuxCopy)
+		cmd.Env = append([]string{"PATH=" + dir + ":/usr/bin:/bin"}, tc.env...)
+		cmd.Stdin = strings.NewReader("selected text")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v: %s", tc.name, err, b)
+		}
+		got, _ := os.ReadFile(out)
+		if tc.want == "" {
+			if len(got) != 0 {
+				t.Errorf("%s: a tool ran: %q", tc.name, got)
+			}
+			continue
+		}
+		if want := tc.want + " selected text"; strings.TrimSpace(string(got)) != want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, want)
+		}
+	}
+}
+
+func TestLinuxBaseEnv(t *testing.T) {
+	env := func(vars map[string]string) map[string]string {
+		return LinuxBaseEnv(func(k string) string { return vars[k] })
+	}
+	got := env(map[string]string{"USER": "u", "HOME": "/home/u", "PATH": "/usr/bin", "LANG": "C",
+		"XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+		"DISPLAY": ":1", "WAYLAND_DISPLAY": "wayland-1", "GNUPGHOME": "/tmp/g"})
+	for k, want := range map[string]string{"USER": "u", "HOME": "/home/u", "PATH": "/usr/bin", "LANG": "C.UTF-8",
+		"TERM": "xterm-256color", "XDG_RUNTIME_DIR": "/run/user/1000",
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus", "GNUPGHOME": "/tmp/g"} {
+		if got[k] != want {
+			t.Errorf("%s = %q, want %q", k, got[k], want)
+		}
+	}
+	for _, k := range []string{"TMPDIR", "DISPLAY", "WAYLAND_DISPLAY"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s is set: %q", k, got[k])
+		}
+	}
+	if _, ok := got["USER"]; !ok {
+		t.Error("USER must stay present, as in BaseEnv")
+	}
+	if got := env(map[string]string{"TMPDIR": "/var/tmp/u"}); got["TMPDIR"] != "/var/tmp/u" {
+		t.Errorf("a set TMPDIR = %q", got["TMPDIR"])
+	}
+	for lang, want := range map[string]string{"en_GB.UTF-8": "en_GB.UTF-8", "de_DE.utf8": "de_DE.utf8", "": "C.UTF-8", "POSIX": "C.UTF-8"} {
+		if got := env(map[string]string{"LANG": lang}); got["LANG"] != want {
+			t.Errorf("LANG %q -> %q, want %q", lang, got["LANG"], want)
+		}
 	}
 }

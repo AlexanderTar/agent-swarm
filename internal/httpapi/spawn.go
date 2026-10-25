@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/attachments"
+	"github.com/AlexanderTar/agent-swarm/internal/desktop"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
@@ -320,6 +321,16 @@ func (s *Server) ghosttyFallback(ctx context.Context, tmuxName string) error {
 
 func (s *Server) terminal(w http.ResponseWriter, r *http.Request) {
 	ctx, name := r.Context(), r.PathValue("name")
+	// in_place: the caller (swarm attach) attaches in its own terminal, so the
+	// daemon opens no window for it. The terminal.open event still goes out,
+	// so on macOS the menu bar reacts to it as it always has.
+	var req struct {
+		InPlace bool `json:"in_place"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		s.writeErr(w, err)
+		return
+	}
 	a, ses, err := s.loadAgentStatus(ctx, name)
 	if err != nil {
 		s.writeErr(w, err)
@@ -332,6 +343,14 @@ func (s *Server) terminal(w http.ResponseWriter, r *http.Request) {
 	tmuxName, _, err := s.RT.Terminal(ctx, name)
 	if err != nil {
 		s.writeErr(w, err)
+		return
+	}
+	if req.InPlace {
+		writeJSON(w, http.StatusOK, terminalWire{Tmux: tmuxName, TmuxSocket: s.Deps.RT.TmuxSocket(), OpenedBy: "cli"})
+		return
+	}
+	if s.Deps.Terminal != nil {
+		s.openTerminal(w, r, tmuxName)
 		return
 	}
 	s.termMu.Lock()
@@ -372,6 +391,21 @@ func (s *Server) terminal(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	writeJSON(w, http.StatusOK, terminalWire{Tmux: tmuxName, TmuxSocket: s.Deps.RT.TmuxSocket(), OpenedBy: openedBy})
+}
+
+// openTerminal is the Linux flow: nothing else will open a window, so the
+// daemon does it before answering, and a failure reaches the caller.
+func (s *Server) openTerminal(w http.ResponseWriter, r *http.Request, tmuxName string) {
+	err := s.Deps.Terminal(r.Context(), []string{s.Deps.RT.TmuxBin(), "-L", s.Deps.RT.TmuxSocket(), "attach", "-t", tmuxName})
+	switch {
+	case errors.Is(err, desktop.ErrNoTerminal), errors.Is(err, desktop.ErrNoSession):
+		s.writeErr(w, apiErr(http.StatusConflict, "conflict", err.Error()))
+	case err != nil:
+		s.Log("httpapi: open terminal for %s: %v", tmuxName, err)
+		s.writeErr(w, apiErr(http.StatusInternalServerError, "internal", err.Error()))
+	default:
+		writeJSON(w, http.StatusOK, terminalWire{Tmux: tmuxName, TmuxSocket: s.Deps.RT.TmuxSocket(), OpenedBy: "daemon"})
+	}
 }
 
 // terminalOpened is sent by the menubar once it runs the AppleScript; it

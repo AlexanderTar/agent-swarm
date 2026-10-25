@@ -403,7 +403,7 @@ func TestAgentsPrintsATree(t *testing.T) {
 // the one thing S-1 exists to prevent. Compare the whole argument.
 func TestAttachRunsTmuxAttachOnTheDaemonsOwnSocket(t *testing.T) {
 	const socket = "swarm-test-4242"
-	srv, _, home := stubDaemon(t, map[string]string{
+	srv, got, home := stubDaemon(t, map[string]string{
 		"POST /api/agents/coder-1/terminal": `{"tmux":"coder-1","tmux_socket":"` + socket +
 			`","opened_by":"menubar"}`,
 	})
@@ -421,6 +421,10 @@ func TestAttachRunsTmuxAttachOnTheDaemonsOwnSocket(t *testing.T) {
 	want := []string{"tmux", "-L", socket, "attach", "-t", "coder-1"}
 	if !slices.Equal(argv, want) {
 		t.Fatalf("argv = %v, want %v", argv, want)
+	}
+	// It attaches here, so it asks the daemon not to open a window as well.
+	if len(*got) != 1 || (*got)[0].body != `{"in_place":true}` {
+		t.Fatalf("request = %+v, want in_place", *got)
 	}
 	// Exact-match already rules it out; assert it separately so the failure message
 	// names the invariant rather than a diff.

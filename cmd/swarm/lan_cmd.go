@@ -50,19 +50,32 @@ func cmdLAN(args []string, stdout, stderr io.Writer) int {
 	}
 	printLAN(stdout, st)
 	if sub == "enable" {
-		fmt.Fprint(stdout, lanWarnings)
+		fmt.Fprint(stdout, lanWarnings(goos))
 	}
 	return 0
 }
 
-const lanWarnings = `
-Before you use it:
-  - This is plain HTTP. Anyone on the same network can read what's sent,
-    including your password. Use it on a network you trust, like home Wi-Fi.
-  - macOS may ask whether swarm can accept incoming connections. Choose Allow,
+// lanWarnings is printed after swarm lan enable. The firewall step differs:
+// macOS asks once, while on Linux a firewall such as ufw must be told.
+func lanWarnings(goos string) string {
+	firewall := `  - macOS may ask whether swarm can accept incoming connections. Choose Allow,
     or other devices can't connect. If it doesn't ask, check the firewall in
     System Settings > Network > Firewall.
 `
+	if goos == "linux" {
+		firewall = `  - If a firewall is on (ufw, firewalld), allow incoming TCP connections to
+    the port in the address above, for example: sudo ufw allow <port>/tcp.
+    Otherwise other devices can't connect.
+  - swarm.local needs avahi-daemon and avahi-utils (avahi-publish). Without
+    them, use the address above.
+`
+	}
+	return `
+Before you use it:
+  - This is plain HTTP. Anyone on the same network can read what's sent,
+    including your password. Use it on a network you trust, like home Wi-Fi.
+` + firewall
+}
 
 func printLAN(w io.Writer, st lanStatus) {
 	fmt.Fprintf(w, "LAN: %s\n", st.State)

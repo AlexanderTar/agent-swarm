@@ -374,7 +374,7 @@ export const T = {
   taskDoneDenied: (key: string) =>
     `Couldn't move ${key} to Done. No agent has reported it complete.`,
   genericStatus: (status: string) => `Couldn't update status. The item remains ${status}.`,
-  agentNotInstalled: (agent: string) => `${agent} isn't installed on this Mac.`,
+  agentNotInstalled: (agent: string) => `${agent} isn't installed on this computer.`,
   agentNotSignedIn: (agent: string, cmd: string) =>
     `${agent} isn't signed in. Run \`${cmd}\` in a terminal.`,
   superpowersMissing: (agent: string) =>

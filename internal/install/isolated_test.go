@@ -188,3 +188,63 @@ func TestIsolatedInstallAndUninstallLeaveUserAgentConfigsAlone(t *testing.T) {
 		})
 	}
 }
+
+// serviceManagerCalls returns every call that reaches launchd, systemd or logind.
+func serviceManagerCalls(f *execx.Fake) []string {
+	var out []string
+	for _, call := range f.Calls() {
+		for _, m := range []string{"launchctl ", "systemctl ", "loginctl "} {
+			if strings.HasPrefix(call, m) {
+				out = append(out, call)
+			}
+		}
+	}
+	return out
+}
+
+// BUG-100 on Linux: the unit name dev.swarm.daemon.service is machine-wide too,
+// so a scratch home must not write it or reach systemctl.
+func TestIsolatedSystemdInstallAndUninstallNeverTouchSystemd(t *testing.T) {
+	c := isolatedHome(t)
+	c.Manager = install.Systemd
+	c.SystemdUserDir = filepath.Join(c.UserHome, ".config", "systemd", "user")
+	live := filepath.Join(c.SystemdUserDir, install.Unit)
+	if err := os.MkdirAll(c.SystemdUserDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte("live unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dry := range []bool{false, true} {
+		f := &execx.Fake{}
+		var out bytes.Buffer
+		if err := install.Install(context.Background(), c, f.Runner(), dry, &out); err != nil {
+			t.Fatal(err)
+		}
+		if got := serviceManagerCalls(f); len(got) != 0 {
+			t.Errorf("dry=%v: isolated install ran %v", dry, got)
+		}
+		if !strings.Contains(out.String(), "systemd user service was left alone") || !strings.Contains(out.String(), "--live") {
+			t.Errorf("dry=%v: output = %s", dry, out.String())
+		}
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{}}
+	o := agentsOpts(t, c, f)
+	var out bytes.Buffer
+	o.Out = &out
+	if err := install.Uninstall(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if err := install.Agents(context.Background(), agentsOpts(t, c, f)); err != nil {
+		t.Fatal(err)
+	}
+	if got := serviceManagerCalls(f); len(got) != 0 {
+		t.Errorf("isolated uninstall/agents ran %v", got)
+	}
+	if b, err := os.ReadFile(live); err != nil || string(b) != "live unit" {
+		t.Errorf("isolated runs changed the live unit: %q %v", b, err)
+	}
+	if !strings.Contains(out.String(), "the systemd user service and the agents' own configuration") {
+		t.Errorf("uninstall output = %s", out.String())
+	}
+}

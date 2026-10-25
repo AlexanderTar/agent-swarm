@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
@@ -210,7 +211,8 @@ func TestTokenIsNeverPersisted(t *testing.T) {
 		http.Error(w, "bad token "+r.Header.Get("Authorization"), http.StatusUnauthorized)
 	}))
 	defer srv.Close()
-	claude := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	claude := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL,
+		Creds: creds.Keychain(keychain(nil).Runner(), "alex").Claude, CredsWhere: "the keychain"}
 	s, _ := newCatalog(t, claude)
 	s.Refresh(bg, true)
 	rows, _ := s.DB.Query(`SELECT agent_kind || agent_version || models_json || COALESCE(default_model, '') || source || COALESCE(error, '') FROM model_catalog

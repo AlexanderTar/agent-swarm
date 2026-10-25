@@ -63,3 +63,53 @@ func TestPutSettingsKicksReconcileWhenTheAgentLimitChanges(t *testing.T) {
 		t.Fatal("raising max_concurrent_agents did not run a reconcile tick")
 	}
 }
+
+// PATCH /api/settings (swarm settings set) kicks the loop the same way.
+func TestPatchSettingsKicksReconcileWhenTheAgentLimitChanges(t *testing.T) {
+	var waits atomic.Int32
+	var rt *runtime.Store
+	e := newEnv(t, func(d *Deps) {
+		rt = &runtime.Store{DB: d.DB, Events: d.Events, Items: d.Items, Repos: d.Repos, Settings: d.Settings,
+			Now: time.Now, Log: func(string, ...any) {}, Tmux: &testTmux{},
+			After: func(time.Duration) <-chan time.Time { waits.Add(1); return make(chan time.Time) }}
+		d.RT = rt
+	})
+	ctx, cancel := context.WithCancel(bg)
+	done := make(chan struct{})
+	go func() { rt.ReconcileLoop(ctx, time.Hour); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	waitFor := func(n int32) bool {
+		for i := 0; i < 100; i++ {
+			if waits.Load() >= n {
+				return true
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitFor(1) {
+		t.Fatal("reconcile loop never started")
+	}
+	if status, body := e.api("PATCH", "/api/settings", map[string]any{"usage_poll_sec": 900}); status != 200 {
+		t.Fatalf("PATCH = %d: %s", status, body)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := waits.Load(); n != 1 {
+		t.Fatalf("a patch that kept max_concurrent_agents woke the loop (%d waits)", n)
+	}
+	status, body := e.api("PATCH", "/api/settings", map[string]any{"max_concurrent_agents": 9})
+	if saved := decode[settings.Settings](t, body); status != 200 || saved.MaxConcurrentAgents != 9 || saved.UsagePollSec != 900 {
+		t.Fatalf("PATCH = %d: %s", status, body)
+	}
+	if !waitFor(2) {
+		t.Fatal("raising max_concurrent_agents did not run a reconcile tick")
+	}
+}
+
+func TestPatchSettingsRejectsAnEmptyOrInvalidPatch(t *testing.T) {
+	e := newEnv(t)
+	status, body := e.api("PATCH", "/api/settings", map[string]any{})
+	wantErr(t, status, body, 400, "bad_request", "Name at least one setting to change.")
+	status, body = e.api("PATCH", "/api/settings", map[string]any{"menubar_theme": "dark"})
+	wantErr(t, status, body, 400, "bad_request", "menubar_theme isn't a setting that can be changed here.")
+}

@@ -12,7 +12,19 @@ set -euo pipefail
 # here ever chooses to spawn one — Preflight's Installed() check alone
 # would start shelling out to them. tmux/gpg/git/curl/go all resolve under
 # just these three. CI sets SWARM_E2E_PATH to put its Go toolchain first.
-export PATH=${SWARM_E2E_PATH:-/opt/homebrew/bin:/usr/bin:/bin}
+# On Linux the same rule holds with Homebrew on Linux's prefix, where the
+# tmux 3.6+ this needs comes from (distro packages are older).
+default_path=/opt/homebrew/bin:/usr/bin:/bin
+[ "$(uname -s)" = Linux ] && default_path=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin
+export PATH=${SWARM_E2E_PATH:-$default_path}
+for agent in claude codex agy cursor-agent muse grok; do
+  if found=$(command -v "$agent"); then
+    echo "e2e: a real agent CLI is on the pinned PATH ($found); set SWARM_E2E_PATH to leave its folder out" >&2
+    exit 1
+  fi
+done
+# Desktop notifications are for the installed daemon only.
+unset SWARM_NOTIFY
 root="$(cd "$(dirname "$0")/.." && pwd)"
 export SWARM_HOME="$(mktemp -d)"
 export SWARM_TMUX_SOCKET="swarm-e2e"

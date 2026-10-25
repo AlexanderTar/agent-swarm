@@ -29,6 +29,7 @@ func TestScenarioHandoffWorker(t *testing.T) {
 	repoID, repoPath := e2eRepo(t, h, "repo-handoff")
 	gitOut(t, repoPath, "config", "user.signingkey", keyID)
 	gitOut(t, repoPath, "config", "commit.gpgsign", "true")
+	gitOut(t, repoPath, "config", "gpg.format", "openpgp") // keyID is a GPG key, whatever the global format
 	h.confirmRepo(t, epic, repoID)
 	wtOut := h.mustTool(t, orch, "swarm_worktree", map[string]any{
 		"op": "create", "repo": repoID, "branch": "task/handoff",

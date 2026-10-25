@@ -333,7 +333,8 @@ func cmdAttach(args []string, stdout, stderr io.Writer) int {
 		TmuxSocket string `json:"tmux_socket"`
 		OpenedBy   string `json:"opened_by"`
 	}
-	if err := c.do("POST", "/api/agents/"+rest[0]+"/terminal", map[string]any{}, &out); err != nil {
+	// in_place: this terminal is the one attaching, so the daemon opens no window.
+	if err := c.do("POST", "/api/agents/"+rest[0]+"/terminal", map[string]any{"in_place": true}, &out); err != nil {
 		return fail(stderr, err)
 	}
 	if out.TmuxSocket == "" {

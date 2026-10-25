@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"errors"
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"net/http"
 	"strings"
 	"testing"
@@ -174,7 +175,7 @@ func TestPollerHonorsASourcesRetryAfterBackoff(t *testing.T) {
 func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {
 	for _, v := range []string{"", "1", "true", "yes", "dev"} {
 		got := SourcesFromEnv(func(string) string { return v },
-			t.TempDir(), "u", http.DefaultClient, nil, nil, nil, &Grok{})
+			t.TempDir(), creds.Sources{}, http.DefaultClient, nil, nil, nil, &Grok{})
 		if len(got) != 0 {
 			t.Fatalf("SWARM_USAGE=%q gave %d sources; only \"live\" enables them", v, len(got))
 		}
@@ -184,7 +185,7 @@ func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {
 			return "live"
 		}
 		return ""
-	}, t.TempDir(), "u", http.DefaultClient, nil, nil, nil, &Grok{})
+	}, t.TempDir(), creds.Sources{}, http.DefaultClient, nil, nil, nil, &Grok{})
 	if len(live) != 6 {
 		t.Fatalf("SWARM_USAGE=live gave %d sources, want 6", len(live))
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/desktop"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
@@ -60,8 +61,8 @@ var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
 // (P1's eight, then python3 and graphify — their order is asserted), then the
 // per-agent blocks, superpowers, and the one legacy item §11.1 says must fail.
 func (d Doctor) Checks(ctx context.Context) []Check {
-	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
-		d.launchAgent(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
+	out := []Check{d.tmux(ctx), d.terminal(), d.ollama(ctx), d.agents(), d.signing(ctx),
+		d.service(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
 	out = append(out, d.orphans(ctx)...)
 	if d.Tunnel != nil {
 		out = append(out, d.tunnel(ctx))
@@ -154,21 +155,40 @@ func (d Doctor) LegacyChecks(ctx context.Context) []Check {
 }
 
 func (d Doctor) tmux(ctx context.Context) Check {
+	missing, old := "tmux isn't installed. Install it: brew install tmux", " is too old. Install tmux 3.6 or later: brew install tmux"
+	if d.Cfg.Manager == Systemd {
+		// Most Linux distributions ship a tmux older than 3.6.
+		fix := "brew install tmux (Homebrew on Linux) or build it from source; distribution packages are often older"
+		missing, old = "tmux isn't installed. Install tmux 3.6 or later: "+fix, " is too old. Install tmux 3.6 or later: "+fix
+	}
 	out, err := d.Run(ctx, "tmux", "-V")
 	if err != nil {
-		return Check{"tmux", false, "tmux isn't installed. Install it: brew install tmux"}
+		return Check{"tmux", false, missing}
 	}
 	v := strings.TrimSpace(string(out))
 	m := tmuxVersion.FindStringSubmatch(v)
 	if m == nil {
-		return Check{"tmux", false, v + " is too old. Install tmux 3.6 or later: brew install tmux"}
+		return Check{"tmux", false, v + old}
 	}
 	major, _ := strconv.Atoi(m[1])
 	minor, _ := strconv.Atoi(m[2])
 	if major < 3 || (major == 3 && minor < 6) {
-		return Check{"tmux", false, v + " is too old. Install tmux 3.6 or later: brew install tmux"}
+		return Check{"tmux", false, v + old}
 	}
 	return Check{"tmux", true, v}
+}
+
+// terminal is Ghostty on macOS, where the menu bar opens it; on Linux the
+// daemon opens whichever terminal desktop.TerminalArgv finds.
+func (d Doctor) terminal() Check {
+	if d.Cfg.Manager != Systemd {
+		return d.ghostty()
+	}
+	argv, err := desktop.TerminalArgv(d.LookPath, nil)
+	if err != nil {
+		return Check{"Terminal", false, err.Error()}
+	}
+	return Check{"Terminal", true, argv[0]}
 }
 
 func (d Doctor) ghostty() Check {
@@ -250,7 +270,16 @@ func (d Doctor) graphifyMissingDetail() string {
 			return "graphify isn't installed. Install it: swarm install (or uv tool install graphifyy==" + GraphifyVersion + ")."
 		}
 	}
-	return "uv isn't installed. Install it: brew install uv, then run swarm install."
+	return "uv isn't installed. Install it: " + uvInstall(d.Cfg) + ", then run swarm install."
+}
+
+// uvInstall is how to get uv: Homebrew on macOS, Astral's installer on Linux,
+// where Homebrew is the exception.
+func uvInstall(c Config) string {
+	if c.Manager == Systemd {
+		return "curl -LsSf https://astral.sh/uv/install.sh | sh"
+	}
+	return "brew install uv"
 }
 
 // graphifyTooOldDetail picks the too-old fix text the same way.
@@ -260,7 +289,7 @@ func (d Doctor) graphifyTooOldDetail(output string) string {
 			return output + " is too old. Install graphify " + GraphifyVersion + ": swarm install."
 		}
 	}
-	return "uv isn't installed. Install it: brew install uv, then run swarm install."
+	return "uv isn't installed. Install it: " + uvInstall(d.Cfg) + ", then run swarm install."
 }
 
 // parseDottedVersion parses the version out of `graphify --version` output.
@@ -302,6 +331,15 @@ func (d Doctor) signing(ctx context.Context) Check {
 		return Check{"Commit signing", false, "Commit signing is off. Enable it in git config."}
 	}
 	return Check{"Commit signing", true, "commit.gpgsign is true."}
+}
+
+// service is the daemon's service row: the launch agent on macOS, the
+// systemd user unit on Linux.
+func (d Doctor) service() Check {
+	if d.Cfg.Manager == Systemd {
+		return systemdCheck(d.Cfg)
+	}
+	return d.launchAgent()
 }
 
 func (d Doctor) launchAgent() Check {

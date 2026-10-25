@@ -42,13 +42,15 @@ type Spawner struct {
 // remain-on-exit keeps a dead pane readable for the reconciler (§10.6);
 // mouse on enables wheel scroll to enter copy-mode and scroll conversation history
 // rather than sending Up/Down arrow keys that cycle prompt history in Codex/agy/Cursor;
-// copy-command pbcopy makes a mouse-drag selection land in the macOS clipboard.
+// The clipboard lines (ClipboardConf) make a mouse-drag selection land in the
+// system clipboard; tmux's default set-clipboard external also hands it to the
+// attached terminal over OSC 52.
 // set-titles-string is '#W' (the window name), not a literal: the reconciler
 // renames each session's window every tick to the fun title (status/role/tree
 // emoji + name, see runtime.sessionTitle), and automatic-rename off stops tmux
 // fighting that by renaming the window back to the foreground command itself.
-func TmuxConf() []byte {
-	return []byte(strings.Join([]string{
+func TmuxConf(clipboard []string) []byte {
+	lines := []string{
 		"# Written by `swarm install`. Swarm's tmux server only.",
 		"set -g set-titles on",
 		"set -g set-titles-string '#W'",
@@ -57,9 +59,34 @@ func TmuxConf() []byte {
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
 		"set -g mouse on",
-		"set -s copy-command pbcopy",
-		"",
-	}, "\n"))
+	}
+	lines = append(lines, clipboard...)
+	return []byte(strings.Join(append(lines, ""), "\n"))
+}
+
+// linuxCopy picks the clipboard tool for the display the copy runs under:
+// wl-copy on Wayland, xclip or xsel on X11, and nothing (OSC 52 only) when
+// none is installed. It runs with sh -c.
+const linuxCopy = `if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-copy >/dev/null 2>&1; then exec wl-copy; ` +
+	`elif [ -n "$DISPLAY" ] && command -v xclip >/dev/null 2>&1; then exec xclip -selection clipboard -in; ` +
+	`elif [ -n "$DISPLAY" ] && command -v xsel >/dev/null 2>&1; then exec xsel --clipboard --input; ` +
+	`else cat >/dev/null; fi`
+
+// ClipboardConf is tmux.conf's clipboard setup for goos. macOS pipes to
+// pbcopy. On Linux OSC 52 alone is not enough (VTE terminals such as
+// gnome-terminal ignore it, xterm has it off), so copies also go to a
+// clipboard tool. tmux runs it with the session's environment, which takes
+// the display from the client that last attached (update-environment): the
+// daemon's own display variables may be missing or stale under systemd.
+// WAYLAND_DISPLAY is not in tmux's default list, so it is appended.
+func ClipboardConf(goos string) []string {
+	if goos == "darwin" {
+		return []string{"set -s copy-command pbcopy"}
+	}
+	return []string{
+		"set -ga update-environment WAYLAND_DISPLAY",
+		"set -s copy-command '" + linuxCopy + "'",
+	}
 }
 
 // BaseEnv is the environment every spawn copies (L9). USER is what the keychain
@@ -78,6 +105,31 @@ func BaseEnv(osEnv func(string) string) map[string]string {
 	env["LANG"] = "en_US.UTF-8"
 	if v := osEnv("GNUPGHOME"); v != "" {
 		env["GNUPGHOME"] = v // empty means "the user's default", which we must not pass on as a value
+	}
+	return env
+}
+
+// LinuxBaseEnv is BaseEnv for a daemon under systemd on Linux. TMPDIR is
+// usually unset there, and an explicit empty TMPDIR makes Rust's temp_dir()
+// (codex) return "", so it is passed only when set. en_US.UTF-8 may not be
+// generated, so LANG is the daemon's own when it is UTF-8, else C.UTF-8,
+// which glibc always has. XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are
+// stable for the user's whole session and let an agent reach the Secret
+// Service keyring; DISPLAY and WAYLAND_DISPLAY are left out, since a
+// long-lived pane would keep them after the desktop moved on.
+func LinuxBaseEnv(osEnv func(string) string) map[string]string {
+	env := BaseEnv(osEnv)
+	if env["TMPDIR"] == "" {
+		delete(env, "TMPDIR")
+	}
+	env["LANG"] = "C.UTF-8"
+	if l := osEnv("LANG"); strings.Contains(strings.ToLower(strings.ReplaceAll(l, "-", "")), "utf8") {
+		env["LANG"] = l
+	}
+	for _, k := range []string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"} {
+		if v := osEnv(k); v != "" {
+			env[k] = v
+		}
 	}
 	return env
 }

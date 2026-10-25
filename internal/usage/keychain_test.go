@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
@@ -19,7 +20,7 @@ func TestClaudeKeychainTokenParsesTheRealNestedShape(t *testing.T) {
 			Out: `{"claudeAiOauth":{"accessToken":"sk-fake","expiresAt":1789700000000,"refreshToken":"r"}}`,
 		},
 	}}
-	read := claudeKeychainToken(fake.Runner(), "Claude Code-credentials", "me")
+	read := claudeToken(creds.Keychain(fake.Runner(), "me").Claude, "Claude Code-credentials")
 	token, expiresAt, err := read(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +43,7 @@ func TestClaudeKeychainTokenRejectsTheFlatShapeAsExpired(t *testing.T) {
 			Out: `{"accessToken":"sk-fake","expiresAt":1789700000000}`,
 		},
 	}}
-	read := claudeKeychainToken(fake.Runner(), "Claude Code-credentials", "me")
+	read := claudeToken(creds.Keychain(fake.Runner(), "me").Claude, "Claude Code-credentials")
 	token, expiresAt, err := read(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -53,25 +54,25 @@ func TestClaudeKeychainTokenRejectsTheFlatShapeAsExpired(t *testing.T) {
 }
 
 func TestClaudeKeychainTokenPropagatesARunnerFailure(t *testing.T) {
-	read := claudeKeychainToken(func(context.Context, string, ...string) ([]byte, error) {
+	read := claudeToken(func(context.Context) ([]byte, error) {
 		return nil, errors.New("security: item not found")
-	}, "Claude Code-credentials", "me")
+	}, "Claude Code-credentials")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("a runner failure must propagate")
 	}
 }
 
 func TestClaudeKeychainTokenRejectsBadJSON(t *testing.T) {
-	read := claudeKeychainToken(func(context.Context, string, ...string) ([]byte, error) {
+	read := claudeToken(func(context.Context) ([]byte, error) {
 		return []byte("not json"), nil
-	}, "Claude Code-credentials", "me")
+	}, "Claude Code-credentials")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("malformed keychain output must be an error")
 	}
 }
 
 func TestClaudeKeychainTokenRefusesWithNoRunner(t *testing.T) {
-	read := claudeKeychainToken(nil, "Claude Code-credentials", "me")
+	read := claudeToken(creds.Keychain(nil, "me").Claude, "Claude Code-credentials")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("a nil runner must be an error, not a panic")
 	}
@@ -117,7 +118,7 @@ func TestCursorKeychainTokenDecodesTheJWTExpClaim(t *testing.T) {
 	fake := &execx.Fake{Responses: map[string]execx.Result{
 		`security find-generic-password -s cursor-access-token -a cursor-user -w`: {Out: jwt},
 	}}
-	read := cursorKeychainToken(fake.Runner(), "cursor-access-token", "cursor-user")
+	read := cursorToken(creds.Keychain(fake.Runner(), "u").Cursor, "cursor-access-token")
 	token, expiresAt, err := read(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -135,25 +136,25 @@ func TestCursorKeychainTokenDecodesTheJWTExpClaim(t *testing.T) {
 // error, "invalid character 'e' looking for beginning of value", live on the
 // real machine every time) this test guards against reintroducing.
 func TestCursorKeychainTokenRejectsANonJWTAsAnError(t *testing.T) {
-	read := cursorKeychainToken(func(context.Context, string, ...string) ([]byte, error) {
+	read := cursorToken(func(context.Context) ([]byte, error) {
 		return []byte("not-a-jwt"), nil
-	}, "cursor-access-token", "cursor-user")
+	}, "cursor-access-token")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("a non-JWT value must be an error, not a silent empty token")
 	}
 }
 
 func TestCursorKeychainTokenPropagatesARunnerFailure(t *testing.T) {
-	read := cursorKeychainToken(func(context.Context, string, ...string) ([]byte, error) {
+	read := cursorToken(func(context.Context) ([]byte, error) {
 		return nil, errors.New("security: item not found")
-	}, "cursor-access-token", "cursor-user")
+	}, "cursor-access-token")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("a runner failure must propagate")
 	}
 }
 
 func TestCursorKeychainTokenRefusesWithNoRunner(t *testing.T) {
-	read := cursorKeychainToken(nil, "cursor-access-token", "cursor-user")
+	read := cursorToken(creds.Keychain(nil, "u").Cursor, "cursor-access-token")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("a nil runner must be an error, not a panic")
 	}
@@ -213,5 +214,32 @@ func TestAgyOAuthTokenRejectsAnUnparsableExpiry(t *testing.T) {
 	writeAgyOAuthFile(t, home, `{"token":{"access_token":"ya29.fake","expiry":"not-a-timestamp"}}`)
 	if _, _, err := agyOAuthToken(home)(context.Background()); err == nil {
 		t.Fatal("an unparsable expiry must be an error, not a silently zero-valued (forever-expired-looking) time")
+	}
+}
+
+// Linux: Claude's token and millisecond expiry come from Claude Code's
+// credentials file, read through creds.Files like the keychain item on macOS,
+// and Cursor reports that its Linux sign-in can't be read yet.
+func TestTokensReadThroughTheLinuxCredentialsFile(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"claudeAiOauth":{"accessToken":"sk-file","refreshToken":"r","expiresAt":1767225600000,"scopes":["user:inference"]},"mcpOAuth":{}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cs := creds.Files(home, func(string) string { return "" })
+	token, expiresAt, err := claudeToken(cs.Claude, "Claude Code-credentials")(context.Background())
+	if err != nil || token != "sk-file" || !expiresAt.Equal(time.UnixMilli(1767225600000)) {
+		t.Fatalf("claude = %q %v %v", token, expiresAt, err)
+	}
+	if _, _, err := cursorToken(cs.Cursor, "cursor-access-token")(context.Background()); !errors.Is(err, creds.ErrUnsupported) {
+		t.Fatalf("cursor err = %v, want the unsupported reason", err)
+	}
+	os.Remove(path)
+	if _, _, err := claudeToken(cs.Claude, "Claude Code-credentials")(context.Background()); !os.IsNotExist(err) {
+		t.Fatalf("missing file err = %v", err)
 	}
 }

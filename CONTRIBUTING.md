@@ -10,7 +10,7 @@ Third-party material keeps its own licence. If you vendor anything, add its upst
 
 ## Setting up
 
-You need a Mac with the toolchain from the README's Requirements section: Go 1.27+, tmux 3.6+, Node 22 + pnpm 10, Xcode 16+ command line tools. Then:
+You need a Mac with the toolchain from the README's Requirements section (Go 1.27+, tmux 3.6+, Node 22 + pnpm 10, Xcode 16+ command line tools), or a Linux machine with Go 1.27+, tmux 3.6+ (Homebrew on Linux has both: `brew install go tmux`), Node 22 + pnpm 10 and a UTF-8 `LANG` (for example `C.UTF-8`). On Linux `make test` skips the menu bar app, which only builds on macOS, and CI runs the Go tests and e2e on both systems. Then:
 
 ```bash
 git clone https://github.com/AlexanderTar/agent-swarm.git
@@ -23,7 +23,8 @@ make e2e       # end-to-end run with the fake agent (no model calls)
 ## Before you open a pull request
 
 - `make test-go` must pass. It runs `go vet`, the gofmt check, the race-enabled Go tests and the coverage gate in `scripts/cover.sh` (85% for `items`, `runtime`, `hook`, `mcpserver`, `worktree` and `migrate`, 75% for the other `internal` packages). Never lower or bypass the thresholds; add real behaviour tests instead. See [AGENTS.md](AGENTS.md).
-- Run `make test-web` when you touch `web/`, and `make test-menubar` when you touch `apps/menubar/`.
+- Run `make test-web` when you touch `web/`, and `make test-menubar` when you touch `apps/menubar/` (macOS only).
+- Platform-specific code is chosen once by the caller (`cmd/swarm` picks launchd or systemd, the terminal launcher, the credential reader); keep both sides tested on any host, and never let a test reach the real `launchctl`, `systemctl` or `loginctl` (see docs/isolated-runs.md).
 - Write the failing test first, then the fix.
 - Adding an agent kind? Follow `docs/adding-an-agent-kind.md`.
 - Editing a skill under `internal/install/skills/`? Run `make skills-sync` and commit the result.
@@ -42,7 +43,7 @@ Open an issue with the **Bug report** template. Include the Swarm version (`git 
 
 ### Let your agents report Swarm bugs upstream
 
-When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_report_bug`. That report stays on your Mac (`swarm bugs` lists them). To send one to this repository, run:
+When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_report_bug`. That report stays on your computer (`swarm bugs` lists them). To send one to this repository, run:
 
 ```bash
 swarm bugs --issue <id>              # the id is in swarm_report_bug's result and in `swarm bugs`

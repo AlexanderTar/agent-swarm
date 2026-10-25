@@ -244,7 +244,11 @@ func (c *Codex) Resume(s Spec) (Launch, error) {
 }
 
 var (
-	codexProcess = []*regexp.Regexp{regexp.MustCompile(`^codex$`)}
+	// An npm-installed codex runs under its node launcher (bin/codex.js), which
+	// leads the pane's foreground process group with the native binary as its
+	// child, so tmux reports "node" (measured on Linux 2026-10-25; macOS's tmux
+	// reads the group leader the same way). The idle check still gates a paste.
+	codexProcess = []*regexp.Regexp{regexp.MustCompile(`^codex$`), regexp.MustCompile(`^node$`)}
 	// P0-4: "› " followed by nothing, or by an entirely dim placeholder.
 	codexIdle      = regexp.MustCompile("(?m)^(?:\u001b\\[[0-9;]*m)*\u203a(?:\u001b\\[[0-9;]*m)*\\s*(?:\u001b\\[2m[^\u001b]*\u001b\\[0m)?\\s*$")
 	codexTrust     = regexp.MustCompile(`Do you trust the contents of this directory\?`)

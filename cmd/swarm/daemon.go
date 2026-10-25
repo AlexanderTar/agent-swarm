@@ -24,7 +24,9 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/desktop"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/hook"
@@ -156,6 +158,8 @@ type daemon struct {
 	up  *usagesvc.Poller
 	tn  *tunnel.Manager
 	lan *lan.Manager
+	// notify shows desktop notifications (Linux, installed daemon only); nil otherwise.
+	notify func(context.Context)
 }
 
 // openDaemon prepares the home folder, opens the database and wires every service.
@@ -200,16 +204,17 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 
 	now := time.Now
 	ev := events.New(d, now)
-	cat := &catalog.Service{DB: d, Events: ev, Fetchers: catalog.DefaultFetchers(userHome, cfg.Home, os.Getenv("USER")), Now: now, Log: cfg.Log, Home: userHome, SwarmHome: cfg.Home}
+	plat := platformFor(goos, userHome)
+	cat := &catalog.Service{DB: d, Events: ev, Fetchers: catalog.DefaultFetchers(userHome, cfg.Home, plat.creds), Now: now, Log: cfg.Log, Home: userHome, SwarmHome: cfg.Home}
 	st := &settings.Store{DB: d, Events: ev, Now: now, ModelsFor: cat.ModelsFor, Installed: cat.Installed}
 	rp := &repos.Service{DB: d, Events: ev, Run: execx.Run, Home: cfg.ScanRoot, Now: now, Log: cfg.Log,
 		Excludes: func(ctx context.Context) []string {
 			s, err := st.Get(ctx)
 			if err != nil {
 				cfg.Log("scan excludes: %v", err)
-				return nil
+				return plat.scanSkips
 			}
-			return s.ScanExcludes
+			return append(append([]string{}, plat.scanSkips...), s.ScanExcludes...)
 		}}
 	idx := &kb.Index{DB: d, Dir: filepath.Join(cfg.Home, "kb"), Emb: cfg.Embedder, Now: now}
 	if err := idx.Load(ctx); err != nil {
@@ -218,9 +223,9 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	}
 
 	// tmux.conf is (re)written whenever it is missing or stale, so an upgrade
-	// that changes TmuxConf() reaches an existing ~/.swarm without a reinstall.
+	// that changes TmuxConf reaches an existing ~/.swarm without a reinstall.
 	confPath := filepath.Join(cfg.Home, "tmux.conf")
-	want := spawn.TmuxConf()
+	want := spawn.TmuxConf(spawn.ClipboardConf(goos))
 	if got, err := os.ReadFile(confPath); err != nil || string(got) != string(want) {
 		if err := os.WriteFile(confPath, want, 0o644); err != nil {
 			d.Close()
@@ -274,7 +279,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	rt := &runtime.Store{DB: d, Events: ev, Items: it, Repos: rp, Settings: st, Catalog: cat,
 		Home: cfg.Home, Now: now, Log: cfg.Log, Tmux: spawner, Worktree: wt, Notify: nt,
 		Bin: selfPath(), DaemonURL: fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
-		OSEnv: os.Getenv, BaseEnv: spawn.BaseEnv,
+		OSEnv: os.Getenv, BaseEnv: plat.baseEnv,
 		// The two strings `swarm attach` and the Ghostty fallback need, so
 		// neither writes `-L swarm` as a literal (safety invariant S-1, R11).
 		// They come from the same Spawner the daemon spawns through, so they
@@ -300,16 +305,17 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	it.CheckWorkflowBriefs = rt.CheckLiveWorkflowBriefs // refuse a brief update that would overflow a live workflow's later step kickoff
 	it.CheckLanded = rt.CheckLanded                     // refuse a resolved-by close whose integrated sha never reached the default branch
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
-	// which only the installed launchd plist sets. Every other daemon — a
-	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no
-	// sources, so it reads no keychain and calls no vendor endpoint. This is
+	// which only the installed launchd plist or systemd unit sets. Every other
+	// daemon — a test's, e2e's, `make dev`'s, one started by hand in a
+	// worktree — gets no sources, so it reads no keychain or credentials file
+	// and calls no vendor endpoint. This is
 	// the only call site, and cfg.Dev never enters this decision (F1).
 	grokExhaustion := &usagesvc.GrokExhaustion{} // the hook handler and the leader pushes fill it, the grok usage source reads it
 	if g, ok := rt.Adapters[runtime.Grok].(interface{ OnExhausted(func(text string)) }); ok {
 		g.OnExhausted(func(text string) { grokExhaustion.Note(text, now()) })
 	}
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
-		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
+		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, plat.creds,
 			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start, d,
 			&usagesvc.Grok{BaseURL: usagesvc.GrokBillingURL, HTTP: &http.Client{Timeout: 10 * time.Second},
 				AuthPaths: usagesvc.GrokAuthPaths(cfg.Home, userHome), Refresh: usagesvc.GrokRefresh(execx.RunEnv),
@@ -327,17 +333,33 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// the manager needs the handler and the handler needs the manager, so the
 	// handler is filled in once the API exists
 	tn := &tunnel.Manager{DB: d, SecretPath: filepath.Join(cfg.Home, "run", "tunnel.secret"), Now: now, Log: cfg.Log}
-	lm := &lan.Manager{DB: d, Registrar: &lan.DNSSD{Log: cfg.Log}, Now: now, Log: cfg.Log,
-		PrimaryIP: func() (net.IP, error) { return lan.PrimaryIPv4(ctx, execx.Run) }}
+	lm := &lan.Manager{DB: d, Registrar: plat.registrar(cfg.Log), Now: now, Log: cfg.Log,
+		PrimaryIP: func() (net.IP, error) { return plat.primaryIP(ctx, execx.Run) }}
 	api := httpapi.New(httpapi.Deps{Version: version, Tunnel: tn, LAN: lm, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
 		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
 		Auth: webauth.New(d, now),
-		Run:  execx.Run, After: time.After, Web: web.Handler(web.Dist)})
+		Run:  execx.Run, After: time.After, Terminal: plat.terminal, Web: web.Handler(web.Dist)})
 	tn.Handler = api.Handler()
 	lm.Handler = tn.Handler
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
-		rt: rt, up: up, tn: tn, lan: lm}, nil
+		rt: rt, up: up, tn: tn, lan: lm, notify: notifierFor(plat, os.Getenv, ev, st, cfg.Log)}, nil
+}
+
+// notifierFor is the desktop notifier's loop, or nil. Only Linux has one (the
+// menu bar shows notifications on macOS), and only the installed daemon runs
+// it: SWARM_NOTIFY=desktop is set by the systemd unit and nowhere else, so a
+// test's, e2e's or `make dev`'s daemon never pops a banner.
+func notifierFor(plat platformDeps, getenv func(string) string, ev desktop.Feed, st *settings.Store, log func(string, ...any)) func(context.Context) {
+	if plat.launcher == nil || getenv("SWARM_NOTIFY") != "desktop" {
+		return nil
+	}
+	n := &desktop.Notifier{Events: ev, Launcher: *plat.launcher, Log: log,
+		Prefs: func(ctx context.Context) (map[string]settings.NotifyPref, error) {
+			s, err := st.Get(ctx)
+			return s.Notifications, err
+		}}
+	return n.Run
 }
 
 func serve(ctx context.Context, cfg daemonConfig) error {
@@ -389,6 +411,9 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 			func(ctx context.Context) { dm.up.Loop(ctx, nil) }, // §13 (a no-op with no sources, S-4)
 			func(ctx context.Context) { quotaResetLoop(ctx, dm.up, dm.rt, cfg.Log) },
 		)
+	}
+	if dm.notify != nil {
+		loops = append(loops, dm.notify)
 	}
 	var bg sync.WaitGroup
 	var running atomic.Int32
@@ -580,4 +605,44 @@ func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Stor
 			log("quota reset wake %s: woke %d session(s)", fire.Kind, n)
 		}
 	}
+}
+
+// platformDeps are the daemon's OS-specific pieces: the agents' base
+// environment, who opens a terminal window, and where the agents' sign-ins
+// are read from.
+type platformDeps struct {
+	baseEnv  func(func(string) string) map[string]string
+	terminal func(context.Context, []string) error // nil: the menu bar opens it (macOS)
+	creds    creds.Sources
+	// scanSkips are skipped by the repository scan on top of the walker's
+	// fixed macOS folders and the user's scan_excludes, without showing up in
+	// that setting.
+	scanSkips []string
+	// registrar publishes swarm.local, and primaryIP finds the LAN address
+	// the board listens on.
+	registrar func(log func(string, ...any)) lan.Registrar
+	primaryIP func(context.Context, execx.Runner) (net.IP, error)
+	// launcher reaches the desktop session (terminals, notifications); nil on macOS.
+	launcher *desktop.Launcher
+}
+
+func platformFor(goos, userHome string) platformDeps {
+	if goos != "linux" {
+		// USER is the account of Claude's keychain item.
+		return platformDeps{baseEnv: spawn.BaseEnv, creds: creds.Keychain(execx.Run, os.Getenv("USER")),
+			registrar: func(log func(string, ...any)) lan.Registrar { return &lan.DNSSD{Log: log} },
+			primaryIP: lan.PrimaryIPv4}
+	}
+	// Linux's media folder and snap's per-app data, its counterparts of the
+	// walker's ~/Movies and ~/Library.
+	l := &desktop.Launcher{
+		Run: execx.Run, Start: execx.StartDetached, LookPath: exec.LookPath, Getenv: os.Getenv, Environ: os.Environ,
+		Exists: func(p string) bool { _, err := os.Stat(p); return err == nil },
+		Settle: 500 * time.Millisecond,
+	}
+	return platformDeps{baseEnv: spawn.LinuxBaseEnv, creds: creds.Files(userHome, os.Getenv),
+		scanSkips: []string{"~/Videos", "~/snap"},
+		registrar: func(log func(string, ...any)) lan.Registrar { return &lan.Avahi{Log: log} },
+		primaryIP: lan.PrimaryIPv4Linux,
+		launcher:  l, terminal: l.Open}
 }

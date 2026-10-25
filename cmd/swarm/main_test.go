@@ -807,6 +807,7 @@ func TestClientSendsViaOnMutations(t *testing.T) {
 }
 
 func TestInstallDryRun(t *testing.T) {
+	pinGOOS(t, "darwin")
 	home := t.TempDir()
 	userHome := t.TempDir()
 	t.Setenv("HOME", userHome)
@@ -1017,6 +1018,7 @@ func TestInstallPluginsOnlySkipsTheLaunchAgent(t *testing.T) {
 
 // The four modes are mutually exclusive, and each one calls its own runner method.
 func TestMigrateFlagsAreExclusiveAndDispatch(t *testing.T) {
+	pinGOOS(t, "darwin")
 	saved := migrateRun
 	t.Cleanup(func() { migrateRun = saved })
 	for _, tc := range []struct {
@@ -1047,6 +1049,7 @@ func TestMigrateFlagsAreExclusiveAndDispatch(t *testing.T) {
 // non-default home is refused without --live, in every mode. migrateRun is
 // stubbed, so nothing here reaches launchctl.
 func TestMigrateRefusesANonDefaultHomeWithoutLive(t *testing.T) {
+	pinGOOS(t, "darwin")
 	saved := migrateRun
 	t.Cleanup(func() { migrateRun = saved })
 	userHome := t.TempDir()

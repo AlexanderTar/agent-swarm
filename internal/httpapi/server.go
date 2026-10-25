@@ -84,6 +84,10 @@ type Deps struct {
 	Run execx.Runner
 	// After is the 1.5 s menubar-reply timer, injected so the test does not sleep.
 	After func(time.Duration) <-chan time.Time
+	// Terminal opens command (a tmux attach) in a desktop terminal at once.
+	// Set on Linux, where no menu bar app opens one (desktop.Launcher.Open);
+	// nil keeps the macOS flow: the menu bar, then the Ghostty fallback.
+	Terminal func(ctx context.Context, command []string) error
 }
 
 type authMode int

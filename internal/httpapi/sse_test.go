@@ -3,9 +3,9 @@ package httpapi
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,6 +137,23 @@ func TestExpiredCursorGetsReset(t *testing.T) {
 
 func TestSlowClientDoesNotBlockOthers(t *testing.T) {
 	e := newEnv(t)
+	// The test's own server, so a ConnState hook can see the server close the
+	// stalled stream. Draining the client to EOF only works where the kernel
+	// hands over the queued megabytes quickly: on Linux a 4 KB receive buffer
+	// under loopback's 32 KB MSS trickles them out at tens of KB/s.
+	closed := make(chan string, 8)
+	srv := httptest.NewUnstartedServer(e.s.Handler())
+	srv.Config.ConnState = func(c net.Conn, st http.ConnState) {
+		if st == http.StateClosed {
+			select {
+			case closed <- c.RemoteAddr().String():
+			default:
+			}
+		}
+	}
+	srv.Start()
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+	e.srv = srv
 	start, _ := e.events.Latest(bg)
 	fast, stop := e.stream(t, fmt.Sprintf("?after=%d", start), "")
 	defer stop()
@@ -174,14 +191,18 @@ func TestSlowClientDoesNotBlockOthers(t *testing.T) {
 			t.Fatalf("fast client got %d of %d events", got, n)
 		}
 	}
-	// wait past the write deadline before draining (draining would unblock the stalled write);
-	// this waits out a configured timeout, not a scheduling race
-	time.Sleep(3 * e.s.WriteTimeout)
-	// the stalled connection is closed by the server: draining it ends in EOF, not a timeout
-	slow.SetReadDeadline(time.Now().Add(10 * time.Second))
-	_, err = io.Copy(io.Discard, slow)
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		t.Fatal("server kept the stalled stream open")
+	// the stalled connection is closed by the server once its write deadline passes;
+	// the client never reads again, so nothing but the deadline can unblock that write
+	deadline = time.After(10 * time.Second)
+	for {
+		select {
+		case addr := <-closed:
+			if addr == slow.LocalAddr().String() {
+				return
+			}
+		case <-deadline:
+			t.Fatal("server kept the stalled stream open")
+		}
 	}
 }
 

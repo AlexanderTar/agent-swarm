@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 )
@@ -63,7 +64,8 @@ func TestClaudeFetcherPagesAndHeaders(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"data": rest, "has_more": false, "last_id": "claude-sonnet-4-5-20250929"})
 	}))
 	defer srv.Close()
-	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL,
+		Creds: creds.Keychain(keychain(nil).Runner(), "alex").Claude, CredsWhere: "the keychain"}
 	got, err := f.Fetch(bg)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +91,8 @@ func TestClaudeFetcherFailuresNeverLeakTheToken(t *testing.T) {
 		http.Error(w, "token "+r.Header.Get("Authorization")+" expired", http.StatusUnauthorized)
 	}))
 	defer srv.Close()
-	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL,
+		Creds: creds.Keychain(keychain(nil).Runner(), "alex").Claude, CredsWhere: "the keychain"}
 	_, err := f.Fetch(bg)
 	if err == nil || err.Error() != "api.anthropic.com returned 401" {
 		t.Fatalf("err = %v", err)
@@ -97,15 +100,15 @@ func TestClaudeFetcherFailuresNeverLeakTheToken(t *testing.T) {
 	locked := keychain(map[string]execx.Result{
 		"security find-generic-password -s Claude Code-credentials -a alex -w": {Out: secret, Err: errors.New("exit 44: " + secret)},
 	})
-	f.Run = locked.Runner()
+	f.Creds = creds.Keychain(locked.Runner(), "alex").Claude
 	if _, err := f.Fetch(bg); err == nil || err.Error() != "Couldn't read the Claude sign-in from the keychain." {
 		t.Fatalf("keychain err = %v", err)
 	}
 	empty := keychain(map[string]execx.Result{
 		"security find-generic-password -s Claude Code-credentials -a alex -w": {Out: `{"claudeAiOauth":{}}`},
 	})
-	f.Run = empty.Runner()
-	if _, err := f.Fetch(bg); err == nil || strings.Contains(err.Error(), secret) {
+	f.Creds = creds.Keychain(empty.Runner(), "alex").Claude
+	if _, err := f.Fetch(bg); err == nil || err.Error() != "Claude isn't signed in." {
 		t.Fatalf("empty token err = %v", err)
 	}
 }
@@ -117,7 +120,8 @@ func TestClaudeFetcherCapsPaging(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "has_more": true, "last_id": fmt.Sprintf("m&%d", requests)})
 	}))
 	defer srv.Close()
-	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL,
+		Creds: creds.Keychain(keychain(nil).Runner(), "alex").Claude, CredsWhere: "the keychain"}
 	_, err := f.Fetch(bg)
 	if err == nil || err.Error() != "api.anthropic.com returned more than 50 pages" || requests != 50 {
 		t.Fatalf("err = %v after %d requests", err, requests)
@@ -135,7 +139,8 @@ func TestClaudeFetcherEscapesAfterID(t *testing.T) {
 		fmt.Fprint(w, `{"data":[{"id":"claude-opus-5","display_name":"Opus 5","created_at":"2026-07-15T00:00:00Z"}],"has_more":false}`)
 	}))
 	defer srv.Close()
-	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL,
+		Creds: creds.Keychain(keychain(nil).Runner(), "alex").Claude, CredsWhere: "the keychain"}
 	if _, err := f.Fetch(bg); err != nil || len(got) != 2 || got[1] != "a&b=c d" {
 		t.Fatalf("after_id = %q, %v", got, err)
 	}
@@ -284,7 +289,7 @@ func TestAgyAndCursorFetchers(t *testing.T) {
 	if _, err := (&AgyFetcher{Run: odd}).Version(bg); err == nil {
 		t.Error("unparseable version must fail")
 	}
-	if fs := DefaultFetchers("/Users/x", "/Users/x/.swarm", "x"); len(fs) != 6 || fs[0].Kind() != "claude" || fs[4].Kind() != "muse" || fs[5].Kind() != "grok" {
+	if fs := DefaultFetchers("/Users/x", "/Users/x/.swarm", creds.Keychain(nil, "x")); len(fs) != 6 || fs[0].Kind() != "claude" || fs[4].Kind() != "muse" || fs[5].Kind() != "grok" {
 		t.Errorf("DefaultFetchers = %v", fs)
 	}
 }
@@ -490,5 +495,33 @@ func TestGrokFetcherBoundsGrokModels(t *testing.T) {
 	}
 	if !sawDeadline || time.Since(start) > 2*time.Second {
 		t.Errorf("grok models ran without a deadline (deadline=%v, took %s)", sawDeadline, time.Since(start))
+	}
+}
+
+// On Linux the token comes from Claude Code's credentials file (same JSON as
+// the keychain item), and a missing file names where it was looked for.
+func TestClaudeFetcherReadsTheLinuxCredentialsFile(t *testing.T) {
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"data":[{"id":"claude-opus-5","display_name":"Opus 5","created_at":"2026-07-15T00:00:00Z"}],"has_more":false}`)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude", ".credentials.json")
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte(`{"claudeAiOauth":{"accessToken":"`+secret+`","expiresAt":1}}`), 0o600)
+	cs := creds.Files(home, func(string) string { return "" })
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, Creds: cs.Claude, CredsWhere: cs.Where}
+	if _, err := f.Fetch(bg); err != nil || auth != "Bearer "+secret {
+		t.Fatalf("Fetch = %v, Authorization = %q", err, auth)
+	}
+	os.Remove(path)
+	if _, err := f.Fetch(bg); err == nil || err.Error() != "Couldn't read the Claude sign-in from "+path+"." {
+		t.Fatalf("missing file err = %v", err)
+	}
+	f.Creds = nil
+	if _, err := f.Fetch(bg); err == nil || !strings.HasPrefix(err.Error(), "Couldn't read the Claude sign-in") {
+		t.Fatalf("no reader err = %v", err)
 	}
 }

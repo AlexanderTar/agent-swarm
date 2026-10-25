@@ -68,6 +68,11 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	// 1.x only ran under launchd, so there is never anything to import elsewhere.
+	if cfg.Manager != install.Launchd {
+		fmt.Fprintln(stdout, "Agent Swarm 1.x only ran on macOS, so there is nothing to migrate.")
+		return 0
+	}
 	// Migrate bootstraps and boots out the fixed launchd labels and rewrites the
 	// agents' configuration, so a scratch home may only run it with --live.
 	if isolate(&cfg, *live); cfg.Isolated {

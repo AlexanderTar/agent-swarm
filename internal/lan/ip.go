@@ -1,5 +1,5 @@
-// Package lan serves the board on the Mac's LAN address and advertises it as
-// swarm.local over Bonjour.
+// Package lan serves the board on the computer's LAN address and advertises
+// it as swarm.local over mDNS: Bonjour (dns-sd) on macOS, Avahi on Linux.
 package lan
 
 import (
@@ -33,6 +33,23 @@ func PrimaryIPv4(ctx context.Context, run execx.Runner) (net.IP, error) {
 		return nil, err
 	}
 	return usable(net.ParseIP(strings.TrimSpace(string(out))))
+}
+
+// PrimaryIPv4Linux is PrimaryIPv4 on Linux: the source address of the route
+// to a public address (`ip -4 route get 1.1.1.1`, which only asks the kernel
+// and sends nothing). It fails while offline (no route).
+func PrimaryIPv4Linux(ctx context.Context, run execx.Runner) (net.IP, error) {
+	out, err := run(ctx, "ip", "-4", "route", "get", "1.1.1.1")
+	if err != nil {
+		return nil, err
+	}
+	f := strings.Fields(string(out))
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "src" {
+			return usable(net.ParseIP(f[i+1]))
+		}
+	}
+	return nil, errors.New("no default route")
 }
 
 // usable accepts only a real unicast IPv4 address, so the listener can never

@@ -1,6 +1,7 @@
 package lan
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -46,6 +47,33 @@ func TestPrimaryIPv4FailsWhenOffline(t *testing.T) {
 		f := &execx.Fake{Responses: res}
 		if ip, err := PrimaryIPv4(bg, f.Runner()); err == nil {
 			t.Errorf("%s: got %v, want an error", name, ip)
+		}
+	}
+}
+
+func TestPrimaryIPv4Linux(t *testing.T) {
+	const cmd = "ip -4 route get 1.1.1.1"
+	for _, tc := range []struct {
+		name string
+		res  execx.Result
+		want string // "" = error
+	}{
+		{"wifi", execx.Result{Out: "1.1.1.1 via 10.10.10.1 dev wlp59s0 src 10.10.9.75 uid 1000 \n    cache \n"}, "10.10.9.75"},
+		{"direct", execx.Result{Out: "1.1.1.1 dev eth0 src 192.168.1.42 uid 1000\n"}, "192.168.1.42"},
+		{"offline", execx.Result{Err: errors.New("RTNETLINK answers: Network is unreachable")}, ""},
+		{"no src", execx.Result{Out: "1.1.1.1 via 10.0.0.1 dev tun0\n"}, ""},
+		{"loopback", execx.Result{Out: "1.1.1.1 dev lo src 127.0.0.1\n"}, ""},
+	} {
+		run := (&execx.Fake{Responses: map[string]execx.Result{cmd: tc.res}}).Runner()
+		ip, err := PrimaryIPv4Linux(context.Background(), run)
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%s: ip = %v, want an error", tc.name, ip)
+			}
+			continue
+		}
+		if err != nil || ip.String() != tc.want {
+			t.Errorf("%s: ip = %v %v, want %s", tc.name, ip, err, tc.want)
 		}
 	}
 }

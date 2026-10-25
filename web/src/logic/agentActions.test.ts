@@ -33,7 +33,7 @@ describe("displayState and labels (§16.2)", () => {
   it.each([
     [makeAgent({ state: "queued", session: null }), "queued", "Queued", "grey"],
     [
-      makeAgent({ session: null, preflight_error: "Codex isn't installed on this Mac." }),
+      makeAgent({ session: null, preflight_error: "Codex isn't installed on this computer." }),
       "preflight_failed",
       "Failed",
       "red",

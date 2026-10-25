@@ -1,12 +1,12 @@
 # Agent Swarm
 
-Plan and deliver software with a team of coding agents you supervise from your Mac.
+Plan and deliver software with a team of coding agents you supervise from your Mac or Linux desktop.
 
 Agent Swarm is a local tool with three parts:
 
 - **A daemon** (`swarm`) that keeps a board of epics, stories, tasks, bugs and spikes, spawns coding agents in detached tmux sessions, and relays messages and checkpoints between them.
 - **A web board** at http://127.0.0.1:7777 with hierarchy, kanban and dependency-graph views.
-- **A menu bar app** (Swarm.app) showing running agents, requests that need you, usage per agent, and notifications.
+- **A menu bar app** (Swarm.app, macOS only) showing running agents, requests that need you, usage per agent, and notifications. On Linux the board, the CLI and desktop notifications cover the same ground (see [Linux](#linux)).
 
 Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`), Cursor CLI (`cursor-agent`), Muse and Grok Build (`grok`). Delivery roles are orchestrator, coder, reviewer, UI reviewer, designer, researcher, debugger and mechanical worker.
 
@@ -22,6 +22,8 @@ Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`), Cursor 
 Specs and plans live in `~/.swarm/specs` and `~/.swarm/plans`, not in your repositories. Commits and PRs are made under your name and signature, with no agent attribution.
 
 ## Requirements
+
+These are for macOS. Linux has its own list under [Linux](#linux).
 
 - macOS 14 or later, logged in to the GUI session
 - [Homebrew](https://brew.sh)
@@ -115,6 +117,42 @@ Claude's and Cursor's items are created with the default `apple-tool:` keychain 
 
 Muse's own login item (`ai.meta.dev.credentials`) is different: `muse login` locks it to Muse's own code-signing team (`partition_id: teamid:V9WTTPBFK9`), which excludes `security` regardless of how many times you click **Always Allow** — that dialog only grants the app-list ACL, a separate check that isn't the one blocking. Worse, `security set-generic-password-partition-list` to widen it is **not durable**: every time Muse's own client refreshes its token, it rewrites the item and resets the partition list back to team-only, silently undoing the widen and bringing the prompt back on Muse's own refresh cadence. So swarm doesn't touch this item at all — Muse usage is read by spawning a short-lived `muse serve` session and asking its MSP `usage/read` method directly (`internal/usage/muse.go`), which costs one cheap, zero-effort model turn on the normal poll cadence instead. No keychain access, no prompts, ever.
 
+### Linux
+
+Swarm runs on Linux with a systemd user session. It is tested on Pop!_OS 24.04 (COSMIC, systemd 255) and in CI on Ubuntu; other systemd desktop distributions should behave the same. The daemon, the board, the CLI and every agent work as on macOS; the menu bar app does not exist there.
+
+Requirements:
+
+- systemd (the daemon is a systemd user service) and a graphical session for the terminal button and desktop notifications
+- Go 1.27+, Node 22 + pnpm 10 (to build the board)
+- tmux 3.6 or later. Most distribution packages are older; [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux) has a current one (`brew install tmux`), or build it from source
+- a terminal emulator for the board's terminal button: Ghostty, or whatever `xdg-terminal-exec` or `x-terminal-emulator` points to, or GNOME Terminal, Konsole, kitty, Alacritty, WezTerm, foot or xterm
+- `notify-send` (libnotify) for desktop notifications, and `wl-copy` (Wayland) or `xclip`/`xsel` (X11) for copying out of agent panes
+- optional: Ollama with `qwen3-embedding:0.6b` (knowledge base search), `uv` (graphify; `curl -LsSf https://astral.sh/uv/install.sh | sh`), `avahi-daemon` and `avahi-utils` (to reach the board as swarm.local over LAN)
+- at least one agent CLI, signed in, and commit signing enabled, as on macOS
+
+Install:
+
+```bash
+git clone https://github.com/AlexanderTar/agent-swarm.git
+cd agent-swarm
+make install        # builds swarm into ~/.swarm/bin (no menu bar app on Linux)
+~/.swarm/bin/swarm install   # systemd user service, tmux config, agent MCP/hooks/skills; links swarm into ~/.local/bin
+swarm doctor
+xdg-open http://127.0.0.1:7777
+```
+
+On Linux `swarm install` writes `~/.config/systemd/user/dev.swarm.daemon.service` (or under `$XDG_CONFIG_HOME`), then runs `systemctl --user daemon-reload`, `enable` and `restart`. The unit restarts the daemon if it crashes and leaves the agents' tmux server running when the daemon restarts or stops (`KillMode=process`), as launchd does on macOS. Without linger, systemd stops user services when you log out; `swarm install` tells you when that is the case, and `loginctl enable-linger` keeps the daemon and your agents running. `swarm uninstall` disables and removes the unit.
+
+What differs from macOS:
+
+- **No menu bar.** Change settings with `swarm settings` and `swarm settings set KEY VALUE` (for example `swarm settings set max_concurrent_agents 6`, or `swarm settings set enabled_agents '["claude","codex"]'`). List notifications with `swarm notifications` (`--unread`, `--read-all`). Usage is `swarm usage`.
+- **Notifications** show as desktop notifications (`notify-send`), following the same per-level center and sound settings. Only the installed daemon shows them.
+- **Terminal button** on the board opens the agent's tmux session in your terminal emulator on the current desktop session. Over SSH or with no desktop, use `swarm attach NAME`.
+- **Usage numbers**: Claude's come from `~/.claude/.credentials.json` instead of the keychain. Cursor's are not available yet on Linux.
+- **LAN access** (`swarm auth set`, then `swarm lan enable`) publishes swarm.local through Avahi, which needs `avahi-daemon` running and `avahi-utils` installed; without them the board is still at the address `swarm lan status` prints. If a firewall such as ufw is on, allow the port.
+- `swarm migrate` is for Agent Swarm 1.x, which only ran on macOS; on Linux it has nothing to do.
+
 ### Upgrading from Agent Swarm 1.x
 
 ```bash
@@ -146,9 +184,9 @@ Open http://127.0.0.1:7777 (or Open board in the menu bar).
 ## CLI
 
 ```text
-swarm install [--plugins] [--yes]  set up launchd, tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking)
+swarm install [--plugins] [--yes] [--dry-run] [--live]  set up the daemon service (launchd on macOS, systemd on Linux), tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking) (--dry-run: print the service file and the commands it would run, and stop; --plugins ignores it) (--live: act on the live service and agent configuration even with a non-default --home; see docs/isolated-runs.md)
 swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, skills, Ollama, signing (--legacy: report Agent Swarm 1.x state still on this Mac)
-swarm status                       daemon, active agents, open requests
+swarm status                       daemon, items, repositories, knowledge base
 swarm new --name N --intent feature|debug|chore [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
 swarm start KEY [--agent A --model M --effort E] [--repo PATH...]
 swarm agents [--all]               list agents as a tree
@@ -168,8 +206,10 @@ swarm open [KEY]                   open the board
 swarm kb search QUERY | kb status
 swarm repos [--rescan] | repos add PATH
 swarm usage [--refresh]
+swarm settings | settings set KEY VALUE   print the settings, or change one (VALUE is JSON; a bare word is a string)
+swarm notifications [--unread] [--read-all]   list notifications, or mark them all read
 swarm migrate [--dry-run | --resume | --rollback] [--live]
-swarm uninstall                    remove launchd job and agent integrations (keeps data)
+swarm uninstall                    remove the daemon service and agent integrations (keeps data)
 ```
 
 ## Advisor
@@ -202,11 +242,15 @@ Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkp
 - **Doctor reports graphify as missing or too old**: run `swarm install` (install `uv` first with `brew install uv` if it is missing).
 - **Commit signing fails in an agent session**: make sure gpg-agent has your key unlocked (sign one commit in any terminal), then resume the agent.
 - **See agent sessions directly**: `tmux -L swarm ls`.
+- **Linux: the terminal button says there is no desktop session**: the daemon opens windows on the session systemd knows about (`systemctl --user show-environment`). Log in to the desktop, or use `swarm attach NAME`.
+- **Linux: hooks fail with `node: command not found`**: the daemon's PATH comes from the systemd unit; rerun `swarm install` from a shell where `node` is on PATH.
+- **Linux: no desktop notifications**: install `notify-send` (libnotify-bin on Debian and Ubuntu). The daemon logs why it skipped one in `~/.swarm/logs/daemon.err.log`.
+- **Linux: daemon status**: `systemctl --user status dev.swarm.daemon.service`.
 
 ## Development
 
 ```bash
-make test      # go test ./... + web tests + swift test
+make test      # go test ./... + web tests + swift test (the Swift tests only on macOS)
 make e2e       # end-to-end run with the fake agent (no model calls)
 make dev       # daemon on :17777 with a scratch ~/.swarm-dev
 ```

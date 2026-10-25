@@ -736,7 +736,7 @@ func TestPreflightFailures(t *testing.T) {
 		want string
 	}{
 		{"not installed", func(s *Store, f *adapter.Fake) { f.NotInstalled = true },
-			"Fake isn't installed on this Mac."},
+			"Fake isn't installed on this computer."},
 		{"not signed in", func(s *Store, f *adapter.Fake) { f.AuthError = errors.New("no token") },
 			"Fake isn't signed in. Run `fake login` in a terminal."},
 		{"no superpowers", func(s *Store, f *adapter.Fake) { f.NoSuperpowers = true },

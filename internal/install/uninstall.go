@@ -7,25 +7,28 @@ import (
 	"path/filepath"
 )
 
-// Uninstall removes the launchd job and Swarm's own entries in each agent's
+// Uninstall removes the daemon's service and Swarm's own entries in each agent's
 // configuration. It keeps ~/.swarm (data), the superpowers plugins (§12.4) and the
 // cursor attribution keys (L23).
 func Uninstall(ctx context.Context, o AgentsOpts) error {
+	svc := o.Cfg.Service()
 	if o.Cfg.Isolated {
 		if o.Out != nil {
-			fmt.Fprintf(o.Out, "%s is not the default swarm home, so the launch agent and the agents' own configuration under %s were left alone. Pass --live to remove them anyway.\n", o.Cfg.Home, o.Cfg.UserHome)
+			fmt.Fprintf(o.Out, "%s is not the default swarm home, so the %s and the agents' own configuration under %s were left alone. Pass --live to remove them anyway.\n", o.Cfg.Home, svc.Noun(), o.Cfg.UserHome)
 		}
 		return nil
 	}
-	target := fmt.Sprintf("gui/%d/%s", o.Cfg.UID, Label)
-	if _, err := o.Run(ctx, "launchctl", "bootout", target); err != nil && !notLoaded(err) {
-		return fmt.Errorf("launchctl bootout %s: %w", Label, err)
+	if err := svc.Stop(ctx, o.Run); err != nil {
+		return err
 	}
-	plist := PlistPath(o.Cfg)
-	if err := os.Remove(plist); err != nil && !os.IsNotExist(err) {
+	unit := svc.Path()
+	if err := os.Remove(unit); err != nil && !os.IsNotExist(err) {
 		return err
 	} else if err == nil {
-		o.report("removed", []string{plist})
+		o.report("removed", []string{unit})
+		if err := svc.Removed(ctx, o.Run); err != nil {
+			return err
+		}
 	}
 
 	// Hook and MCP entries. EditJSON with create=false never creates a file.

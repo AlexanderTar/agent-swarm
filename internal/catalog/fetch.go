@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/creds"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
@@ -54,10 +55,11 @@ func versionOf(ctx context.Context, run execx.Runner, bin string) (string, error
 
 // DefaultFetchers wires the real commands and files for home (the user's $HOME)
 // and swarmHome (the Swarm home, whose grok/ subdirectory is every Swarm grok
-// process's GROK_HOME).
-func DefaultFetchers(home, swarmHome, user string) []Fetcher {
+// process's GROK_HOME). cs reads Claude's sign-in (the keychain on macOS).
+func DefaultFetchers(home, swarmHome string, cs creds.Sources) []Fetcher {
 	return []Fetcher{
-		&ClaudeFetcher{Run: execx.Run, HTTP: &http.Client{Timeout: 15 * time.Second}, BaseURL: "https://api.anthropic.com", User: user},
+		&ClaudeFetcher{Run: execx.Run, HTTP: &http.Client{Timeout: 15 * time.Second}, BaseURL: "https://api.anthropic.com",
+			Creds: cs.Claude, CredsWhere: cs.Where},
 		&CodexFetcher{Run: execx.Run, Start: execx.Start, CacheFile: filepath.Join(home, ".codex", "models_cache.json"), Timeout: 10 * time.Second},
 		&AgyFetcher{Run: execx.Run, SettingsFile: filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")},
 		&CursorFetcher{Run: execx.Run},
@@ -74,7 +76,10 @@ type ClaudeFetcher struct {
 	Run     execx.Runner
 	HTTP    *http.Client
 	BaseURL string
-	User    string
+	// Creds reads Claude Code's credentials JSON; CredsWhere names its store
+	// for the error ("the keychain", or the Linux credentials file).
+	Creds      creds.Reader
+	CredsWhere string
 }
 
 func (f *ClaudeFetcher) Kind() kinds.AgentKind { return kinds.Claude }
@@ -86,11 +91,15 @@ func (f *ClaudeFetcher) Version(ctx context.Context) (string, error) {
 // maxClaudePages bounds paging so a server that always reports has_more can't hang a refresh.
 const maxClaudePages = 50
 
-// token reads the OAuth token from the keychain on every call; it is never stored.
+// token reads the OAuth token through Creds on every call; it is never stored.
 func (f *ClaudeFetcher) token(ctx context.Context) (string, error) {
-	out, err := f.Run(ctx, "security", "find-generic-password", "-s", "Claude Code-credentials", "-a", f.User, "-w")
+	var out []byte
+	err := errors.New("no credentials reader")
+	if f.Creds != nil {
+		out, err = f.Creds(ctx)
+	}
 	if err != nil {
-		return "", errors.New("Couldn't read the Claude sign-in from the keychain.")
+		return "", errors.New("Couldn't read the Claude sign-in from " + f.CredsWhere + ".")
 	}
 	var cred struct {
 		ClaudeAiOauth struct {

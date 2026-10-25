@@ -15,9 +15,9 @@ var version = "dev" // set with -ldflags "-X main.version=…"
 const usage = `Usage: swarm <command> [flags]
 
 Commands:
-  daemon [--port N]                run the daemon (launchd starts it)
-  install [--plugins] [--yes] [--live]  set up launchd, agent integrations and the superpowers plugins
-  uninstall [--live]               remove the launchd job and agent integrations (keeps data)
+  daemon [--port N]                run the daemon (launchd or systemd starts it)
+  install [--plugins] [--yes] [--live]  set up the daemon service, agent integrations and the superpowers plugins
+  uninstall [--live]               remove the daemon service and agent integrations (keeps data)
   migrate [--dry-run | --resume | --rollback] [--live]   import Agent Swarm 1.x data and cut over
   doctor [--json] [--legacy]       check prerequisites, agents, skills, Ollama, signing; --legacy reports 1.x state
   status                           daemon, items, repositories, knowledge base
@@ -48,6 +48,8 @@ Commands:
   tunnel enable [--url wss://RELAY] | disable | status   reach the board through the relay (needs swarm auth set)
   lan enable | disable | status   serve the board on the local network as swarm.local (needs swarm auth set)
   usage [--refresh]
+  settings | settings set KEY VALUE  print the settings, or change one (VALUE is JSON; a bare word is a string)
+  notifications [--unread] [--read-all]  list notifications, newest first, or mark them all read
   cleanup [--dry-run] [--no-grace]  remove finished agents' work dirs, orphan work dirs and reclaimable worktrees
   dev-seed                          load the contract fixture keys (make dev only)
   version
@@ -139,6 +141,10 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdLAN(args[1:], stdout, stderr)
 	case "usage":
 		return cmdUsage(args[1:], stdout, stderr)
+	case "settings":
+		return cmdSettings(args[1:], stdout, stderr)
+	case "notifications":
+		return cmdNotifications(args[1:], stdout, stderr)
 	case "cleanup":
 		return cmdCleanup(args[1:], stdout, stderr)
 	case "dev-seed":

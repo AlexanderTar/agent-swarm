@@ -154,3 +154,15 @@ func TestRunWithLongerCallerDeadlineDoesNotTruncate(t *testing.T) {
 		t.Fatalf("expected command to abort near caller deadline ~200ms, took %v", dur)
 	}
 }
+
+func TestStartMergedReadsStderrWithStdout(t *testing.T) {
+	p, err := StartMerged(context.Background(), "sh", "-c", "echo out; echo err >&2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Kill()
+	b, _ := io.ReadAll(p.Stdout)
+	if got := string(b); got != "out\nerr\n" {
+		t.Fatalf("output = %q, want both streams", got)
+	}
+}

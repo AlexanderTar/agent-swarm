@@ -159,7 +159,7 @@ describe("copy (§17)", () => {
     expect(T.genericStatus("In progress")).toBe(
       "Couldn't update status. The item remains In progress.",
     );
-    expect(T.agentNotInstalled("Cursor")).toBe("Cursor isn't installed on this Mac.");
+    expect(T.agentNotInstalled("Cursor")).toBe("Cursor isn't installed on this computer.");
     expect(T.agentNotSignedIn("Codex", "codex login")).toBe(
       "Codex isn't signed in. Run `codex login` in a terminal.",
     );

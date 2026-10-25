@@ -1,4 +1,5 @@
-// Package install writes the launch agent and checks prerequisites (§19, §21).
+// Package install writes the daemon's service (a launch agent on macOS, a
+// systemd user unit on Linux) and checks prerequisites (§19, §21).
 package install
 
 import (
@@ -13,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -26,15 +26,18 @@ type Config struct {
 	Bin             string // absolute path of the swarm binary
 	Home            string // swarm home (~/.swarm)
 	LaunchAgentsDir string // ~/Library/LaunchAgents
+	SystemdUserDir  string // ~/.config/systemd/user (see SystemdUserDir)
+	Manager         ServiceManager
 	Path            string // PATH for the daemon (see LaunchPath)
 	UID             int
 	User            string // USER for the daemon; omitted when empty
 	UserHome        string // HOME for the daemon; omitted when empty
 	// Isolated is set when Home is not the default ~/.swarm and the caller did
-	// not ask for --live. Install and Uninstall then leave the live launchd
-	// jobs (dev.swarm.daemon, dev.swarm.updater) and the user-level agent
-	// configuration alone: both are fixed, machine-wide names that a scratch
-	// home must not be able to stop or rewrite.
+	// not ask for --live. Install and Uninstall then leave the live service
+	// (launchd's dev.swarm.daemon and dev.swarm.updater, systemd's
+	// dev.swarm.daemon.service) and the user-level agent configuration alone:
+	// both are fixed, machine-wide names that a scratch home must not be able
+	// to stop or rewrite.
 	Isolated bool
 }
 
@@ -136,28 +139,31 @@ func HasLegacyData(dbPath string) bool {
 	return err == nil && n > 0
 }
 
-// Install writes the plist and (re)starts the job. dryRun prints what it would do.
+// Install writes the service file and (re)starts the daemon. dryRun prints what it would do.
 func Install(ctx context.Context, c Config, run execx.Runner, dryRun bool, w io.Writer) error {
 	if HasLegacyData(filepath.Join(c.Home, "swarm.db")) {
 		return db.ErrLegacy
 	}
+	svc := c.Service()
 	if c.Isolated {
-		fmt.Fprintf(w, "%s is not the default swarm home, so the %s launch agent was left alone. Pass --live to install it anyway.\n", c.Home, Label)
+		fmt.Fprintf(w, "%s is not the default swarm home, so the %s %s was left alone. Pass --live to install it anyway.\n", c.Home, Label, svc.Noun())
 		return nil
 	}
-	path := PlistPath(c)
-	target := fmt.Sprintf("gui/%d", c.UID)
-	bootout := []string{"launchctl", "bootout", target + "/" + Label}
-	bootstrap := []string{"launchctl", "bootstrap", target, path}
+	if err := checkServicePaths(c); err != nil {
+		return err
+	}
+	path := svc.Path()
 	if dryRun {
-		fmt.Fprintf(w, "Would write %s:\n%s\nWould run:\n  %s\n  %s\n", path, Plist(c),
-			strings.Join(bootout, " "), strings.Join(bootstrap, " "))
+		fmt.Fprintf(w, "Would write %s:\n%s\nWould run:\n", path, svc.Render())
+		for _, argv := range svc.Commands() {
+			fmt.Fprintf(w, "  %s\n", strings.Join(argv, " "))
+		}
 		return nil
 	}
 	for _, dir := range []struct {
 		path string
 		mode os.FileMode
-	}{{c.LaunchAgentsDir, 0o755}, {filepath.Join(c.Home, "logs"), 0o755}, {filepath.Join(c.Home, "run"), 0o700}} {
+	}{{filepath.Dir(path), 0o755}, {filepath.Join(c.Home, "logs"), 0o755}, {filepath.Join(c.Home, "run"), 0o700}} {
 		if err := os.MkdirAll(dir.path, dir.mode); err != nil {
 			return err
 		}
@@ -166,18 +172,11 @@ func Install(ctx context.Context, c Config, run execx.Runner, dryRun bool, w io.
 	if err := os.Chmod(filepath.Join(c.Home, "run"), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, Plist(c), 0o644); err != nil {
+	if err := os.WriteFile(path, svc.Render(), 0o644); err != nil {
 		return err
 	}
-	if _, err := run(ctx, bootout[0], bootout[1:]...); err != nil && !notLoaded(err) {
-		return fmt.Errorf("launchctl bootout: %w", err)
-	} else if err == nil {
-		// launchd teardown of the old service registration is asynchronous.
-		// A brief pause prevents bootstrap from racing with teardown and failing with exit status 5.
-		time.Sleep(300 * time.Millisecond)
-	}
-	if _, err := run(ctx, bootstrap[0], bootstrap[1:]...); err != nil {
-		return fmt.Errorf("launchctl bootstrap: %w", err)
+	if err := svc.Start(ctx, run, w); err != nil {
+		return err
 	}
 	fmt.Fprintf(w, "Installed %s and started the daemon.\n", path)
 	return nil
