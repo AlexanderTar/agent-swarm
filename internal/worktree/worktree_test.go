@@ -566,6 +566,68 @@ func TestSweepRemovesEveryActiveWorktreeOfTheRoot(t *testing.T) {
 	}
 }
 
+// A tree retained as unmerged stays in that state until new evidence appears.
+// Once the branch is on the default branch, the sweep of a finished root must
+// remove it. Sweep used to select only state='active', so the row was stranded.
+func TestSweepRemovesARetainedTreeOfADoneRootOnceMerged(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/was-retained",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, wt.Path, "landed.txt")
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'unmerged' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE id = 'itm_1'`); err != nil {
+		t.Fatal(err)
+	}
+	wt.State, wt.RetainedReason = "retained", "unmerged"
+	run(t, repo, "-c", "commit.gpgsign=false", "merge", "--no-ff", "-m", "merge it", "task/was-retained")
+
+	out, err := s.Sweep(ctx, "itm_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ID != wt.ID || out[0].State != "removed" {
+		t.Fatalf("sweep = %+v, %v; want the retained tree removed", out, err)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("path still exists: %v", err)
+	}
+}
+
+func TestSweepKeepsARetainedTreeThatIsStillUnmerged(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/still-out",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, wt.Path, "only-here.txt")
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'unmerged' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'cancelled' WHERE id = 'itm_1'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Sweep(ctx, "itm_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].State != "retained" || out[0].RetainedReason != "unmerged" {
+		t.Fatalf("sweep = %+v, %v; want retained/unmerged", out, err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("unmerged tree must stay on disk: %v", err)
+	}
+}
+
 func TestOnRetainedFires(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)

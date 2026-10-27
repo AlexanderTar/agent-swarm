@@ -752,11 +752,13 @@ func (s *Service) Candidates(ctx context.Context, where string, args ...any) ([]
 	return s.query(ctx, where, args...)
 }
 
-// Sweep is §12.2: it runs Remove's rules on every active worktree of one root,
-// ignoring reservations, because the caller has checked the whole tree is
-// finished.
+// Sweep is §12.2: it runs Remove's rules on every active or retained worktree
+// of one root, ignoring reservations, because the caller has checked the
+// whole tree is finished. Retained rows are included so a tree kept as
+// unmerged or dirty is judged again once the root is done or cancelled
+// (a squash landed, the dirt was only build churn).
 func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, error) {
-	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state = 'active'`, rootItemID)
+	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state IN ('active', 'retained')`, rootItemID)
 	if err != nil {
 		return nil, err
 	}
