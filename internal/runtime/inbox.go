@@ -77,6 +77,21 @@ func (s *Store) enqueue(ctx context.Context, tx *sql.Tx, m Message) (Message, er
 	return s.enqueueRaw(ctx, tx, m)
 }
 
+// IsUrgent reports whether a message may cancel a busy worker's running turn
+// (UrgentInterrupt): only the daemon's pause and handoff control messages are.
+// No agent-facing send can produce one, and the stored priority follows it
+// (0 for urgent, 1 for everything else).
+func IsUrgent(kind MessageKind, payload json.RawMessage) bool {
+	if kind != "control" {
+		return false
+	}
+	var p struct {
+		Action string `json:"action"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	return p.Action == "pause" || p.Action == "handoff"
+}
+
 // enqueueRaw is the ungated insert body. foldDigest (which compresses
 // pre-existing deferred rows rather than adding load) and the quota-reset
 // flush use it directly; everything else goes through enqueue's hold gate.
@@ -84,7 +99,9 @@ func (s *Store) enqueueRaw(ctx context.Context, tx *sql.Tx, m Message) (Message,
 	if m.ID == "" {
 		m.ID = ids.New("msg")
 	}
-	if m.Priority == 0 && m.Kind != "control" {
+	if IsUrgent(m.Kind, m.Payload) {
+		m.Priority = 0
+	} else if m.Priority == 0 {
 		m.Priority = 1
 	}
 	m.WakeClass = WakeClassFor(m.Kind)
