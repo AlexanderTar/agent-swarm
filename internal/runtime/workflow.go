@@ -1058,13 +1058,15 @@ func (s *Store) artifactContextLines(ctx context.Context, itemID string) ([]stri
 // via ResumeWorkflow's own resumeBumpsRound bumping the round after a
 // crashed/stale escalation, and that agent has no prior brief to update and
 // no session to message: its first brief is the only chance these findings
-// have to ever reach it. Reuses P8's own R3 lookup
-// (findFixStepsFor/fixRoundFindings) rather than a third copy.
+// have to ever reach it. Reuses the tdd gate's lookup
+// (findFixStepsFor/fixRoundFindings): the latest review round before this
+// run, not exactly round-1, so a cancelled build in between does not hide
+// the findings.
 func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *workflow.Spec, buildStepID string, round int) ([]string, error) {
 	var findings []workflow.Finding
 	for _, fixStep := range findFixStepsFor(spec, buildStepID) {
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			fnd, _, ferr := s.fixRoundFindings(ctx, tx, workflowID, fixStep.ID, round-1)
+			fnd, _, ferr := s.fixRoundFindings(ctx, tx, workflowID, fixStep.ID, round)
 			findings = append(findings, fnd...)
 			return ferr
 		}); err != nil {
