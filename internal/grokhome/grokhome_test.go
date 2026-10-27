@@ -36,8 +36,13 @@ func TestEnvSetsHomeAndCompatOff(t *testing.T) {
 			n++
 		}
 	}
-	if len(env) != n+1 {
-		t.Errorf("Env has %d keys, want GROK_HOME plus %d switches: %v", len(env), n, env)
+	// TASK-1438: the Swarm grok home must not self-update to a grok build
+	// Swarm never probed (it moved to 1.0.70 while the PATH binary was 1.0.60).
+	if env["GROK_DISABLE_AUTOUPDATER"] != "1" {
+		t.Errorf("GROK_DISABLE_AUTOUPDATER = %q, want \"1\"", env["GROK_DISABLE_AUTOUPDATER"])
+	}
+	if len(env) != n+2 {
+		t.Errorf("Env has %d keys, want GROK_HOME, GROK_DISABLE_AUTOUPDATER plus %d switches: %v", len(env), n, env)
 	}
 	// ask_user_question stays on: Swarm turns the card into a question row.
 	if _, ok := env["GROK_ASK_USER_QUESTION"]; ok {

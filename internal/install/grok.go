@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -430,10 +431,38 @@ func loadGrokConfig(c Config) (m map[string]any, fail string) {
 
 // CheckGrok is doctor's grok block: every file WriteGrok touches, plus A1's
 // skills check. (grok superpowers is the shared superpowers check.)
-func CheckGrok(_ context.Context, c Config, _ execx.Runner) []Check {
+func CheckGrok(ctx context.Context, c Config, run execx.Runner) []Check {
 	return []Check{grokMCPCheck(c), grokHooksCheck(c), grokAuthCheck(c), grokPluginsCheck(c),
-		grokSkillsPathCheck(c), CheckSkills(c, KindGrok)}
+		grokSkillsPathCheck(c), CheckSkills(c, KindGrok), grokVersionCheck(ctx, c, run)}
 }
+
+// grokVersionCheck fails when the Swarm grok home's version.json names a
+// different grok build than the `grok` Swarm launches from PATH: the home
+// self-updated (1.0.70) away from the probed binary (1.0.60) in TASK-1438. No
+// runner, no version.json or an unreadable version passes: nothing to compare.
+func grokVersionCheck(ctx context.Context, c Config, run execx.Runner) Check {
+	const name = "Grok version"
+	body, err := os.ReadFile(c.Grok("version.json"))
+	if err != nil || run == nil {
+		return Check{name, true, "no version.json to compare"}
+	}
+	var vj struct {
+		Version string `json:"version"`
+	}
+	out, rerr := run(ctx, "grok", "--version")
+	onPath := dottedVersionRe.FindString(string(out))
+	if json.Unmarshal(body, &vj) != nil || vj.Version == "" || rerr != nil || onPath == "" {
+		return Check{name, true, "version not readable"}
+	}
+	if vj.Version != onPath {
+		return Check{name, false, "The grok home " + c.Grok() + " is on grok " + vj.Version +
+			" but Swarm launches grok " + onPath + " from PATH. Remove " + c.Grok("version.json") +
+			" and the links in " + c.Grok("bin") + ", or install the matching grok."}
+	}
+	return Check{name, true, "grok " + onPath}
+}
+
+var dottedVersionRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
 func grokMCPCheck(c Config) Check {
 	const name = "Grok MCP"

@@ -810,3 +810,35 @@ func TestUninstallGrokRemovesOnlyTheRecordedSuperpowersPath(t *testing.T) {
 		t.Errorf("[skills] paths = %v, want only the operator's %s left", paths, theirs)
 	}
 }
+
+// TASK-1438: the Swarm grok home self-updated to 1.0.70 (version.json,
+// bin/ links) while Swarm kept launching the PATH grok 1.0.60. Doctor flags it.
+func TestCheckGrokFlagsAVersionMismatchWithTheGrokHome(t *testing.T) {
+	c := writtenGrokHome(t)
+	write := func(v string) {
+		body := `{"version":"` + v + `","stable_version":"` + v + `"}`
+		if err := os.WriteFile(c.Grok("version.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"grok --version": {Out: "grok 1.0.60 (01a8e1c591c0) [stable]\n"},
+	}}).Runner()
+	find := func() install.Check {
+		for _, ch := range install.CheckGrok(context.Background(), c, run) {
+			if ch.Name == "Grok version" {
+				return ch
+			}
+		}
+		t.Fatal(`no "Grok version" check`)
+		return install.Check{}
+	}
+	write("1.0.70")
+	if ch := find(); ch.OK || !strings.Contains(ch.Detail, "1.0.70") || !strings.Contains(ch.Detail, "1.0.60") {
+		t.Fatalf("check = %+v, want FAIL naming both versions", ch)
+	}
+	write("1.0.60")
+	if ch := find(); !ch.OK {
+		t.Fatalf("check = %+v, want OK when versions match", ch)
+	}
+}

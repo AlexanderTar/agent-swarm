@@ -20,8 +20,10 @@ func Dir(swarmHome string) string { return filepath.Join(swarmHome, "grok") }
 // skills, rules, agents, mcps, hooks, sessions) set to 0, so none of the
 // operator's other agents' files reach a Swarm session. GROK_ASK_USER_QUESTION
 // is deliberately not set: grok's question card stays on and Swarm answers it.
+// GROK_DISABLE_AUTOUPDATER keeps the Swarm grok home on the build Swarm probed:
+// it self-updated to 1.0.70 while the PATH binary stayed 1.0.60 (TASK-1438).
 func Env(swarmHome string) map[string]string {
-	env := map[string]string{"GROK_HOME": Dir(swarmHome)}
+	env := map[string]string{"GROK_HOME": Dir(swarmHome), "GROK_DISABLE_AUTOUPDATER": "1"}
 	for _, agent := range []string{"CLAUDE", "CURSOR", "CODEX"} {
 		for _, surface := range []string{"SKILLS", "RULES", "AGENTS", "MCPS", "HOOKS", "SESSIONS"} {
 			env["GROK_"+agent+"_"+surface+"_ENABLED"] = "0"
