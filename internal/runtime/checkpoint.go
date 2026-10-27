@@ -162,7 +162,7 @@ type Waiver struct {
 
 // waiveHint ends every refusal of a waivable gate: the orchestrator is the one
 // who can lift it, so the worker is told whom to ask.
-const waiveHint = " An orchestrator can waive this gate with a reason."
+const waiveHint = " An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}."
 
 func waived(it items.Item, gate string) bool {
 	return slices.ContainsFunc(it.Waivers, func(w items.Waiver) bool { return w.Gate == gate })
@@ -1717,7 +1717,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		}
 		if len(in.Waive) > 0 && in.Kind != Integrated {
 			return &items.Error{Code: items.CodeBadRequest,
-				Message: "waive is only valid on an integrated checkpoint."}
+				Message: "waive is only valid on an integrated checkpoint. Task gates are waived with swarm_items update {key, revision, waive:[{gate, reason}]}."}
 		}
 		if in.Resolution != "" {
 			if in.Kind != CompletedCkp {

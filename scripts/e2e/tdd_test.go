@@ -13,7 +13,7 @@ import (
 // Scenario 19: TDD gate on workflow tasks.
 // Spec B5, line 1270: Existing scenario 19 updated to the new TDD copy.
 // A completed checkpoint with no red run in this round is refused with the new copy:
-// `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round. An orchestrator can waive this gate with a reason.`
+// `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round. An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}.`
 // Recording red then green is accepted.
 func TestScenario19TDDGate(t *testing.T) {
 	h := newHarness(t)
@@ -69,7 +69,7 @@ func TestScenario19TDDGate(t *testing.T) {
 		"git":          []map[string]any{{"repo": "repo-tdd-wf", "branch": "task/tdd-wf", "sha": sha, "dirty": false}},
 		"verification": []map[string]any{{"cmd": "go test ./...", "phase": "green", "ok": true}},
 	})
-	wantNewCopy := `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round. An orchestrator can waive this gate with a reason.`
+	wantNewCopy := `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round. An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}.`
 	if err == nil || err.Error() != wantNewCopy {
 		t.Fatalf("completed without red err = %v, want %q", err, wantNewCopy)
 	}
@@ -126,7 +126,7 @@ func TestLegacyTaskVerification(t *testing.T) {
 }
 
 // TestBatchedWorkflowTaskTDDGateCopy verifies that batched workflow tasks use the unit-tagged copy:
-// `TDD evidence missing for unit(s) <n,…>: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason.`
+// `TDD evidence missing for unit(s) <n,…>: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}.`
 func TestBatchedWorkflowTaskTDDGateCopy(t *testing.T) {
 	h := newHarness(t)
 	epic := h.materializedEpic(t)
@@ -184,7 +184,7 @@ func TestBatchedWorkflowTaskTDDGateCopy(t *testing.T) {
 		"git":          []map[string]any{{"repo": "repo-tdd-batch", "branch": "task/tdd-batch", "sha": sha, "dirty": false}},
 		"verification": []map[string]any{{"cmd": "go test ./...", "phase": "green", "ok": true}},
 	})
-	wantBoth := `TDD evidence missing for unit(s) 1,2: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason.`
+	wantBoth := `TDD evidence missing for unit(s) 1,2: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}.`
 	if err == nil || err.Error() != wantBoth {
 		t.Fatalf("missing both units err = %v, want %q", err, wantBoth)
 	}
@@ -204,7 +204,7 @@ func TestBatchedWorkflowTaskTDDGateCopy(t *testing.T) {
 		"git":          []map[string]any{{"repo": "repo-tdd-batch", "branch": "task/tdd-batch", "sha": sha, "dirty": false}},
 		"verification": []map[string]any{{"cmd": "go test ./...", "phase": "green", "ok": true, "unit": 1}},
 	})
-	wantUnit2 := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason.`
+	wantUnit2 := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}.`
 	if err == nil || err.Error() != wantUnit2 {
 		t.Fatalf("missing unit 2 err = %v, want %q", err, wantUnit2)
 	}

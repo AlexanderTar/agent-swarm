@@ -12,7 +12,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
-const hintCopy = " An orchestrator can waive this gate with a reason."
+const hintCopy = " An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}."
 
 // seedWaiver stores waivers on key the way an orchestrator's swarm_items call would.
 func seedWaiver(t *testing.T, s *Store, key string, gates ...string) {
@@ -247,7 +247,7 @@ func TestWaiveOnlyOnIntegrated(t *testing.T) {
 	_, _, ses := worker(t, s)
 	_, err := s.WriteCheckpoint(context.Background(), ses.ID, CheckpointInput{Kind: Progress, Summary: "x",
 		Waive: []Waiver{{Gate: "tdd", Reason: "x"}}})
-	if err == nil || err.Error() != "waive is only valid on an integrated checkpoint." {
+	if err == nil || err.Error() != "waive is only valid on an integrated checkpoint. Task gates are waived with swarm_items update {key, revision, waive:[{gate, reason}]}." {
 		t.Fatalf("err = %v", err)
 	}
 }
