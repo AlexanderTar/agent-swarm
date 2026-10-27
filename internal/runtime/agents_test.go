@@ -1387,6 +1387,38 @@ func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	}
 }
 
+// TASK-1438 (2026-10-27, live incident): grok's launch sits on an unchanged
+// pane for 30 s+ twice (leader handshake, then the queued kickoff) while
+// macOS FSEvents is slow. A kind that declares a longer StartupStaller limit
+// must not be failed at 30 s; kinds that don't keep the default.
+func TestStartupHonorsAKindsLongerStallLimit(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.StartupStall = 5 * time.Minute
+	// One constant frame for 80 polls (40 s at 500 ms), then idle.
+	quiet := "warning: --no-subagents has no effect in leader mode\n"
+	var captures []string
+	for i := 0; i < 80; i++ {
+		captures = append(captures, quiet)
+	}
+	captures = append(captures, "─────\n❯ \n─────\n")
+	tm.captures["slowgrok"] = captures
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "slowgrok",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Running {
+		t.Fatalf("session state = %s, want running: a quiet pane within the kind's own stall limit must not fail", ses.State)
+	}
+	if got := s.Notify.(*fakeNotifier).kinds(); slices.Contains(got, "agent.preflight_failed") {
+		t.Fatalf("raised %v, want no agent.preflight_failed", got)
+	}
+}
+
 func TestFirstReadableLineSkipsAnsiRules(t *testing.T) {
 	pane := "\x1b[38;5;220m────────\n\x1b[39m \x1b[1mAccessing\x1b[0m workspace:\n"
 	if got := firstReadableLine(pane); got != "Accessing workspace:" {

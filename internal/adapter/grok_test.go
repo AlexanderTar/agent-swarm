@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -542,5 +543,15 @@ func TestGrokQuestionCardBlocksPasteButIsNoDialog(t *testing.T) {
 		if d.Match.MatchString(plain) && (d.Exclude == nil || !d.Exclude.MatchString(plain)) {
 			t.Errorf("startup dialog %q matches the question card", d.Title)
 		}
+	}
+}
+
+// TASK-1438: grok's launch waits on slow FSEvents for minutes; the runtime's
+// default 30 s quiet-pane limit false-failed it.
+func TestGrokDeclaresALongStartupStallLimit(t *testing.T) {
+	var ad Adapter = newGrok(Deps{})
+	ss, ok := ad.(StartupStaller)
+	if !ok || ss.StartupStallTimeout() < 2*time.Minute {
+		t.Fatalf("grok StartupStaller = %v, %v; want >= 2m", ok, ss)
 	}
 }

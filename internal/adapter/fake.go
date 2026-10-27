@@ -49,6 +49,9 @@ type Fake struct {
 	UsageLimitText  string
 	UsageLimitReset time.Time
 
+	// StartupStall, when set, makes the Fake a StartupStaller with this limit.
+	StartupStall time.Duration
+
 	// NoRename makes RenameCommand report ok=false, so a test about wake
 	// notices is not preceded by a session-rename paste.
 	NoRename bool
@@ -104,6 +107,8 @@ func (f *Fake) StartupDialogs() []Dialog        { return f.Dialogs }
 func (f *Fake) PromptPatterns() []PromptMatcher { return f.PromptMatchers }
 func (f *Fake) InterruptKeys() []string         { return []string{"Escape"} }
 func (f *Fake) Idle(capture string) bool        { return idle(f, capture) }
+
+func (f *Fake) StartupStallTimeout() time.Duration { return f.StartupStall }
 
 func (f *Fake) Wake(_ context.Context, w WakeTarget) (bool, error) {
 	f.LastWakeTarget = w

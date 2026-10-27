@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -35,6 +36,16 @@ type Grok struct {
 func newGrok(d Deps) *Grok {
 	return &Grok{base: base{d: d, kind: kinds.Grok}, minted: map[string]string{}}
 }
+
+// grokStartupStall is how long a grok pane may stay unchanged while starting.
+// Both of grok's startup waits (the TUI's fixed 30 s leader handshake, then the
+// session start behind the queued kickoff) block on macOS FSEvents, measured at
+// up to 167 s on a loaded machine (TASK-1438). Bounded by the runtime's
+// startupCeiling.
+const grokStartupStall = 5 * time.Minute
+
+// StartupStallTimeout implements StartupStaller.
+func (g *Grok) StartupStallTimeout() time.Duration { return grokStartupStall }
 
 func init() { register(kinds.Grok, func(d Deps) Adapter { return newGrok(d) }) }
 

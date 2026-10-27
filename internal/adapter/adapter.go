@@ -196,6 +196,15 @@ type UsageLimiter interface {
 	UsageLimit(capture string, now time.Time) (line string, resetsAt time.Time, ok bool)
 }
 
+// StartupStaller is an optional Adapter capability: a kind whose launch can sit
+// on an unchanged pane longer than the runtime's default startup stall limit
+// (30 s) says how long a quiet pane is still a normal start. Grok needs it: its
+// leader handshake and first session start both wait on macOS FSEvents, which
+// can take minutes on a loaded machine (TASK-1438).
+type StartupStaller interface {
+	StartupStallTimeout() time.Duration
+}
+
 // base carries what every adapter needs and supplies the shared Idle rule.
 type base struct {
 	d    Deps

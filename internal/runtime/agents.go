@@ -1801,8 +1801,12 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 	s.setWatchStartupActive(ses.ID, true)
 	defer s.setWatchStartupActive(ses.ID, false)
 	st := map[int]*dialogState{}
+	stallLimit := startupStallTimeout
+	if ss, ok := ad.(adapter.StartupStaller); ok && ss.StartupStallTimeout() > stallLimit {
+		stallLimit = ss.StartupStallTimeout()
+	}
 	ceiling := s.Now().Add(startupCeiling)
-	stallDeadline := s.Now().Add(startupStallTimeout)
+	stallDeadline := s.Now().Add(stallLimit)
 	lastCapture := ""
 	for s.Now().Before(ceiling) {
 		if st, err := s.SessionState(ctx, ses.ID); err == nil && st != Spawning {
@@ -1814,7 +1818,7 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		}
 		if capture != lastCapture {
 			lastCapture = capture
-			stallDeadline = s.Now().Add(startupStallTimeout)
+			stallDeadline = s.Now().Add(stallLimit)
 		}
 		if !s.Now().Before(stallDeadline) {
 			return s.failSession(ctx, a, ses, lastLines(capture, 40))
@@ -1884,7 +1888,7 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 			// A human-blocked pane never fails or times out on its own: it waits
 			// for the user to clear the dialog in the terminal.
 			ceiling = now.Add(startupCeiling)
-			stallDeadline = now.Add(startupStallTimeout)
+			stallDeadline = now.Add(stallLimit)
 		}
 		// A session that clears its startup dialogs and launches straight into
 		// continuous, genuinely busy work (2026-09-20, live incident: "s1-review-2"
