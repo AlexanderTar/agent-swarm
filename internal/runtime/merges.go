@@ -372,8 +372,15 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 			return err
 		}
 		if again.CheckpointID != fa.CheckpointID {
-			return &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf(
-				"Nothing to finish: %s has no approved finish request for its latest integration.", key)}
+			cur, err := s.Items.GetTx(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			msg, err := s.finishRefusalText(ctx, tx, cur)
+			if err != nil {
+				return err
+			}
+			return &items.Error{Code: items.CodeConflict, Message: msg}
 		}
 		if it.Status == items.Blocked {
 			if err := s.tryTransition(ctx, tx, key, it.StatusBeforeBlock); err != nil {
@@ -452,9 +459,12 @@ func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (i
 		return fa, nil, err
 	}
 	// a root blocked while in review stays finishable; the finishing write resolves the block
-	inReview := it.Status == items.InReview || it.Status == items.Blocked && it.StatusBeforeBlock == items.InReview
-	if !inReview || !ok || fa.Merge == "" {
-		return fa, nil, badRequest("Nothing to finish: %s has no approved finish request for its latest integration.", it.Key)
+	if !finishInReview(it) || !ok || fa.Merge == "" {
+		msg, err := s.finishRefusalText(ctx, tx, it)
+		if err != nil {
+			return fa, nil, err
+		}
+		return fa, nil, badRequest("%s", msg)
 	}
 	recorded, err := s.finishRecordedTx(ctx, tx, it.ID, fa.CheckpointID)
 	if err != nil {
@@ -470,6 +480,57 @@ func (s *Store) finishStateTx(ctx context.Context, tx *sql.Tx, it items.Item) (i
 	}
 	repos, err := s.finishReposTx(ctx, tx, it.ID, refs)
 	return fa, repos, err
+}
+
+func finishInReview(it items.Item) bool {
+	return it.Status == items.InReview || it.Status == items.Blocked && it.StatusBeforeBlock == items.InReview
+}
+
+const finishRefusalRemedy = "Re-record integrated for the current state so Swarm reopens the finish question."
+
+// finishRefusalText says why finishing is refused: no approval, a stale approval
+// (when and why), changes requested, or the root is not in review.
+func (s *Store) finishRefusalText(ctx context.Context, tx *sql.Tx, it items.Item) (string, error) {
+	var ckpID string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM checkpoints WHERE item_id = ? AND kind = 'integrated'
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, it.ID).Scan(&ckpID)
+	if errors.Is(err, sql.ErrNoRows) {
+		ckpID, err = "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var state, reason string
+	var at sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT r.state, COALESCE(json_extract(r.binding_json, '$.stale_reason'), ''),
+		COALESCE((SELECT e.created_at FROM events e WHERE e.type = ? AND json_extract(e.payload_json, '$.id') = r.id
+			ORDER BY e.created_at DESC LIMIT 1), r.responded_at)
+		FROM requests r WHERE r.item_id = ? AND r.kind IN ('accept_epic', 'accept_fix')
+		AND (? = '' OR json_extract(r.binding_json, '$.integrated_checkpoint') = ?)
+		ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1`, events.RequestResolved, it.ID, ckpID, ckpID).Scan(&state, &reason, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		state, err = "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case state == "stale":
+		if reason == "" {
+			reason = "the approved work changed"
+		}
+		when := "an unknown time"
+		if at.Valid {
+			when = time.UnixMilli(at.Int64).UTC().Format(time.RFC3339)
+		}
+		return fmt.Sprintf("Nothing to finish: %s's finish approval went stale at %s (%s). %s", it.Key, when, reason, finishRefusalRemedy), nil
+	case state == "changes_requested":
+		return fmt.Sprintf("Nothing to finish: %s's finish approval was changes requested. %s", it.Key, finishRefusalRemedy), nil
+	case !finishInReview(it):
+		return fmt.Sprintf("Nothing to finish: %s is %s, not in review. %s", it.Key, it.Status, finishRefusalRemedy), nil
+	default:
+		return fmt.Sprintf("Nothing to finish: %s has no approved finish request for its latest integration. %s", it.Key, finishRefusalRemedy), nil
+	}
 }
 
 // finishRecordedTx reports a finishing already written for the integrated checkpoint: item_merges rows,

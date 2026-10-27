@@ -596,7 +596,10 @@ blank line, then one `<repo>: <branch> at <sha7>` line per repo.
 | Approve, accept, bad/missing merge | `Choose how to finish: merge must be "auto" or "manual".` |
 | Approve, all-local, not local | `Choose how to finish: merge must be "local" (no repository has a GitHub remote).` |
 | finishing, not orchestrator/root | `Only the top-level orchestrator can write finishing on its own item.` |
-| finishing, nothing approved | `Nothing to finish: <KEY> has no approved finish request for its latest integration.` |
+| finishing, nothing approved | `Nothing to finish: <KEY> has no approved finish request for its latest integration. Re-record integrated for the current state so Swarm reopens the finish question.` |
+| finishing, approval stale | `Nothing to finish: <KEY>'s finish approval went stale at <RFC3339> (<cause>). Re-record integrated for the current state so Swarm reopens the finish question.` |
+| finishing, changes requested | `Nothing to finish: <KEY>'s finish approval was changes requested. Re-record integrated for the current state so Swarm reopens the finish question.` |
+| finishing, not in review | `Nothing to finish: <KEY> is <status>, not in review. Re-record integrated for the current state so Swarm reopens the finish question.` |
 | finishing, repeat | `Finishing for <KEY> is already recorded for this integration.` |
 | finishing, missing repo | `Missing <repo>: report a PR or a local merge for every integrated repo.` |
 | finishing, extra/unknown repo | `<repo> is not in <KEY>'s integrated checkpoint.` |

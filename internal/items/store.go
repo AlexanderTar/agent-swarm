@@ -788,7 +788,7 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		if err := s.changed(ctx, tx, it); err != nil {
 			return Item{}, err
 		}
-		if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
+		if err := s.staleApprovedFinish(ctx, tx, it, "the item was edited"); err != nil {
 			return Item{}, err
 		}
 	}
@@ -863,7 +863,7 @@ func (s *Store) waiveTx(ctx context.Context, tx *sql.Tx, it *Item, in []WaiveInp
 	if err := s.changed(ctx, tx, *it); err != nil {
 		return err
 	}
-	return s.staleApprovedFinish(ctx, tx, *it)
+	return s.staleApprovedFinish(ctx, tx, *it, "a waiver changed")
 }
 
 // Ancestors returns the chain from the top-level item down to the parent.
