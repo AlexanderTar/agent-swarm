@@ -12,7 +12,9 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
@@ -415,5 +417,168 @@ func TestReclaimTreatsADetachedHeadInASiblingBranchAsMerged(t *testing.T) {
 	mergeInto(t, integ, head)
 	if state, _ := f.reclaim(t, rev); state != "removed" {
 		t.Fatalf("detached HEAD in a sibling branch: state = %s, want removed", state)
+	}
+}
+
+// tddBuildSpec is a build step with a tdd gate and one review step that
+// retries it. fixRoundCoder seeds the coder's run at round.
+func tddBuildSpec() workflow.Spec {
+	return workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}}
+}
+
+func (f *evidenceFixture) fixRoundCoder(t *testing.T, spec workflow.Spec, round int, units ...string) (Session, string) {
+	t.Helper()
+	ctx := context.Background()
+	setItemWorkflow(t, f.s, "TASK-1", spec)
+	if len(units) > 0 {
+		setItemUnits(t, f.s, "TASK-1", units...)
+	}
+	// The fixture's reclaim owner is a finished orchestrator with no session,
+	// which StartOrchestrator tries to recover. Drop it so a real one can start.
+	if _, err := f.s.DB.ExecContext(ctx, `DELETE FROM agents WHERE id = 'owner_1'`); err != nil {
+		t.Fatal(err)
+	}
+	orch, _, err := f.s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: f.epic.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatalf("start orchestrator: %v", err)
+	}
+	coder, _, err := f.s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatalf("spawn coder: %v", err)
+	}
+	ses, err := f.s.LatestSession(ctx, coder.ID)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	it, err := f.s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatalf("task: %v", err)
+	}
+	workflowID, _ := seedWorkflowRun(t, f.s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", round)
+	return ses, workflowID
+}
+
+func (f *evidenceFixture) cancelBuild(t *testing.T, workflowID string, round int) {
+	t.Helper()
+	if _, err := f.s.DB.ExecContext(context.Background(), `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, state, created_at)
+		VALUES (?, ?, 'build', ?, 'coder', 'cancelled', ?)`,
+		ids.New("wfr"), workflowID, round, db.Millis(f.s.Now())); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func unitPair(unit int) []Verify {
+	return []Verify{
+		{Cmd: "go test ./x", Phase: "red", OK: false, Unit: unit},
+		{Cmd: "go test ./x", Phase: "green", OK: true, Unit: unit},
+	}
+}
+
+// TASK-1419: review changes_requested at round 4 (major on unit 3), a
+// cancelled build at round 5, fresh coder at round 6. The latest review
+// before this run is round 4, so only unit 3 needs a new pair. An older
+// major on unit 1 must not come back.
+func TestFixRoundReadsLatestReviewBeforeThisRun(t *testing.T) {
+	f := newEvidenceFixture(t)
+	ctx := context.Background()
+	ses, workflowID := f.fixRoundCoder(t, tddBuildSpec(), 6, "one", "two", "three", "four", "five")
+	seedReviewFindings(t, f.s, workflowID, 2, []workflow.Finding{
+		{Severity: "major", File: "a.go", Summary: "old unit 1", Unit: 1},
+	})
+	seedReviewFindings(t, f.s, workflowID, 4, []workflow.Finding{
+		{Severity: "major", File: "c.go", Summary: "fix unit 3", Unit: 3},
+	})
+	f.cancelBuild(t, workflowID, 5)
+
+	if _, err := f.s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: unitPair(3)}); err != nil {
+		t.Fatalf("round 6 should need only unit 3 from the round-4 review: %v", err)
+	}
+}
+
+// A round-4 major on unit 5 is still required when the coder only records unit 3.
+func TestFixRoundLatestReviewStillRequiresTheNamedUnit(t *testing.T) {
+	f := newEvidenceFixture(t)
+	ctx := context.Background()
+	ses, workflowID := f.fixRoundCoder(t, tddBuildSpec(), 6, "one", "two", "three", "four", "five")
+	seedReviewFindings(t, f.s, workflowID, 4, []workflow.Finding{
+		{Severity: "major", File: "e.go", Summary: "fix unit 5", Unit: 5},
+	})
+	f.cancelBuild(t, workflowID, 5)
+
+	_, err := f.s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: unitPair(3)})
+	want := `TDD evidence missing for unit(s) 5: record red then green with "unit": <n>.` + hintCopy
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// No reviewer rows at all is a first run, however high the round is.
+func TestFixRoundWithNoReviewStillRequiresEveryUnit(t *testing.T) {
+	f := newEvidenceFixture(t)
+	ctx := context.Background()
+	ses, workflowID := f.fixRoundCoder(t, tddBuildSpec(), 6, "one", "two", "three", "four", "five")
+	f.cancelBuild(t, workflowID, 5)
+
+	_, err := f.s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	want := `TDD evidence missing for unit(s) 1,2,3,4,5: record red then green with "unit": <n>.` + hintCopy
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// Another step's review loop can leave this build's first run at a high
+// round. That review is not this step's, so every unit is still required.
+func TestFixRoundMultiLoopGuardIgnoresAnotherStepsReview(t *testing.T) {
+	f := newEvidenceFixture(t)
+	ctx := context.Background()
+	spec := workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer"},
+		{ID: "review-design", Review: []string{"ui_reviewer"}, Of: "design", Loop: &workflow.Loop{Fix: "design"}},
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review-build", Review: []string{"reviewer"}, Of: "build", Loop: &workflow.Loop{Fix: "build"}},
+	}}
+	ses, workflowID := f.fixRoundCoder(t, spec, 6, "one", "two")
+	seedReviewFindingsAs(t, f.s, workflowID, "review-design", 4, "ui_reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "d.go", Summary: "fix the design", Unit: 1}})
+
+	if _, err := f.s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: unitPair(1)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.` + hintCopy
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// A fresh round-6 build brief includes the round-4 findings, not the empty
+// cancelled round in between, and not an older review.
+func TestRoundFindingLinesUsesLatestReviewBeforeThisRun(t *testing.T) {
+	f := newEvidenceFixture(t)
+	_, workflowID := f.fixRoundCoder(t, tddBuildSpec(), 6, "one", "two", "three", "four", "five")
+	seedReviewFindings(t, f.s, workflowID, 2, []workflow.Finding{
+		{Severity: "major", File: "a.go", Summary: "old unit 1", Unit: 1},
+	})
+	seedReviewFindings(t, f.s, workflowID, 4, []workflow.Finding{
+		{Severity: "major", File: "c.go", Summary: "fix unit 3", Unit: 3},
+	})
+	f.cancelBuild(t, workflowID, 5)
+
+	spec := tddBuildSpec()
+	lines, err := f.s.roundFindingLines(context.Background(), workflowID, &spec, "build", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "fix unit 3") || strings.Contains(got, "old unit 1") {
+		t.Fatalf("lines = %q, want the round-4 finding only", got)
 	}
 }

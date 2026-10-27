@@ -362,7 +362,7 @@ func TestWorkflowBatchedPerUnitEvidence(t *testing.T) {
 		"git":          []map[string]any{{"repo": "repo-batch", "branch": "task/batch", "sha": sha, "dirty": false}},
 		"verification": []map[string]any{{"cmd": "go test ./...", "phase": "green", "ok": true, "unit": 1}},
 	})
-	wantErr := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason.`
+	wantErr := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>. An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}.`
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("completed with missing unit 2 err = %v, want %q", err, wantErr)
 	}

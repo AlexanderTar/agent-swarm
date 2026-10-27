@@ -12,7 +12,11 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
-const hintCopy = " An orchestrator can waive this gate with a reason."
+const hintCopy = " An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}."
+
+// integratedHintCopy ends the integration_verify and final_review refusals,
+// which are waived on the integrated checkpoint, not on the item.
+const integratedHintCopy = " An orchestrator can waive this gate with a reason: pass waive:[{gate, reason}] on the integrated checkpoint."
 
 // seedWaiver stores waivers on key the way an orchestrator's swarm_items call would.
 func seedWaiver(t *testing.T, s *Store, key string, gates ...string) {
@@ -183,12 +187,12 @@ func TestIntegratedHonoursRootWaiversAndWaiveInput(t *testing.T) {
 
 	s, oSes := setup()
 	_, err := s.WriteCheckpoint(ctx, oSes.ID, integrated)
-	if err == nil || err.Error() != "Integration verify not recorded as passing: go test ./..."+"."+hintCopy {
+	if err == nil || err.Error() != "Integration verify not recorded as passing: go test ./..."+"."+integratedHintCopy {
 		t.Fatalf("unwaived err = %v", err)
 	}
 	seedWaiver(t, s, "EPIC-1", "integration_verify")
 	_, err = s.WriteCheckpoint(ctx, oSes.ID, integrated)
-	if err == nil || err.Error() != "Integration needs a passing final review of abcdef1."+hintCopy {
+	if err == nil || err.Error() != "Integration needs a passing final review of abcdef1."+integratedHintCopy {
 		t.Fatalf("integration_verify waived only: err = %v", err)
 	}
 	seedWaiver(t, s, "EPIC-1", "integration_verify", "final_review")
@@ -247,7 +251,7 @@ func TestWaiveOnlyOnIntegrated(t *testing.T) {
 	_, _, ses := worker(t, s)
 	_, err := s.WriteCheckpoint(context.Background(), ses.ID, CheckpointInput{Kind: Progress, Summary: "x",
 		Waive: []Waiver{{Gate: "tdd", Reason: "x"}}})
-	if err == nil || err.Error() != "waive is only valid on an integrated checkpoint." {
+	if err == nil || err.Error() != "waive is only valid on an integrated checkpoint. Task gates are waived with swarm_items update {key, revision, waive:[{gate, reason}]}." {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -162,7 +162,11 @@ type Waiver struct {
 
 // waiveHint ends every refusal of a waivable gate: the orchestrator is the one
 // who can lift it, so the worker is told whom to ask.
-const waiveHint = " An orchestrator can waive this gate with a reason."
+const waiveHint = " An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}."
+
+// integratedWaiveHint ends the integration_verify and final_review refusals:
+// those gates are waived on the integrated checkpoint, not on the item.
+const integratedWaiveHint = " An orchestrator can waive this gate with a reason: pass waive:[{gate, reason}] on the integrated checkpoint."
 
 func waived(it items.Item, gate string) bool {
 	return slices.ContainsFunc(it.Waivers, func(w items.Waiver) bool { return w.Gate == gate })
@@ -589,19 +593,25 @@ func findFixStepsFor(spec *workflow.Spec, buildStepID string) []workflow.Step {
 	return out
 }
 
-// fixRoundFindings collects reviewStepID's reviewer/ui_reviewer findings at
-// round, and reports whether any of those rows actually requested changes
-// or blocked (R3): a review step can have a row at that round with only a
-// passing verdict (nothing to retry), which is NOT a fix round at all --
-// distinct from a genuine fix round whose rows simply carry zero findings
-// (e.g. a bare `blocked` verdict, no structured findings). hasBlocking is
-// that distinction; findings is every row's findings, merged (a reviewer
-// who passed but still left findings counts too, same as B4's
-// mergeFindings).
+// fixRoundFindings collects reviewStepID's reviewer/ui_reviewer findings
+// from the latest review round strictly before round (the current build
+// run), and reports whether any of those rows actually requested changes
+// or blocked (R3, ruling-tdd-followups.md): a cancelled build between the
+// review and this run leaves round-1 empty, so the lookup is MAX(round),
+// not exactly round-1. A review step can have a row at that round with
+// only a passing verdict (nothing to retry), which is NOT a fix round at
+// all -- distinct from a genuine fix round whose rows simply carry zero
+// findings (e.g. a bare `blocked` verdict, no structured findings).
+// hasBlocking is that distinction; findings is every row's findings,
+// merged (a reviewer who passed but still left findings counts too, same
+// as B4's mergeFindings).
 func (s *Store) fixRoundFindings(ctx context.Context, tx *sql.Tx, workflowID, reviewStepID string, round int) (findings []workflow.Finding, hasBlocking bool, err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(verdict, ''), COALESCE(findings_json, '[]') FROM workflow_runs
-		WHERE workflow_id = ? AND step_id = ? AND round = ? AND role IN ('reviewer', 'ui_reviewer')`,
-		workflowID, reviewStepID, round)
+		WHERE workflow_id = ? AND step_id = ? AND role IN ('reviewer', 'ui_reviewer')
+		AND round = (
+			SELECT MAX(round) FROM workflow_runs
+			WHERE workflow_id = ? AND step_id = ? AND role IN ('reviewer', 'ui_reviewer') AND round < ?)`,
+		workflowID, reviewStepID, workflowID, reviewStepID, round)
 	if err != nil {
 		return nil, false, err
 	}
@@ -751,7 +761,7 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 		var findings []workflow.Finding
 		var hasBlocking bool
 		for _, fixStep := range fixSteps {
-			fnd, blocking, err := s.fixRoundFindings(ctx, tx, run.WorkflowID, fixStep.ID, run.Round-1)
+			fnd, blocking, err := s.fixRoundFindings(ctx, tx, run.WorkflowID, fixStep.ID, run.Round)
 			if err != nil {
 				return err
 			}
@@ -761,10 +771,10 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 		switch {
 		case !hasBlocking:
 			// This step's own first run: no changes_requested/blocked row
-			// at round-1 explains a retry of it, however high the
-			// workflow's round counter climbed for some OTHER step's fix
-			// loop (a multi-loop spec) -- never mistake that for a fix
-			// round of THIS step.
+			// in the latest review round before this run explains a retry
+			// of it, however high the workflow's round counter climbed for
+			// some OTHER step's fix loop (a multi-loop spec) -- never
+			// mistake that for a fix round of THIS step.
 			if required, err = firstRunUnits(); err != nil {
 				return err
 			}
@@ -1675,7 +1685,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if !passed {
 						return &items.Error{Code: items.CodeBadRequest,
-							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd) + waiveHint}
+							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd) + integratedWaiveHint}
 					}
 				}
 				finalRoles, err := s.finalReviewRoles(ctx, it, a.ID)
@@ -1700,7 +1710,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if !passed {
 						return &items.Error{Code: items.CodeBadRequest,
-							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7) + waiveHint}
+							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7) + integratedWaiveHint}
 					}
 				}
 			}
@@ -1711,7 +1721,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		}
 		if len(in.Waive) > 0 && in.Kind != Integrated {
 			return &items.Error{Code: items.CodeBadRequest,
-				Message: "waive is only valid on an integrated checkpoint."}
+				Message: "waive is only valid on an integrated checkpoint. Task gates are waived with swarm_items update {key, revision, waive:[{gate, reason}]}."}
 		}
 		if in.Resolution != "" {
 			if in.Kind != CompletedCkp {
