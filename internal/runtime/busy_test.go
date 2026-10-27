@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 )
 
 // leaderBusyAdapter is the fake adapter with a grok-style leader busy signal.
@@ -135,5 +136,65 @@ func TestBusySinceTracksToolCallsAndTurnEnd(t *testing.T) {
 	s.TurnEnded(sid)
 	if _, ok := s.BusySince(sid); ok {
 		t.Fatal("turn end must clear the open tool call")
+	}
+}
+
+// The board shows "busy" only once it would otherwise look stuck: a 2 s tool call
+// is plain running. BusyShown is BusyNow past busyShownAfter, and still under the ceiling.
+func TestBusyShownOnlyPastTheThreshold(t *testing.T) {
+	s, _, at, sid := busySession(t, "ShownClock")
+	s.ToolStarted(sid)
+	at.Advance(busyShownAfter - time.Second)
+	if _, ok := s.BusyShown(sid); ok {
+		t.Fatal("a short tool call must not be shown as busy")
+	}
+	if _, ok := s.BusyNow(sid); !ok {
+		t.Fatal("a short tool call is still busy for the alerts")
+	}
+	at.Advance(time.Second)
+	if _, ok := s.BusyShown(sid); !ok {
+		t.Fatal("busy past the threshold must be shown")
+	}
+	at.Advance(busyCeiling)
+	if _, ok := s.BusyShown(sid); ok {
+		t.Fatal("past the ceiling the worker reads as stuck again, not busy")
+	}
+}
+
+// The board refetches agents on agent.changed only, so a session crossing into or
+// out of the shown busy state must publish one (and nothing in between).
+func TestBusyCrossingPublishesAgentChanged(t *testing.T) {
+	s, _, at, sid := busySession(t, "ShownEvents")
+	ctx := context.Background()
+	count := func() int {
+		evs, _ := s.Events.After(ctx, 0, 1000)
+		n := 0
+		for _, e := range evs {
+			if e.Type == events.AgentChanged {
+				n++
+			}
+		}
+		return n
+	}
+	reconcile := func() int {
+		t.Helper()
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return count()
+	}
+	s.ToolStarted(sid)
+	base := reconcile()
+	at.Advance(busyShownAfter)
+	crossed := reconcile()
+	if crossed != base+1 {
+		t.Fatalf("agent.changed on crossing the threshold: %d -> %d, want +1", base, crossed)
+	}
+	if again := reconcile(); again != crossed {
+		t.Fatalf("a second tick published again: %d -> %d", crossed, again)
+	}
+	s.ToolFinished(sid)
+	if out := reconcile(); out != crossed+1 {
+		t.Fatalf("agent.changed on leaving busy: %d -> %d, want +1", crossed, out)
 	}
 }

@@ -498,6 +498,17 @@ func TestToolHooksTrackTheBusyState(t *testing.T) {
 	}
 }
 
+// A denied PreToolUse never runs the tool, so it must not leave the worker busy.
+func TestDeniedPreToolUseDoesNotMarkTheWorkerBusy(t *testing.T) {
+	h, ses := seedGrok(t, 0, runtime.Running)
+	if out := grokHandle(t, h, "PreToolUse", ses, "pre-tool-use-ask-user-question"); !strings.Contains(string(out), "deny") {
+		t.Fatalf("fixture no longer denies: %s", out)
+	}
+	if _, ok := h.RT.BusySince(ses); ok {
+		t.Fatal("a denied tool call must not read busy")
+	}
+}
+
 // G3 (TASK-1439): a worker making a tool call every few seconds with mail
 // pending must hear about it once per noticeGap, at both PreToolUse and
 // PostToolUse, for as long as the mail stays unread.

@@ -1,10 +1,19 @@
 package runtime
 
-import "time"
+import (
+	"context"
+	"database/sql"
+	"time"
+)
 
 // busyCeiling is how long a worker may read busy before the stuck alerts come
 // back, so a tool that hangs forever is still reported.
 const busyCeiling = 60 * time.Minute
+
+// busyShownAfter is how long a worker stays "running" on the board before it
+// reads busy: a 2 s tool call or a fresh grok turn is ordinary work, so the busy
+// label (and its flicker) waits until the worker would otherwise look stuck.
+const busyShownAfter = 5 * time.Minute
 
 // busyState is one session's in-memory busy evidence (no schema column, like
 // the rest of the bookkeeping block: a restart forgets it and the alerts fall
@@ -12,7 +21,8 @@ const busyCeiling = 60 * time.Minute
 type busyState struct {
 	tools       int       // PreToolUse calls with no PostToolUse yet
 	toolSince   time.Time // when tools went from 0 to 1
-	leaderSince time.Time // first time the grok leader said "working"; zero when idle
+	leaderSince time.Time // first poll that saw the grok leader "working" (up to one tick after it started); zero when idle
+	shown       bool      // busy_since was last published as shown on the board (agent.changed)
 }
 
 // ToolStarted records a PreToolUse: the worker is inside a tool call.
@@ -33,7 +43,10 @@ func (s *Store) ToolStarted(sessionID string) {
 	b.tools++
 }
 
-// ToolFinished records a PostToolUse.
+// ToolFinished records a PostToolUse. Claude's PostToolUseFailure is not a
+// registered hook, so a failed tool keeps its call open until the turn ends
+// (TurnEnded) or the ceiling; the worst case is a busy label on a turn that is
+// in fact still running.
 func (s *Store) ToolFinished(sessionID string) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
@@ -103,4 +116,32 @@ func (s *Store) BusyNow(sessionID string) (time.Time, bool) {
 func (s *Store) busyWithinCeiling(sessionID string) bool {
 	_, ok := s.BusyNow(sessionID)
 	return ok
+}
+
+// BusyShown is BusyNow once the worker has been busy past busyShownAfter: what
+// the board shows as "busy" instead of plain running.
+func (s *Store) BusyShown(sessionID string) (time.Time, bool) {
+	since, ok := s.BusyNow(sessionID)
+	if !ok || s.Now().Sub(since) < busyShownAfter {
+		return time.Time{}, false
+	}
+	return since, true
+}
+
+// publishBusyChange raises agent.changed when the session crosses into or out of
+// the shown busy state, so the board (which refetches agents on that event only)
+// shows and clears the label without waiting for an unrelated refetch.
+func (s *Store) publishBusyChange(ctx context.Context, r liveRow) error {
+	_, shown := s.BusyShown(r.SessionID)
+	s.bookkeepingMu.Lock()
+	b := s.busy[r.SessionID]
+	changed := b != nil && b.shown != shown
+	if changed {
+		b.shown = shown
+	}
+	s.bookkeepingMu.Unlock()
+	if !changed {
+		return nil
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error { return s.publishAgentChanged(ctx, tx, r.AgentName, r.RootItemID) })
 }

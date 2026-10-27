@@ -680,7 +680,14 @@ func TestStateShowsABusyWorkerAsBusyNotStale(t *testing.T) {
 	if got := session(); got["busy_since"] != nil || got["stale"] != true {
 		t.Fatalf("idle worker: busy_since=%v stale=%v, want null and true", got["busy_since"], got["stale"])
 	}
-	s.s.RT.ToolStarted(sesID)
+	skew := time.Duration(0)
+	s.RT.Now = func() time.Time { return time.Now().Add(skew) }
+	s.RT.ToolStarted(sesID)
+	if got := session(); got["busy_since"] != nil || got["stale"] != false {
+		t.Fatalf("a tool call just opened: busy_since=%v stale=%v, want null (still plain running) and false",
+			got["busy_since"], got["stale"])
+	}
+	skew = 6 * time.Minute
 	got := session()
 	if got["busy_since"] == nil || got["stale"] != false || got["messages_waiting"] != float64(1) {
 		t.Fatalf("busy worker: busy_since=%v stale=%v messages_waiting=%v, want set, false and 1",

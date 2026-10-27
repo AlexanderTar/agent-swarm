@@ -1168,6 +1168,9 @@ func (s *Store) setLastTitle(sessionID, title string) {
 
 // resolveAlive applies the "pane is alive" half of the §10.6 table.
 func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
+	if err := s.publishBusyChange(ctx, r); err != nil {
+		return err
+	}
 	if r.CompletedCheckpointAt != nil && s.Now().Sub(*r.CompletedCheckpointAt) >= killCompletedAfter {
 		return s.Tmux.Kill(ctx, r.TmuxName)
 	}
