@@ -87,6 +87,9 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 		"superpowers:brainstorming",
 		"superpowers:systematic-debugging",
 		"Then write `completed`, remove your worktrees with `swarm_worktree` `op: \"remove\"`, and stop.",
+		"re-record `integrated` for the current state so Swarm reopens the finish question",
+		"git reset --hard && git clean -fd",
+		"never `-x`",
 	} {
 		if !strings.Contains(orch, want) {
 			t.Errorf("skills/swarm-orchestrator/SKILL.md is missing %q", want)
