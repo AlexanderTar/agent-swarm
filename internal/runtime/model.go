@@ -423,6 +423,7 @@ type Store struct {
 	// stuck delivery either way.
 	bookkeepingMu      sync.Mutex
 	interruptedAt      map[string]time.Time
+	urgentInterrupted  map[string]bool // message ids whose urgent interrupt was already sent (urgent.go)
 	dialogDismissed    map[string]bool // sessions whose native question dialog a pause already dismissed
 	pasteAttempts      map[string]int
 	museSeq            map[string]int64 // last muse log position recorded as an end-of-turn context sample (muse is polled; grok is hooked and samples at Stop, so it needs none)

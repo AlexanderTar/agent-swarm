@@ -57,6 +57,10 @@ type wakeRow struct {
 	PasteAttempts                                                int // only spaces paste retries; the alert is database-derived (undeliverableAfter)
 	BatchPastes                                                  int // successful pastes of the current batch so far
 	NativeTried                                                  bool
+	// UrgentID/UrgentAt: the oldest pending urgent message (IsUrgent), if any.
+	UrgentID     string
+	UrgentAt     time.Time
+	OpenQuestion bool // an open question row raised this session: a person is being waited on
 }
 
 // wakeCandidates loads every live session with at least one pending
@@ -71,7 +75,15 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		(SELECT MAX(m.created_at) FROM messages m
 			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate'),
 		EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = a.id AND o.mode = 'handoff'
-			AND o.phase IN ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting'))
+			AND o.phase IN ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')),
+		COALESCE((SELECT m.id FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending'
+			AND m.kind = 'control' AND json_extract(m.payload_json, '$.action') IN ('pause', 'handoff')
+			ORDER BY m.seq LIMIT 1), ''),
+		(SELECT m.created_at FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending'
+			AND m.kind = 'control' AND json_extract(m.payload_json, '$.action') IN ('pause', 'handoff')
+			ORDER BY m.seq LIMIT 1),
+		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open'
+			AND q.created_at >= ses.started_at)
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -85,9 +97,10 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		var lastSeen, lastWake sql.NullInt64
 		var startedAt int64
 		var hasControlCount int
-		var oldest, newest sql.NullInt64
+		var oldest, newest, urgentAt sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.ItemKey, &r.TmuxName,
-			&r.ProviderID, &kind, &r.Model, &r.Effort, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest, &r.Handoff); err != nil {
+			&r.ProviderID, &kind, &r.Model, &r.Effort, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest, &r.Handoff,
+			&r.UrgentID, &urgentAt, &r.OpenQuestion); err != nil {
 			return nil, err
 		}
 		if !oldest.Valid {
@@ -98,6 +111,9 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		r.OldestMessageAt = db.FromMillis(oldest.Int64)
 		r.NewestPendingAt = db.FromMillis(newest.Int64)
 		r.StartedAt = db.FromMillis(startedAt)
+		if urgentAt.Valid {
+			r.UrgentAt = db.FromMillis(urgentAt.Int64)
+		}
 		if lastSeen.Valid {
 			t := db.FromMillis(lastSeen.Int64)
 			r.LastSeenAt = &t
@@ -182,6 +198,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 				return err
 			}
 		}
+		s.interruptForUrgent(ctx, r)
 		// After a wake (native or paste) give the agent pasteRetry to respond,
 		// unless a pending immediate message is newer than that wake. Each
 		// further paste of the same batch doubles that wait: a busy TUI
