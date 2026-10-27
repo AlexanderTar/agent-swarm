@@ -52,6 +52,9 @@ func TestDiscardRemovesRetainedTreeOfDoneRootAndKeepsTheBranch(t *testing.T) {
 	ctx := context.Background()
 	s.Events = events.New(s.DB, s.Now)
 	setRoot(t, s, "done")
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
 	for _, ref := range []string{wt.Path, wt.ID} {
 		got, n, err := s.Discard(ctx, ref)
 		if ref == wt.Path {
@@ -76,14 +79,70 @@ func TestDiscardRemovesRetainedTreeOfDoneRootAndKeepsTheBranch(t *testing.T) {
 	}
 }
 
+func TestDiscardAllowsAnInProgressRootWhenNobodyLiveHoldsIt(t *testing.T) {
+	s, wt, repo := retainedUnmerged(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	got, n, err := s.Discard(ctx, wt.Path)
+	if err != nil || got.State != "removed" || n != 1 || got.Branch != "task/keep" {
+		t.Fatalf("Discard = %+v, %d, %v; want the tree removed and the branch kept", got, n, err)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("path still exists: %v", err)
+	}
+	if out := run(t, repo, "branch", "--list", "task/keep"); !strings.Contains(out, "task/keep") {
+		t.Fatalf("branch gone: %q", out)
+	}
+}
+
+func TestDiscardRefusesALiveOwnerEvenWhenTheRootIsInProgress(t *testing.T) {
+	s, wt, _ := retainedUnmerged(t)
+	_, _, err := s.Discard(context.Background(), wt.Path)
+	if err == nil || !strings.Contains(err.Error(), "orch") {
+		t.Fatalf("err = %v, want it to name the live owner", err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("refused discard removed the tree: %v", err)
+	}
+}
+
+func TestDiscardRemovesAPathWithNoSwarmRow(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/stray",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM worktree_reservations WHERE worktree_id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM worktrees WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.Discard(ctx, wt.Path)
+	if err != nil || got.State != "removed" || got.Path != wt.Path {
+		t.Fatalf("Discard = %+v, %v; want the untracked path removed", got, err)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("path still exists: %v", err)
+	}
+	if out := run(t, repo, "branch", "--list", "task/stray"); !strings.Contains(out, "task/stray") {
+		t.Fatalf("branch gone: %q", out)
+	}
+}
+
 func TestDiscardRefusals(t *testing.T) {
 	s, wt, _ := retainedUnmerged(t)
 	ctx := context.Background()
-	if _, _, err := s.Discard(ctx, wt.Path); err == nil || !strings.Contains(err.Error(), "in progress") {
-		t.Fatalf("active root err = %v, want it to name the root status", err)
-	}
 	if _, _, err := s.Discard(ctx, "/nope/wt"); err == nil || !strings.Contains(err.Error(), "Unknown worktree") {
 		t.Fatalf("unknown path err = %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
 	}
 	setRoot(t, s, "cancelled")
 	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations (worktree_id, agent_id, mode, created_at)
@@ -104,8 +163,8 @@ func TestRemoveByNonOwnerNamesStateAndPointsToDiscardForFinishedRoot(t *testing.
 	_, err := s.Remove(ctx, wt.ID, "agt_2")
 	if err == nil || !strings.Contains(err.Error(), "only the owner") ||
 		!strings.Contains(err.Error(), "retained") || !strings.Contains(err.Error(), "dirty") ||
-		strings.Contains(err.Error(), "cleanup --discard") {
-		t.Fatalf("active root err = %v, want owner-only + state/reason and no discard hint", err)
+		!strings.Contains(err.Error(), "swarm cleanup --discard "+wt.Path) {
+		t.Fatalf("active root err = %v, want owner-only, state/reason, and the discard command", err)
 	}
 	setRoot(t, s, "done")
 	_, err = s.Remove(ctx, wt.ID, "agt_2")

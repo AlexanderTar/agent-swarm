@@ -107,24 +107,32 @@ func TestCleanupRemovesAndNoGraceIsRequiredForFreshOrphans(t *testing.T) {
 	}
 }
 
-func TestCleanupDiscardRefusesActiveRootThenDiscardsDoneRootKeepingTheBranch(t *testing.T) {
+func TestCleanupDiscardRefusesALiveOwnerThenDiscardsWhenTheOwnerIsFinished(t *testing.T) {
 	home, _, _, wtPath := seedCleanupHome(t)
+	d, err := db.Open(context.Background(), filepath.Join(home, "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(context.Background(), `UPDATE agents SET state = 'active' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
 	var out, errb bytes.Buffer
 	if code := run([]string{"cleanup", "--home", home, "--discard", wtPath}, &out, &errb); code == 0 {
-		t.Fatalf("discard under an in-progress root exited 0:\n%s", out.String())
+		t.Fatalf("discard while the owner is live exited 0:\n%s", out.String())
 	}
-	if !strings.Contains(errb.String(), "EPIC-1") || !strings.Contains(errb.String(), "in progress") {
-		t.Fatalf("stderr = %q, want the root and its status", errb.String())
+	if !strings.Contains(errb.String(), "done-agent") {
+		t.Fatalf("stderr = %q, want the live owner", errb.String())
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("refused discard removed the tree: %v", err)
 	}
 
-	d, err := db.Open(context.Background(), filepath.Join(home, "swarm.db"))
+	d, err = db.Open(context.Background(), filepath.Join(home, "swarm.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(context.Background(), `UPDATE items SET status = 'done' WHERE id = 'itm_1'`); err != nil {
+	if _, err := d.ExecContext(context.Background(), `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()

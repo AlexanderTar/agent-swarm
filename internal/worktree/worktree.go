@@ -902,17 +902,19 @@ func (s *Service) List(ctx context.Context, rootKey, state string) ([]Listed, er
 }
 
 // Discard force-removes a worktree, by id or path, that the user has decided
-// to drop: only when its root item is done or cancelled and no live agent
-// holds it. It never deletes the branch, so the commits stay recoverable, and
-// returns how many commits the tree holds that are not on its base (-1 when
-// that cannot be counted).
+// to drop: only when its owner is not live and no live agent holds a
+// reservation. The root item's status does not matter. It never deletes the
+// branch, so the commits stay recoverable, and returns how many commits the
+// tree holds that are not on its base (-1 when that cannot be counted). A
+// path under the worktrees directory with no row is removed the same way
+// when some repo lists it as a worktree.
 func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error) {
 	wts, err := s.query(ctx, `WHERE id = ? OR path = ?`, ref, ref)
 	if err != nil {
 		return Worktree{}, 0, err
 	}
 	if len(wts) == 0 {
-		return Worktree{}, 0, fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
+		return s.discardUntracked(ctx, ref)
 	}
 	lock := lockFor(wts[0].ID)
 	lock.Lock()
@@ -924,13 +926,16 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	if wt.State == "removed" {
 		return wt, 0, fmt.Errorf("worktree %s is already removed", wt.Path)
 	}
-	var rootKey, rootStatus string
-	if err := s.DB.QueryRowContext(ctx, `SELECT key, status FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey, &rootStatus); err != nil {
+	var rootKey string
+	if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey); err != nil {
 		return Worktree{}, 0, err
 	}
-	if rootStatus != "done" && rootStatus != "cancelled" {
-		return Worktree{}, 0, fmt.Errorf("worktree %s belongs to %s, which is %s; only trees of a done or cancelled root can be discarded",
-			wt.Path, rootKey, strings.ReplaceAll(rootStatus, "_", " "))
+	var ownerName, ownerState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT name, state FROM agents WHERE id = ?`, wt.OwnerAgentID).Scan(&ownerName, &ownerState); err != nil {
+		return Worktree{}, 0, err
+	}
+	if ownerState == "queued" || ownerState == "active" {
+		return Worktree{}, 0, fmt.Errorf("worktree %s is held by live agent %s", wt.Path, ownerName)
 	}
 	var holder string
 	err = s.DB.QueryRowContext(ctx, `SELECT a.name FROM worktree_reservations r JOIN agents a ON a.id = r.agent_id
@@ -978,8 +983,89 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	return wt, unlanded, err
 }
 
+// discardUntracked removes a directory under the worktrees dir that has no
+// row, via `git worktree remove` in the repo whose worktree list names it.
+// The branch is kept. Anything else is an unknown ref.
+func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, int, error) {
+	unknown := fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
+	if !s.underWorktrees(ref) || !fileExists(ref) {
+		return Worktree{}, 0, unknown
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT path FROM repos`)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	defer rows.Close()
+	var repoPath string
+	for rows.Next() {
+		var p string
+		if rows.Scan(&p) != nil {
+			continue
+		}
+		out, err := s.git(ctx, p, "worktree", "list", "--porcelain")
+		if err != nil || !worktreeListed(string(out), ref) {
+			continue
+		}
+		repoPath = p
+		break
+	}
+	if err := rows.Err(); err != nil {
+		return Worktree{}, 0, err
+	}
+	if repoPath == "" {
+		return Worktree{}, 0, unknown
+	}
+	branch := ""
+	if out, err := s.git(ctx, ref, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		branch = strings.TrimSpace(string(out))
+		if branch == "HEAD" {
+			branch = ""
+		}
+	}
+	unlanded := -1
+	if name, err := s.defaultName(ctx, repoPath); err == nil {
+		base := name
+		if _, err := s.git(ctx, ref, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name); err == nil {
+			base = "origin/" + name
+		}
+		if out, cerr := s.git(ctx, ref, "rev-list", "--count", base+"..HEAD"); cerr == nil {
+			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
+		}
+	}
+	if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", ref); rerr != nil {
+		return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", ref, rerr, strings.TrimSpace(string(out)))
+	}
+	now := s.Now()
+	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil
+}
+
+func (s *Service) underWorktrees(path string) bool {
+	rel, err := filepath.Rel(s.worktreesDir(), path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func worktreeListed(porcelain, path string) bool {
+	want, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		want = path
+	}
+	for _, line := range strings.Split(porcelain, "\n") {
+		got, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if got == path {
+			return true
+		}
+		if resolved, err := filepath.EvalSymlinks(got); err == nil && resolved == want {
+			return true
+		}
+	}
+	return false
+}
+
 // notOwnerError explains a non-owner remove: the tree's state and reason, and
-// for a done or cancelled root the user command that can drop it.
+// the user command that can drop it when no live agent holds it.
 func (s *Service) notOwnerError(ctx context.Context, wt Worktree) error {
 	state := wt.State
 	if wt.RetainedReason != "" {
@@ -988,11 +1074,12 @@ func (s *Service) notOwnerError(ctx context.Context, wt Worktree) error {
 	msg := fmt.Sprintf("worktree: only the owner can remove %s (%s)", wt.Path, state)
 	var rootKey, status string
 	if s.DB.QueryRowContext(ctx, `SELECT key, status FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey, &status) == nil {
-		if status == "done" || status == "cancelled" {
-			msg += fmt.Sprintf("; its root %s is %s, so you can run `swarm cleanup --discard %s` to drop it (the branch is kept)", rootKey, status, wt.Path)
-		} else {
-			msg += fmt.Sprintf("; its root %s is %s", rootKey, strings.ReplaceAll(status, "_", " "))
+		shown := status
+		if status != "done" && status != "cancelled" {
+			shown = strings.ReplaceAll(status, "_", " ")
 		}
+		msg += fmt.Sprintf("; its root %s is %s", rootKey, shown)
 	}
+	msg += fmt.Sprintf("; run `swarm cleanup --discard %s` to drop it when no live agent holds it (the branch is kept)", wt.Path)
 	return errors.New(msg)
 }

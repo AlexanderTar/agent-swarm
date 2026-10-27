@@ -48,7 +48,8 @@ Commands:
   tunnel enable [--url wss://RELAY] | disable | status   reach the board through the relay (needs swarm auth set)
   lan enable | disable | status   serve the board on the local network as swarm.local (needs swarm auth set)
   usage [--refresh]
-  cleanup [--dry-run] [--no-grace]  remove finished agents' work dirs, orphan work dirs and reclaimable worktrees
+  cleanup [--dry-run] [--no-grace] [--discard PATH]
+                                   remove finished agents' work dirs, orphan work dirs and reclaimable worktrees; --discard drops one tree no live agent holds (branch kept)
   dev-seed                          load the contract fixture keys (make dev only)
   version
 

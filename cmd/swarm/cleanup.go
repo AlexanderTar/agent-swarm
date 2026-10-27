@@ -21,7 +21,7 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	fs, home, _ := flags("cleanup", stderr, false)
 	dry := fs.Bool("dry-run", false, "list what would be removed and change nothing")
 	noGrace := fs.Bool("no-grace", false, "ignore the one-hour grace after an agent finishes")
-	discard := fs.String("discard", "", "force-remove one worktree (path or id) of a done or cancelled root; the branch is kept")
+	discard := fs.String("discard", "", "force-remove one worktree (path or id) that no live agent holds; the branch is kept")
 	if code, done := parse(fs, args); done {
 		return code
 	}
