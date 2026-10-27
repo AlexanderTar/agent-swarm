@@ -23,6 +23,7 @@ type busyState struct {
 	toolSince   time.Time // when tools went from 0 to 1
 	leaderSince time.Time // first poll that saw the grok leader "working" (up to one tick after it started); zero when idle
 	shown       bool      // busy_since was last published as shown on the board (agent.changed)
+	waiting     int       // pending messages as of that publish, shown with the busy label
 }
 
 // ToolStarted records a PreToolUse: the worker is inside a tool call.
@@ -129,19 +130,31 @@ func (s *Store) BusyShown(sessionID string) (time.Time, bool) {
 }
 
 // publishBusyChange raises agent.changed when the session crosses into or out of
-// the shown busy state, so the board (which refetches agents on that event only)
-// shows and clears the label without waiting for an unrelated refetch.
+// the shown busy state, or its pending-message count changes while shown, so the
+// board (which refetches agents on that event only) keeps the label current
+// without waiting for an unrelated refetch. The remembered state moves only
+// after the event is stored, so a failed publish is retried on the next tick.
 func (s *Store) publishBusyChange(ctx context.Context, r liveRow) error {
 	_, shown := s.BusyShown(r.SessionID)
+	waiting := 0
+	if shown {
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id =
+			(SELECT agent_id FROM sessions WHERE id = ?) AND state = 'pending'`, r.SessionID).Scan(&waiting); err != nil {
+			return err
+		}
+	}
 	s.bookkeepingMu.Lock()
 	b := s.busy[r.SessionID]
-	changed := b != nil && b.shown != shown
-	if changed {
-		b.shown = shown
-	}
+	changed := b != nil && (b.shown != shown || b.waiting != waiting)
 	s.bookkeepingMu.Unlock()
 	if !changed {
 		return nil
 	}
-	return s.tx(ctx, func(tx *sql.Tx) error { return s.publishAgentChanged(ctx, tx, r.AgentName, r.RootItemID) })
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.publishAgentChanged(ctx, tx, r.AgentName, r.RootItemID) }); err != nil {
+		return err
+	}
+	s.bookkeepingMu.Lock()
+	b.shown, b.waiting = shown, waiting
+	s.bookkeepingMu.Unlock()
+	return nil
 }

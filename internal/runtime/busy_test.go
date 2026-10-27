@@ -198,3 +198,64 @@ func TestBusyCrossingPublishesAgentChanged(t *testing.T) {
 		t.Fatalf("agent.changed on leaving busy: %d -> %d, want +1", crossed, out)
 	}
 }
+
+func busyLiveRow(t *testing.T, s *Store, sid string) (liveRow, string) {
+	t.Helper()
+	r := liveRow{SessionID: sid}
+	var agentID string
+	if err := s.DB.QueryRow(`SELECT a.id, a.name, a.root_item_id FROM agents a JOIN sessions x ON x.agent_id = a.id WHERE x.id = ?`, sid).
+		Scan(&agentID, &r.AgentName, &r.RootItemID); err != nil {
+		t.Fatal(err)
+	}
+	return r, agentID
+}
+
+// A failed agent.changed publish must not count as published: the next tick tries again.
+func TestBusyChangeIsRetriedAfterAFailedPublish(t *testing.T) {
+	s, _, at, sid := busySession(t, "RetryPublish")
+	r, _ := busyLiveRow(t, s, sid)
+	s.ToolStarted(sid)
+	at.Advance(busyShownAfter)
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.publishBusyChange(dead, r); err == nil {
+		t.Fatal("publish on a cancelled context should fail")
+	}
+	before, _ := s.Events.After(context.Background(), 0, 1000)
+	if err := s.publishBusyChange(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.Events.After(context.Background(), 0, 1000)
+	if len(after) != len(before)+1 {
+		t.Fatalf("retry published %d events, want 1", len(after)-len(before))
+	}
+}
+
+// "N messages waiting" is on the board, so a message reaching (or leaving) a worker
+// that is shown busy refreshes it without waiting for an unrelated agent.changed.
+func TestBusyWaitingCountChangePublishesAgentChanged(t *testing.T) {
+	s, _, at, sid := busySession(t, "WaitingCount")
+	ctx := context.Background()
+	r, agentID := busyLiveRow(t, s, sid)
+	s.ToolStarted(sid)
+	at.Advance(busyShownAfter)
+	events := func() int { evs, _ := s.Events.After(ctx, 0, 1000); return len(evs) }
+	if err := s.publishBusyChange(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	base := events()
+	mustExec(t, s.DB, `INSERT INTO messages (id, seq, kind, origin, from_agent_id, to_agent_id, root_item_id, payload_json, state, created_at)
+		VALUES ('msg_w1', 9101, 'finding', 'agent', ?, ?, ?, '{}', 'pending', 1)`, agentID, agentID, r.RootItemID)
+	if err := s.publishBusyChange(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if got := events(); got != base+1 {
+		t.Fatalf("a message reaching a busy worker: %d events, want %d", got, base+1)
+	}
+	if err := s.publishBusyChange(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if got := events(); got != base+1 {
+		t.Fatalf("an unchanged count published again: %d events", got)
+	}
+}
