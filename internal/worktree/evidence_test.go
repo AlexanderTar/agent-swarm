@@ -110,6 +110,119 @@ func TestFetchFailureIsLoggedAndLeavesLocalRefs(t *testing.T) {
 	}
 }
 
+// landOnMain commits the same bytes as a squash of the branch, plus later.txt,
+// and pushes main. The branch HEAD is a different commit from anything on main.
+func landOnMain(t *testing.T, repo string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"add"}
+	for name := range files {
+		args = append(args, name)
+	}
+	run(t, repo, args...)
+	run(t, repo, "-c", "commit.gpgsign=false", "commit", "-m", "land")
+	run(t, repo, "push", "-q", "origin", "main")
+}
+
+func branchWorktree(t *testing.T, s *Service, repo, repoID, branch string) Worktree {
+	t.Helper()
+	wt, err := s.Create(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo, Branch: branch,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wt
+}
+
+func TestContentAlreadyOnTheRemoteDefaultCountsAsMerged(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt := branchWorktree(t, s, repo, repoID, "task/squash")
+	commitFile(t, wt.Path, "feature.txt")
+	landOnMain(t, repo, map[string]string{"feature.txt": "feature.txt", "later.txt": "later"})
+
+	head, ok := s.headSHA(ctx, wt)
+	if !ok {
+		t.Fatal("headSHA")
+	}
+	if s.isAncestor(ctx, wt.Path, head, "refs/remotes/origin/main") {
+		t.Fatal("precondition: a squashed HEAD is not an ancestor of origin/main")
+	}
+	if !s.mergedElsewhere(ctx, wt, head) {
+		t.Fatal("content already on origin/main must count as merged")
+	}
+}
+
+func TestUniqueContentIsNotMerged(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt := branchWorktree(t, s, repo, repoID, "task/unique")
+	commitFile(t, wt.Path, "unique.txt")
+	landOnMain(t, repo, map[string]string{"other.txt": "other"})
+
+	head, ok := s.headSHA(ctx, wt)
+	if !ok {
+		t.Fatal("headSHA")
+	}
+	if s.mergedElsewhere(ctx, wt, head) {
+		t.Fatal("a branch that still has its own file must not count as merged")
+	}
+}
+
+func TestConflictingContentIsNotMerged(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt := branchWorktree(t, s, repo, repoID, "task/conflict")
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "README.md")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "branch readme")
+	landOnMain(t, repo, map[string]string{"README.md": "main\n"})
+
+	head, ok := s.headSHA(ctx, wt)
+	if !ok {
+		t.Fatal("headSHA")
+	}
+	if s.mergedElsewhere(ctx, wt, head) {
+		t.Fatal("a conflicting merge-tree must not count as merged")
+	}
+}
+
+func TestMergeTreeFailureIsNotEvidence(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt := branchWorktree(t, s, repo, repoID, "task/oldgit")
+	commitFile(t, wt.Path, "feature.txt")
+	landOnMain(t, repo, map[string]string{"feature.txt": "feature.txt", "later.txt": "later"})
+	real := s.Run
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && slices.Contains(args, "merge-tree") {
+			return []byte("merge-tree: unknown option"), errors.New("exit status 129")
+		}
+		return real(ctx, name, args...)
+	}
+	head, ok := s.headSHA(ctx, wt)
+	if !ok {
+		t.Fatal("headSHA")
+	}
+	if s.mergedElsewhere(ctx, wt, head) {
+		t.Fatal("a merge-tree error (old git, or any failure) must not count as merged")
+	}
+}
+
 func TestMergedElsewhereUsesEvidenceAndHandlesUnknownRepo(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)
