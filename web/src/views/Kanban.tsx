@@ -18,7 +18,8 @@ import { AgentIcon, Key, TypeIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { C, ROLE_EMOJI, STATUS_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
-import { stateText } from "../logic/agentActions";
+import { useNow } from "../data/useNow";
+import { displayState, stateLabel, stateText } from "../logic/agentActions";
 import {
   DEFAULT_COLLAPSED_COLUMNS,
   type Lane,
@@ -59,6 +60,7 @@ function Card(p: {
   onMove(status: ItemStatus): void;
 }) {
   const { card } = p;
+  const now = useNow();
   const drag = useDraggable({ id: card.key, disabled: p.disabled || p.pending });
   const style = drag.transform
     ? { transform: `translate(${drag.transform.x}px, ${drag.transform.y}px)` }
@@ -124,12 +126,15 @@ function Card(p: {
       {p.agent && (
         <p className="flex items-center gap-1">
           <AgentIcon kind={p.agent.agent.kind} />
-          <span className="max-w-[50%] truncate">{p.agent.agent.name}</span>
+          <span className="truncate">{p.agent.agent.name}</span>
           {p.agent.extra > 0 && <span className="text-muted-foreground">+{p.agent.extra}</span>}
-          <span className="ml-auto truncate text-muted-foreground">
-            {stateText(p.agent.agent, Date.now(), true)}
+          <span className="ml-auto text-muted-foreground">
+            {stateLabel(displayState(p.agent.agent))}
           </span>
         </p>
+      )}
+      {p.agent && displayState(p.agent.agent) === "busy" && (
+        <p className="text-muted-foreground">{stateText(p.agent.agent, now, true)}</p>
       )}
       {p.crew && (
         <div

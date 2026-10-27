@@ -41,11 +41,11 @@ export function StateDot({
 }: { state: DisplayState; withLabel?: boolean; text?: string }) {
   const label = text ?? stateLabel(state);
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span className="inline-flex items-start gap-1.5">
       <span
         aria-label={withLabel ? undefined : label}
         role={withLabel ? undefined : "img"}
-        className={`inline-block size-2 rounded-full ${DOT[stateTone(state)]}`}
+        className={`mt-1.5 inline-block size-2 shrink-0 rounded-full ${DOT[stateTone(state)]}`}
       />
       {withLabel && <span className="text-muted-foreground">{label}</span>}
     </span>

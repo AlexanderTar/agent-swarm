@@ -97,6 +97,31 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(row).not.toHaveTextContent("No activity");
   });
 
+  it("keeps the busy minutes current without a refetch and keeps the dot round when the label wraps", () => {
+    vi.useFakeTimers();
+    try {
+      renderWithDaemon(
+        <AgentRow
+          agent={makeAgent({
+            name: "tick-coder",
+            session: { ...ses("running"), stale: false, busy_since: Date.now() - 12 * 60_000 },
+          })}
+        />,
+        { events: false },
+      );
+      const row = screen.getByTestId("agent-tick-coder");
+      expect(row).toHaveTextContent("for 12 min");
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(row).toHaveTextContent("for 13 min");
+      const dot = row.querySelector("span.rounded-full");
+      expect(dot).toHaveClass("shrink-0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks a low-token orchestrator with a leaf after the status label, never a worker", () => {
     const { unmount } = renderWithDaemon(
       <AgentRow

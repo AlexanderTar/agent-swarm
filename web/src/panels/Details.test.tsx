@@ -756,6 +756,10 @@ describe("Details panel (§16.9)", () => {
     expect(within(overview).queryByTestId("agent-auth-epic-orchestrator")).not.toBeInTheDocument();
     // the overview list uses the same status text as the Agents tab, not the raw state key
     expect(within(agents).queryByText(/^[a-z_]+$/)).not.toBeInTheDocument();
+    const overviewStates = within(agents)
+      .getAllByRole("listitem")
+      .map((li) => li.lastElementChild?.textContent);
+    expect(overviewStates).toEqual(["Running", "Running", "Waiting"]);
     await user.click(tabs[1]!);
     expect(
       within(screen.getByRole("tabpanel", { name: "Agents" })).getByTestId(
@@ -768,6 +772,29 @@ describe("Details panel (§16.9)", () => {
         name: "+ Add dependency",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("lets a long busy label wrap instead of squeezing the agent name on phones", async () => {
+    const d = createMockDaemon();
+    const coder = d.db.agents[0]?.children.find((a) => a.item_key === "TASK-101");
+    if (!coder?.session) throw new Error("TASK-101 coder fixture missing");
+    coder.session = {
+      ...coder.session,
+      stale: false,
+      waiting: false,
+      busy_since: Date.now() - 12 * 60_000 - 5_000,
+      messages_waiting: 2,
+    };
+    setup("TASK-101", {}, d);
+    const overview = await screen.findByRole("tabpanel", { name: "Overview" });
+    const agents = within(overview).getByRole("region", { name: "Agents" });
+    const label = await within(agents).findByText(
+      "Busy · running a long task · 2 messages waiting · for 12 min",
+    );
+    const name = within(agents).getByText(coder.name);
+    expect(name).toHaveClass("shrink-0", "max-w-[50%]", "truncate");
+    expect(label).not.toHaveClass("shrink-0");
+    expect(label).toHaveClass("min-w-0", "text-right");
   });
 
   it("lets a long brief wrap and grow on phones instead of overflowing or overlapping", async () => {

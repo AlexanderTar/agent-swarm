@@ -80,6 +80,24 @@ describe("Kanban view (§16.7)", () => {
     expect(within(c).getByText("R2")).toBeInTheDocument();
     expect(within(c).getByLabelText("Crew")).toHaveTextContent("💻🔍✏️+1");
   });
+  it("puts a busy worker's state on its own card line and leaves the name uncapped", async () => {
+    const d = createMockDaemon();
+    const coder = d.db.agents[0]?.children.find((a) => a.item_key === "TASK-101");
+    if (!coder?.session) throw new Error("TASK-101 coder fixture missing");
+    coder.session = {
+      ...coder.session,
+      stale: false,
+      busy_since: Date.now() - 12 * 60_000 - 5_000,
+      messages_waiting: 2,
+    };
+    renderWithDaemon(<Host />, { daemon: d, events: false });
+    const c = await screen.findByTestId("card-TASK-101");
+    const busyLine = within(c).getByText("Busy 12 min · 2 waiting");
+    const name = within(c).getByText(coder.name);
+    expect(busyLine.parentElement).not.toBe(name.parentElement);
+    expect(name).not.toHaveClass("max-w-[50%]");
+  });
+
   it("builds lanes, headers and collapsed columns for task cards", async () => {
     renderWithDaemon(<Host />, { events: false });
     const lane = await screen.findByTestId("lane-EPIC-12");

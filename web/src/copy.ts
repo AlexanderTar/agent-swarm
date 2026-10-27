@@ -341,7 +341,7 @@ export const T = {
   messagesWaiting: (n: number) => `${n} ${n === 1 ? "message" : "messages"} waiting`,
   busyFor: (min: number) => `for ${min} min`,
   busyCompact: (waiting: number, min: number) =>
-    joinParts(["Busy", waiting ? `${waiting} waiting` : "", `${min} min`]),
+    joinParts([`Busy ${min} min`, waiting ? `${waiting} waiting` : ""]),
   mergedLocally: (sha: string) => `merged locally ${sha7(sha)}`,
   toastItemCreated: (key: string) => `Created ${key}`,
   toastStarted: (name: string, key: string) => `Started ${name} on ${key}`,

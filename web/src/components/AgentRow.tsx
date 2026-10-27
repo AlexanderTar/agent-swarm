@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
+import { useNow } from "../data/useNow";
 import {
   type AgentAction,
   agentActions,
@@ -50,6 +51,7 @@ const ACTION_ICON: Record<AgentEndpoint, LucideIcon> = {
 export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: number }) {
   const { connected, live } = useConnection();
   const toast = useToast();
+  const now = useNow();
   const { remote } = useSession();
   const act = useMutation(
     (api, action: AgentEndpoint, body?: object) => api.agentAction(agent.name, action, body),
@@ -97,7 +99,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
           </p>
         )}
         <span className="inline-flex items-center gap-1.5">
-          <StateDot state={displayState(agent)} text={stateText(agent)} withLabel />
+          <StateDot state={displayState(agent)} text={stateText(agent, now)} withLabel />
           {agent.role === "orchestrator" && agent.low_token_effective && !isFinished(agent) && (
             <span title={C.lowTokenOn} className="inline-flex">
               <Leaf role="img" aria-label={C.lowTokenOn} className="size-3 text-success" />

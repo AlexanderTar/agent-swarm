@@ -58,9 +58,9 @@ describe("busy workers", () => {
   });
   it("has a compact form for a narrow Kanban card", () => {
     expect(stateText(busy({ messages_waiting: 2 }), 112 * MIN, true)).toBe(
-      "Busy · 2 waiting · 12 min",
+      "Busy 12 min · 2 waiting",
     );
-    expect(stateText(busy(), 112 * MIN, true)).toBe("Busy · 12 min");
+    expect(stateText(busy(), 112 * MIN, true)).toBe("Busy 12 min");
     expect(stateText(makeAgent({ session: session("running") }), 0, true)).toBe("Running");
   });
   it("a worker with no busy_since reads Running even mid-tool (the daemon holds the label back)", () => {

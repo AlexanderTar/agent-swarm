@@ -25,6 +25,7 @@ import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useConnection, useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
+import { useNow } from "../data/useNow";
 import { flattenAgents, isFinished, stateText } from "../logic/agentActions";
 import { ARTIFACT_LABEL, requestTitle } from "../logic/requestTitle";
 import { agentActionToast } from "../logic/toasts";
@@ -113,6 +114,7 @@ export function Details(p: DetailsProps) {
   const detail = useItemDetail(p.itemKey);
   const invalidate = useInvalidate();
   const toast = useToast();
+  const now = useNow();
   const { live } = useConnection();
   const { remote } = useSession();
   const [tab, setTab] = useState<"overview" | "agents" | "checkpoints" | "deps">("overview");
@@ -334,8 +336,10 @@ export function Details(p: DetailsProps) {
                 .filter((agent) => !isFinished(agent))
                 .map((agent) => (
                   <li key={agent.id} className="flex justify-between gap-2">
-                    <span className="truncate">{agent.name}</span>
-                    <span className="shrink-0 text-muted-foreground">{stateText(agent)}</span>
+                    <span className="max-w-[50%] shrink-0 truncate">{agent.name}</span>
+                    <span className="min-w-0 text-right text-muted-foreground">
+                      {stateText(agent, now)}
+                    </span>
                   </li>
                 ))}
             </ul>
