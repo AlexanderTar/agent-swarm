@@ -567,9 +567,10 @@ func TestSweepRemovesEveryActiveWorktreeOfTheRoot(t *testing.T) {
 }
 
 // Sweep does not re-judge a retained row: it runs every reconcile tick,
-// outside a pass. Once the branch is on the default branch, the reclaim
-// pass (ReclaimOne) removes it.
-func TestSweepRemovesARetainedTreeOfADoneRootOnceMerged(t *testing.T) {
+// outside a pass. Once the branch is on the default branch, ReclaimOne
+// (the body of the reclaim pass) removes it. The pass itself is covered
+// by TestReclaimWorktreesRemovesARetainedTreeAfterASquashLands.
+func TestReclaimOneRemovesARetainedTreeOnceTheBranchIsMerged(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)
 	ctx := context.Background()
