@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os/exec"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -197,7 +199,7 @@ func TestFinishingRefusals(t *testing.T) {
 			},
 			want: "Only the top-level orchestrator can write finishing on its own item."},
 		{name: "not approved", remote: gh, merge: "", in: prs(prURL),
-			want: "Nothing to finish: CHORE-1 has no approved finish request for its latest integration."},
+			want: "Nothing to finish: CHORE-1 has no approved finish request for its latest integration. " + finishRefusalRemedy},
 		{name: "missing repo", remote: gh, merge: "auto", in: CheckpointInput{Kind: Finishing, Summary: "s"},
 			want: "Missing proj: report a PR or a local merge for every integrated repo."},
 		{name: "extra repo", remote: gh, merge: "auto",
@@ -263,6 +265,65 @@ func TestFinishingRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Every Nothing-to-finish refusal names the cause and the remedy.
+func TestNothingToFinishSaysWhy(t *testing.T) {
+	t.Run("no approval", func(t *testing.T) {
+		s, _, ses, _, _ := finishFixture(t, "https://github.com/o/proj.git", "")
+		_, err := finishPR(s, ses)
+		want := "Nothing to finish: CHORE-1 has no approved finish request for its latest integration. " + finishRefusalRemedy
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v\nwant %s", err, want)
+		}
+	})
+	t.Run("stale approval", func(t *testing.T) {
+		s, ses, key := customFinishFixture(t)
+		if _, err := s.Items.Create(context.Background(), items.CreateInput{Type: items.Task, ParentKey: key, Title: "More work"}, items.User("board")); err != nil {
+			t.Fatal(err)
+		}
+		var ms sql.NullInt64
+		qerr := s.DB.QueryRowContext(context.Background(), `SELECT created_at FROM events
+			WHERE type = 'request.resolved' AND json_extract(payload_json, '$.id') = (
+				SELECT id FROM requests WHERE item_id = ? AND state = 'stale' ORDER BY created_at DESC LIMIT 1)
+			ORDER BY created_at DESC LIMIT 1`, mustItemID(t, s, key)).Scan(&ms)
+		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+			t.Fatal(qerr)
+		}
+		when := "an unknown time"
+		if ms.Valid {
+			when = time.UnixMilli(ms.Int64).UTC().Format(time.RFC3339)
+		}
+		_, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{
+			{Repo: "proj", Note: "branch stays"}, {Repo: "docs", Note: "same"}}})
+		want := fmt.Sprintf("Nothing to finish: CHORE-1's finish approval went stale at %s (a child is still open). %s", when, finishRefusalRemedy)
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v\nwant %s", err, want)
+		}
+	})
+	t.Run("changes requested", func(t *testing.T) {
+		s, _, ses, _, reqID := finishFixture(t, "https://github.com/o/proj.git", "auto")
+		mustExec(t, s.DB, `UPDATE requests SET state = 'changes_requested' WHERE id = ?`, reqID)
+		_, err := finishPR(s, ses)
+		want := "Nothing to finish: CHORE-1's finish approval was changes requested. " + finishRefusalRemedy
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v\nwant %s", err, want)
+		}
+	})
+	t.Run("not in review", func(t *testing.T) {
+		s, ses, key := customFinishFixture(t)
+		id := mustItemID(t, s, key)
+		// A finished child touched after the integration keeps the approval, and the root stays out of review.
+		mustExec(t, s.DB, `INSERT INTO items (id, key, type, parent_id, root_id, title, status, created_at, updated_at)
+			VALUES ('itm_late', 'TASK-9', 'task', ?, ?, 'Late', 'done', 1, 9999999999999)`, id, id)
+		mustExec(t, s.DB, `UPDATE items SET status = 'in_progress' WHERE id = ?`, id)
+		_, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{
+			{Repo: "proj", Note: "branch stays"}, {Repo: "docs", Note: "same"}}})
+		want := "Nothing to finish: CHORE-1 is in_progress, not in review. " + finishRefusalRemedy
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v\nwant %s", err, want)
+		}
+	})
 }
 
 func TestFinishingRepeatRefused(t *testing.T) {
@@ -582,7 +643,10 @@ func TestFinishingSurvivesBlockedCheckpoint(t *testing.T) {
 // TASK-457: what does still cost the approval — a newer integration or a change request,
 // even across a blocked checkpoint.
 func TestFinishingApprovalInvalidated(t *testing.T) {
-	const want = "Nothing to finish: CHORE-1 has no approved finish request for its latest integration."
+	wants := map[string]string{
+		"newer integrated":  "Nothing to finish: CHORE-1 has no approved finish request for its latest integration. " + finishRefusalRemedy,
+		"changes requested": "Nothing to finish: CHORE-1's finish approval was changes requested. " + finishRefusalRemedy,
+	}
 	for name, invalidate := range map[string]func(t *testing.T, s *Store, ses, reqID string){
 		"newer integrated": func(t *testing.T, s *Store, ses, _ string) {
 			if _, err := s.WriteCheckpoint(context.Background(), ses, CheckpointInput{Kind: Integrated, Summary: "again",
@@ -602,8 +666,8 @@ func TestFinishingApprovalInvalidated(t *testing.T) {
 			t.Fatal(err)
 		}
 		invalidate(t, s, ses, reqID)
-		if _, err := finishPR(s, ses); err == nil || err.Error() != want {
-			t.Errorf("%s: err = %v, want %q", name, err, want)
+		if _, err := finishPR(s, ses); err == nil || err.Error() != wants[name] {
+			t.Errorf("%s: err = %v, want %q", name, err, wants[name])
 		}
 	}
 }

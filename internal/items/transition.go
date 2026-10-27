@@ -80,7 +80,7 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 	// otherwise put it straight back (BUG-116/119). The daemon's own move (workflow
 	// tryTransition) is not by hand and keeps the approval.
 	if from == InReview && to == InProgress && by.Kind != ActorDaemon {
-		if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
+		if err := s.staleApprovedFinish(ctx, tx, it, "moved out of review"); err != nil {
 			return Item{}, err
 		}
 	}
@@ -144,7 +144,7 @@ func (s *Store) staleAccepts(ctx context.Context, tx *sql.Tx, it Item) error {
 // staleApprovedFinish stales the approved finish request of a root that isn't Done
 // after a material edit (brief, acceptance, waivers…): the user approved the item as
 // it was. Open requests need nothing here; reconcileRoot stales them on the revision.
-func (s *Store) staleApprovedFinish(ctx context.Context, tx *sql.Tx, it Item) error {
+func (s *Store) staleApprovedFinish(ctx context.Context, tx *sql.Tx, it Item, reason string) error {
 	if it.ID != it.RootID || !isAcceptRoot(it.Type) || it.Status == Done {
 		return nil
 	}
@@ -168,6 +168,12 @@ func (s *Store) staleApprovedFinish(ctx context.Context, tx *sql.Tx, it Item) er
 	}
 	for _, id := range approved {
 		if err := s.resolveStale(ctx, tx, id, kind, it.Key); err != nil {
+			return err
+		}
+		if reason == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'), '$.stale_reason', ?) WHERE id = ?`, reason, id); err != nil {
 			return err
 		}
 	}
@@ -1000,8 +1006,15 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 		}
 	}
 
-	// 4. finished children plus a fresh integration open exactly one request
+	// 4. finished children plus a fresh integration open exactly one request.
+	// Unfinished children mean the approval no longer matches the work: stale it
+	// now. Leaving it approved makes finishing refuse a request it still calls current.
 	if !st.finished || st.ckpID == "" || st.ckpAt < st.lastChild {
+		if !st.finished {
+			if err := s.staleApprovedFinish(ctx, tx, it, "a child is still open"); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	seen, err := exists(ctx, tx, `SELECT 1 FROM requests WHERE item_id = ? AND kind = ?
