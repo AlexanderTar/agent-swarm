@@ -1025,13 +1025,18 @@ func (s *Store) MarkNoticeSeen(sessionID string) {
 	s.noticeSeen[sessionID] = true
 }
 
-// pruneNoticeSeen drops the entries of ended sessions. Session endings happen
+// pruneNoticeSeen drops the notice and busy entries of ended sessions. Session endings happen
 // on many paths, so the wake tick sweeps instead of hooking each one.
 func (s *Store) pruneNoticeSeen(ctx context.Context) {
 	s.bookkeepingMu.Lock()
-	ids := make([]any, 0, len(s.noticeSeen))
+	ids := make([]any, 0, len(s.noticeSeen)+len(s.busy))
 	for id := range s.noticeSeen {
 		ids = append(ids, id)
+	}
+	for id := range s.busy {
+		if !s.noticeSeen[id] {
+			ids = append(ids, id)
+		}
 	}
 	s.bookkeepingMu.Unlock()
 	if len(ids) == 0 {
@@ -1054,5 +1059,6 @@ func (s *Store) pruneNoticeSeen(ctx context.Context) {
 	defer s.bookkeepingMu.Unlock()
 	for _, id := range ended {
 		delete(s.noticeSeen, id)
+		delete(s.busy, id)
 	}
 }

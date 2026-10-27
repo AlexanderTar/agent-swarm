@@ -430,6 +430,7 @@ type Store struct {
 	usageLimits        map[AgentKind]time.Time // kind -> reset of a usage limit its pane showed (usagelimit.go)
 	noticeSeen         map[string]bool         // sessions that already got an inbox notice (and its trailer)
 	batchPastes        map[string]int          // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)
+	busy               map[string]*busyState   // open tool calls and grok leader "working" per session (busy.go)
 	wakeSubs           map[string][]chan string
 	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw
 	// each live session's pane present and correctly owned (§10.6's resolveDead

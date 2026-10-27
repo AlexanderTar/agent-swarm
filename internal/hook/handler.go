@@ -736,6 +736,19 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	if err != nil {
 		return nil, err
 	}
+	// an open tool call is what marks a worker busy, not stuck (runtime/busy.go);
+	// a denied PreToolUse never runs, and a turn end or new prompt closes any
+	// call whose PostToolUse was lost
+	if h.RT != nil {
+		switch {
+		case ev == "PreToolUse" && !d.Block:
+			h.RT.ToolStarted(s.ID)
+		case ev == "PostToolUse":
+			h.RT.ToolFinished(s.ID)
+		case endsTurn(ev) && !d.Block, ev == "UserPromptSubmit", ev == "SessionStart":
+			h.RT.TurnEnded(s.ID)
+		}
+	}
 	// every session records its context size at a real end of turn: a blocked
 	// Stop continues the turn and fires again, so it must not sample (or strike)
 	if h.RT != nil && endsTurn(ev) && !d.Block && in.TranscriptPath != "" {

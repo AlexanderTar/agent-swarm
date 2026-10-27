@@ -175,7 +175,9 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if renamed[r.SessionID] {
 			continue // one paste per pane per tick; the notice goes out on a later one
 		}
-		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter {
+		// A worker inside a tool call or a running grok turn picks mail up at the
+		// next tool boundary, so it is busy, not unreachable (busyCeiling).
+		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter && !s.busyWithinCeiling(r.SessionID) {
 			if err := s.raiseUndeliverable(ctx, r); err != nil {
 				return err
 			}

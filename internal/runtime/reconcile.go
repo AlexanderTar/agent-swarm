@@ -1298,7 +1298,7 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return s.notifyNoAck(ctx, r)
 		}
 	}
-	if s.Now().Sub(r.lastActivity()) >= staleAfter {
+	if s.Now().Sub(r.lastActivity()) >= staleAfter && !s.busyWithinCeiling(r.SessionID) {
 		already, err := s.alreadyNotifiedStale(ctx, r.AgentID, r.lastActivity())
 		if err != nil {
 			return err

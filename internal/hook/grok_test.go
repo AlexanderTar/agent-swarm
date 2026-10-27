@@ -473,3 +473,27 @@ func TestGrokOtherKindsAndPlainStopFailuresDoNotMarkExhausted(t *testing.T) {
 		t.Fatal("a cancelled turn and an idle notification are not exhaustion")
 	}
 }
+
+// An open tool call is what tells the daemon a worker is busy, not stuck: the
+// tool hooks open and close it and a turn end clears a lost PostToolUse.
+func TestToolHooksTrackTheBusyState(t *testing.T) {
+	h, ses := seedGrok(t, 0, runtime.Running)
+	if _, ok := h.RT.BusySince(ses); ok {
+		t.Fatal("busy before any tool call")
+	}
+	grokHandle(t, h, "PreToolUse", ses, "pre-tool-use-shell")
+	if _, ok := h.RT.BusySince(ses); !ok {
+		t.Fatal("PreToolUse must open a tool call")
+	}
+	grokHandle(t, h, "PostToolUse", ses, "post-tool-use-swarm")
+	if _, ok := h.RT.BusySince(ses); ok {
+		t.Fatal("PostToolUse must close it")
+	}
+	grokHandle(t, h, "PreToolUse", ses, "pre-tool-use-shell")
+	if _, err := h.Handle(context.Background(), runtime.Grok, "Stop", ses, []byte(`{"session_id":"g"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.RT.BusySince(ses); ok {
+		t.Fatal("a turn end must clear an unclosed tool call")
+	}
+}
