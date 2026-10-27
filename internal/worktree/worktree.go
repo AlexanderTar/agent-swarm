@@ -666,11 +666,79 @@ func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
 	return ""
 }
 
-// discardable is true for a review tree still at its detached_sha: it holds no
-// commit of its own, so whatever dirt build tooling left (next-env.d.ts,
-// Podfile.lock, project.pbxproj) is thrown away with it rather than retained.
+// discardable is true when the tree holds no commit of its own and the dirt
+// is safe to throw away: a review tree still at its detached_sha, or build
+// churn (only modifications of tracked files, owner already finished).
 func (s *Service) discardable(ctx context.Context, wt Worktree) bool {
-	return wt.Branch == "" && wt.DetachedSHA != "" && s.atDetachedSHA(ctx, wt)
+	if wt.Branch == "" && wt.DetachedSHA != "" && s.atDetachedSHA(ctx, wt) {
+		return true
+	}
+	return s.buildChurn(ctx, wt)
+}
+
+// buildChurn is a branch tree whose owner has finished, with no commit beyond
+// the remote default branch (or the local one when there is no remote) and
+// whose porcelain is only modifications of tracked files. An untracked path,
+// a deletion, or a commit of the tree's own keeps it.
+func (s *Service) buildChurn(ctx context.Context, wt Worktree) bool {
+	if wt.Branch == "" || !s.ownerFinished(ctx, wt.OwnerAgentID) {
+		return false
+	}
+	repoPath, err := s.repoPath(ctx, wt.RepoID)
+	if err != nil {
+		return false
+	}
+	name, err := s.defaultName(ctx, repoPath)
+	if err != nil {
+		return false
+	}
+	ref := "refs/heads/" + name
+	if _, err := s.git(ctx, wt.Path, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name); err == nil {
+		ref = "refs/remotes/origin/" + name
+	}
+	head, ok := s.headSHA(ctx, wt)
+	if !ok || !s.isAncestor(ctx, wt.Path, head, ref) {
+		return false
+	}
+	return s.onlyTrackedModifications(ctx, wt.Path)
+}
+
+func (s *Service) ownerFinished(ctx context.Context, agentID string) bool {
+	var state string
+	err := s.DB.QueryRowContext(ctx, `SELECT state FROM agents WHERE id = ?`, agentID).Scan(&state)
+	return err == nil && (state == "finished" || state == "acknowledged")
+}
+
+// onlyTrackedModifications is true when status --porcelain lists at least one
+// line and every line is a modification of a tracked file (M), not an add,
+// deletion, rename, or untracked path.
+func (s *Service) onlyTrackedModifications(ctx context.Context, path string) bool {
+	out, err := s.git(ctx, path, "--no-optional-locks", "status", "--porcelain")
+	if err != nil {
+		return false
+	}
+	// Do not TrimSpace: a worktree modification is " M path", and the leading
+	// space is the index column.
+	saw := false
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		saw = true
+		if !trackedModification(line) {
+			return false
+		}
+	}
+	return saw
+}
+
+func trackedModification(line string) bool {
+	if len(line) < 4 || (line[2] != ' ' && line[2] != '\t') {
+		return false
+	}
+	x, y := line[0], line[1]
+	mod := func(c byte) bool { return c == ' ' || c == 'M' }
+	return mod(x) && mod(y) && (x == 'M' || y == 'M')
 }
 
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {

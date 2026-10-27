@@ -74,6 +74,107 @@ func TestReclaimOneStillRetainsADirtyBranchTree(t *testing.T) {
 	}
 }
 
+func finishOwner(t *testing.T, s *Service) {
+	t.Helper()
+	if _, err := s.DB.ExecContext(context.Background(), `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func churnTree(t *testing.T) (*Service, Worktree) {
+	t.Helper()
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	wt := branchWorktree(t, s, repo, repoID, "task/beta")
+	finishOwner(t, s)
+	return s, wt
+}
+
+func TestReclaimOneKeepsTrackedModificationsWhileTheOwnerIsLive(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	wt := branchWorktree(t, s, repo, repoID, "task/live-beta")
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(context.Background(), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty while the owner is still active", out)
+	}
+}
+
+func TestReclaimOneDiscardsTrackedModificationsWithNoOwnCommits(t *testing.T) {
+	s, wt := churnTree(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed: tracked edits and no commits beyond origin/main are build churn", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("path still exists: %v", err)
+	}
+}
+
+func TestReclaimOneKeepsUntrackedFilesAsDirty(t *testing.T) {
+	s, wt := churnTree(t)
+	if err := os.WriteFile(filepath.Join(wt.Path, "scratch.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(context.Background(), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("untracked tree must stay: %v", err)
+	}
+}
+
+func TestReclaimOneKeepsADeletionAsDirty(t *testing.T) {
+	s, wt := churnTree(t)
+	if err := os.Remove(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(context.Background(), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty for a deletion", out)
+	}
+}
+
+func TestReclaimOneKeepsOwnCommitsEvenWhenOnlyTrackedFilesChanged(t *testing.T) {
+	s, wt := churnTree(t)
+	commitFile(t, wt.Path, "own.txt")
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(context.Background(), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty when the branch has its own commit", out)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "own.txt")); err != nil {
+		t.Fatalf("own commit must stay on disk: %v", err)
+	}
+}
+
 func TestReclaimOneKeepsADirtyReviewTreeThatMovedOffItsSHA(t *testing.T) {
 	s, wt, _ := newDirtyReview(t)
 	ctx := context.Background()
