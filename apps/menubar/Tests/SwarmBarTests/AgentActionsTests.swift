@@ -62,7 +62,10 @@ final class AgentActionsTests: XCTestCase {
         XCTAssertEqual(AgentTree.stateLabel(agent(.running, busySince: since), now: now), "Busy · running a long task · for 12 min")
         XCTAssertNil(AgentTree.stateLabel(agent(.running), now: now))
         XCTAssertEqual(AgentTree.stateLabel(agent(.paused), now: now), "Paused")
-        XCTAssertTrue(AgentTree.subtitle(busy).contains("Busy · running a long task"))
+        // the popover subtitle is one 360 pt line: the compact form keeps the minutes and the waiting count visible
+        XCTAssertTrue(AgentTree.subtitle(busy, now: now).hasSuffix("Busy 12 min · 2 waiting"))
+        XCTAssertFalse(AgentTree.subtitle(busy, now: now).contains("running a long task"))
+        XCTAssertTrue(AgentTree.subtitle(agent(.running, busySince: since), now: now).hasSuffix("Busy 12 min"))
     }
 
     func testSessionDecodesBusySinceAndMessagesWaiting() throws {

@@ -282,21 +282,24 @@ public enum AgentTree {
     }
 
     /// DisplayState.label, plus for a busy worker the messages waiting for it and how long it has been busy.
-    public static func stateLabel(_ a: AgentNode, now: Date = Date()) -> String? {
+    /// `compact` is the short form for the one-line popover subtitle ("Busy 12 min · 2 waiting"); rowLabel keeps the full text.
+    public static func stateLabel(_ a: AgentNode, now: Date = Date(), compact: Bool = false) -> String? {
         let state = DisplayState(a)
         guard state == .busy, let s = a.session, let since = s.busySince else { return state.label }
-        return Copy.busyDetail(waiting: s.messagesWaiting ?? 0, minutes: max(0, Int(now.timeIntervalSince(since.date) / 60)))
+        let waiting = s.messagesWaiting ?? 0
+        let minutes = max(0, Int(now.timeIntervalSince(since.date) / 60))
+        return compact ? Copy.busyCompact(waiting: waiting, minutes: minutes) : Copy.busyDetail(waiting: waiting, minutes: minutes)
     }
 
     /// Line 2: merge progress while the root awaits merge, else the orchestrator's progress ("3/8 · <current>") when the daemon
     /// sends one, else workflow step for a workflow agent, item key for a
     /// legacy agent, plus the handoff phase while a replacement is in flight,
     /// else the state label when not running.
-    public static func subtitle(_ a: AgentNode) -> String {
+    public static func subtitle(_ a: AgentNode, now: Date = Date()) -> String {
         let middle = a.merge.map { Copy.awaitingMerge($0.merged, $0.total) }
             ?? a.progress.map { "\($0.done)/\($0.total) · \($0.current.isEmpty ? Copy.progressDone : $0.current)" }
             ?? a.step ?? a.itemKey
-        return ([Copy.roleLabel(a.role), middle] + [handoffStatus(a) ?? stateLabel(a)].compactMap { $0 })
+        return ([Copy.roleLabel(a.role), middle] + [handoffStatus(a) ?? stateLabel(a, now: now, compact: true)].compactMap { $0 })
             .joined(separator: " · ")
     }
 }

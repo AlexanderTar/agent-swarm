@@ -90,6 +90,11 @@ public enum Copy {
             .compactMap { $0 }.joined(separator: " · ")
     }
 
+    /// "Busy 12 min · 2 waiting": the one-line popover form of busyDetail.
+    public static func busyCompact(waiting: Int, minutes: Int) -> String {
+        ["Busy \(minutes) min", waiting > 0 ? "\(waiting) waiting" : nil].compactMap { $0 }.joined(separator: " · ")
+    }
+
     // §17.1 new orchestrator window
     public static func agentName(_ kebab: String) -> String { "Agent name: \(kebab)" }
     public static let name = "Name"
