@@ -1,3 +1,7 @@
+# Worktree reclaim
+
+A squash already on the remote default branch counts as merged; a conflicting or differing merge-tree does not. Retained trees are re-checked by the reclaim pass, and build churn is discarded only after the root is done or cancelled. Rules and commands: docs/worktree-cleanup.md.
+
 # Testing and coverage (strict)
 
 `make test-go` must pass before any work is done. It runs the Go tests and `scripts/cover.sh`, the coverage gate from spec §23.3.

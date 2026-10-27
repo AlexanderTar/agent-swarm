@@ -666,11 +666,87 @@ func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
 	return ""
 }
 
-// discardable is true for a review tree still at its detached_sha: it holds no
-// commit of its own, so whatever dirt build tooling left (next-env.d.ts,
-// Podfile.lock, project.pbxproj) is thrown away with it rather than retained.
+// discardable is true when the tree holds no commit of its own and the dirt
+// is safe to throw away: a review tree still at its detached_sha, or build
+// churn (only modifications of tracked files, owner already finished).
 func (s *Service) discardable(ctx context.Context, wt Worktree) bool {
-	return wt.Branch == "" && wt.DetachedSHA != "" && s.atDetachedSHA(ctx, wt)
+	if wt.Branch == "" && wt.DetachedSHA != "" && s.atDetachedSHA(ctx, wt) {
+		return true
+	}
+	return s.buildChurn(ctx, wt)
+}
+
+// buildChurn is a branch tree whose owner has finished and whose root is
+// done or cancelled, with no commit beyond the remote default branch (or
+// the local one when there is no remote) and whose porcelain is only
+// modifications of tracked files. An in-progress root stays retained: a
+// finished owner can be retried, and those edits are still its work. An
+// untracked path, a deletion, or a commit of the tree's own keeps it too.
+func (s *Service) buildChurn(ctx context.Context, wt Worktree) bool {
+	if wt.Branch == "" || !s.ownerFinished(ctx, wt.OwnerAgentID) || !s.rootFinished(ctx, wt.RootItemID) {
+		return false
+	}
+	repoPath, err := s.repoPath(ctx, wt.RepoID)
+	if err != nil {
+		return false
+	}
+	name, err := s.defaultName(ctx, repoPath)
+	if err != nil {
+		return false
+	}
+	ref := "refs/heads/" + name
+	if _, err := s.git(ctx, wt.Path, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name); err == nil {
+		ref = "refs/remotes/origin/" + name
+	}
+	head, ok := s.headSHA(ctx, wt)
+	if !ok || !s.isAncestor(ctx, wt.Path, head, ref) {
+		return false
+	}
+	return s.onlyTrackedModifications(ctx, wt.Path)
+}
+
+func (s *Service) ownerFinished(ctx context.Context, agentID string) bool {
+	var state string
+	err := s.DB.QueryRowContext(ctx, `SELECT state FROM agents WHERE id = ?`, agentID).Scan(&state)
+	return err == nil && (state == "finished" || state == "acknowledged")
+}
+
+func (s *Service) rootFinished(ctx context.Context, rootItemID string) bool {
+	var status string
+	err := s.DB.QueryRowContext(ctx, `SELECT status FROM items WHERE id = ?`, rootItemID).Scan(&status)
+	return err == nil && (status == "done" || status == "cancelled")
+}
+
+// onlyTrackedModifications is true when status --porcelain lists at least one
+// line and every line is a modification of a tracked file (M), not an add,
+// deletion, rename, or untracked path.
+func (s *Service) onlyTrackedModifications(ctx context.Context, path string) bool {
+	out, err := s.git(ctx, path, "--no-optional-locks", "status", "--porcelain")
+	if err != nil {
+		return false
+	}
+	// Do not TrimSpace: a worktree modification is " M path", and the leading
+	// space is the index column.
+	saw := false
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		saw = true
+		if !trackedModification(line) {
+			return false
+		}
+	}
+	return saw
+}
+
+func trackedModification(line string) bool {
+	if len(line) < 4 || (line[2] != ' ' && line[2] != '\t') {
+		return false
+	}
+	x, y := line[0], line[1]
+	mod := func(c byte) bool { return c == ' ' || c == 'M' }
+	return mod(x) && mod(y) && (x == 'M' || y == 'M')
 }
 
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
@@ -752,9 +828,12 @@ func (s *Service) Candidates(ctx context.Context, where string, args ...any) ([]
 	return s.query(ctx, where, args...)
 }
 
-// Sweep is §12.2: it runs Remove's rules on every active worktree of one root,
-// ignoring reservations, because the caller has checked the whole tree is
-// finished.
+// Sweep is §12.2: it runs Remove's rules on every active worktree of one
+// root, ignoring reservations, because the caller has checked the whole
+// tree is finished. Retained rows are not selected. Sweep runs from
+// Reconcile every few seconds and outside BeginPass, so re-checking a
+// still-unmerged retained tree would fetch on every tick. The reclaim pass
+// (reclaimGateWhere) already selects retained rows, inside one BeginPass.
 func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, error) {
 	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state = 'active'`, rootItemID)
 	if err != nil {
@@ -832,17 +911,23 @@ func (s *Service) List(ctx context.Context, rootKey, state string) ([]Listed, er
 }
 
 // Discard force-removes a worktree, by id or path, that the user has decided
-// to drop: only when its root item is done or cancelled and no live agent
-// holds it. It never deletes the branch, so the commits stay recoverable, and
-// returns how many commits the tree holds that are not on its base (-1 when
-// that cannot be counted).
+// to drop: only when its owner is not live and no live agent holds a
+// reservation. The root item's status does not matter. It never deletes the
+// branch, so the commits stay recoverable, and returns how many commits the
+// tree holds that are not on its base (-1 when that cannot be counted). A
+// path under the worktrees directory with no row is removed the same way
+// when some repo lists it as a worktree.
 func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error) {
+	// A trailing slash, "//", or "/./" must still hit the row. Clean does not
+	// resolve symlinks; discardUntracked refuses those so they cannot skip
+	// the live-owner and reservation gates.
+	ref = filepath.Clean(ref)
 	wts, err := s.query(ctx, `WHERE id = ? OR path = ?`, ref, ref)
 	if err != nil {
 		return Worktree{}, 0, err
 	}
 	if len(wts) == 0 {
-		return Worktree{}, 0, fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
+		return s.discardUntracked(ctx, ref)
 	}
 	lock := lockFor(wts[0].ID)
 	lock.Lock()
@@ -854,13 +939,20 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	if wt.State == "removed" {
 		return wt, 0, fmt.Errorf("worktree %s is already removed", wt.Path)
 	}
-	var rootKey, rootStatus string
-	if err := s.DB.QueryRowContext(ctx, `SELECT key, status FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey, &rootStatus); err != nil {
+	var rootKey string
+	if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey); err != nil {
 		return Worktree{}, 0, err
 	}
-	if rootStatus != "done" && rootStatus != "cancelled" {
-		return Worktree{}, 0, fmt.Errorf("worktree %s belongs to %s, which is %s; only trees of a done or cancelled root can be discarded",
-			wt.Path, rootKey, strings.ReplaceAll(rootStatus, "_", " "))
+	var ownerName, ownerState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT name, state FROM agents WHERE id = ?`, wt.OwnerAgentID).Scan(&ownerName, &ownerState); err != nil {
+		return Worktree{}, 0, err
+	}
+	sessionLive, err := s.ownerSessionLive(ctx, wt.OwnerAgentID)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	if ownerState == "queued" || ownerState == "active" || sessionLive {
+		return Worktree{}, 0, fmt.Errorf("worktree %s is held by live agent %s", wt.Path, ownerName)
 	}
 	var holder string
 	err = s.DB.QueryRowContext(ctx, `SELECT a.name FROM worktree_reservations r JOIN agents a ON a.id = r.agent_id
@@ -908,8 +1000,133 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	return wt, unlanded, err
 }
 
+// discardUntracked removes a directory under the worktrees dir that has no
+// row, via `git worktree remove` in the repo whose worktree list names it.
+// The branch is kept. Anything else is an unknown ref.
+func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, int, error) {
+	unknown := fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
+	if !s.underWorktrees(ref) || !fileExists(ref) {
+		return Worktree{}, 0, unknown
+	}
+	if recorded, ok, err := s.nonRemovedPathResolvingTo(ctx, ref); err != nil {
+		return Worktree{}, 0, err
+	} else if ok {
+		return Worktree{}, 0, fmt.Errorf("worktree %s is recorded as %s; pass that path or its id", ref, recorded)
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT path FROM repos`)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	defer rows.Close()
+	var repoPath string
+	for rows.Next() {
+		var p string
+		if rows.Scan(&p) != nil {
+			continue
+		}
+		out, err := s.git(ctx, p, "worktree", "list", "--porcelain")
+		if err != nil || !worktreeListed(string(out), ref) {
+			continue
+		}
+		repoPath = p
+		break
+	}
+	if err := rows.Err(); err != nil {
+		return Worktree{}, 0, err
+	}
+	if repoPath == "" {
+		return Worktree{}, 0, unknown
+	}
+	branch := ""
+	if out, err := s.git(ctx, ref, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		branch = strings.TrimSpace(string(out))
+		if branch == "HEAD" {
+			branch = ""
+		}
+	}
+	unlanded := -1
+	if name, err := s.defaultName(ctx, repoPath); err == nil {
+		base := name
+		if _, err := s.git(ctx, ref, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name); err == nil {
+			base = "origin/" + name
+		}
+		if out, cerr := s.git(ctx, ref, "rev-list", "--count", base+"..HEAD"); cerr == nil {
+			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
+		}
+	}
+	if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", ref); rerr != nil {
+		return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", ref, rerr, strings.TrimSpace(string(out)))
+	}
+	now := s.Now()
+	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil
+}
+
+// ownerSessionLive is the same session list reclaimGateWhere uses: a finished
+// agent whose session is still spawning, running, pause_requested, quiescing,
+// or stopping is a live owner.
+func (s *Service) ownerSessionLive(ctx context.Context, agentID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?
+		AND state IN ('spawning','running','pause_requested','quiescing','stopping')`, agentID).Scan(&n)
+	return n > 0, err
+}
+
+// nonRemovedPathResolvingTo reports a non-removed worktree whose directory is
+// ref once symlinks are resolved. filepath.Clean does not do that, so a
+// symlink spelling would otherwise miss the row and be force-removed.
+func (s *Service) nonRemovedPathResolvingTo(ctx context.Context, ref string) (string, bool, error) {
+	want, err := filepath.EvalSymlinks(ref)
+	if err != nil {
+		want = filepath.Clean(ref)
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT path FROM worktrees WHERE state <> 'removed'`)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return "", false, err
+		}
+		got, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			got = filepath.Clean(p)
+		}
+		if got == want {
+			return p, true, nil
+		}
+	}
+	return "", false, rows.Err()
+}
+
+func (s *Service) underWorktrees(path string) bool {
+	rel, err := filepath.Rel(s.worktreesDir(), path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func worktreeListed(porcelain, path string) bool {
+	want, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		want = path
+	}
+	for _, line := range strings.Split(porcelain, "\n") {
+		got, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if got == path {
+			return true
+		}
+		if resolved, err := filepath.EvalSymlinks(got); err == nil && resolved == want {
+			return true
+		}
+	}
+	return false
+}
+
 // notOwnerError explains a non-owner remove: the tree's state and reason, and
-// for a done or cancelled root the user command that can drop it.
+// the user command that can drop it when no live agent holds it.
 func (s *Service) notOwnerError(ctx context.Context, wt Worktree) error {
 	state := wt.State
 	if wt.RetainedReason != "" {
@@ -918,11 +1135,12 @@ func (s *Service) notOwnerError(ctx context.Context, wt Worktree) error {
 	msg := fmt.Sprintf("worktree: only the owner can remove %s (%s)", wt.Path, state)
 	var rootKey, status string
 	if s.DB.QueryRowContext(ctx, `SELECT key, status FROM items WHERE id = ?`, wt.RootItemID).Scan(&rootKey, &status) == nil {
-		if status == "done" || status == "cancelled" {
-			msg += fmt.Sprintf("; its root %s is %s, so you can run `swarm cleanup --discard %s` to drop it (the branch is kept)", rootKey, status, wt.Path)
-		} else {
-			msg += fmt.Sprintf("; its root %s is %s", rootKey, strings.ReplaceAll(status, "_", " "))
+		shown := status
+		if status != "done" && status != "cancelled" {
+			shown = strings.ReplaceAll(status, "_", " ")
 		}
+		msg += fmt.Sprintf("; its root %s is %s", rootKey, shown)
 	}
+	msg += fmt.Sprintf("; run `swarm cleanup --discard %s` to drop it when no live agent holds it (the branch is kept)", wt.Path)
 	return errors.New(msg)
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +72,49 @@ func (f *evidenceFixture) reclaim(t *testing.T, wt worktree.Worktree) (string, s
 		t.Fatal(err)
 	}
 	return out.State, out.RetainedReason
+}
+
+// A retained/unmerged row is a reclaim candidate. Before the squash the
+// pass keeps it; after the same content is on origin/main (HEAD is not an
+// ancestor) the next pass removes it.
+func TestReclaimWorktreesRemovesARetainedTreeAfterASquashLands(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/retained-squash")
+	mustExec(t, f.s.DB, `UPDATE worktrees SET state = 'retained', retained_reason = 'unmerged' WHERE id = ?`, wt.ID)
+	f.ghErr = errors.New("gh unavailable")
+	if _, err := f.s.ReclaimWorktreesWith(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason := reclaimWorktreeState(t, f.s, wt.ID); state != "retained" || reason != "unmerged" {
+		t.Fatalf("before the squash: state/reason = %s/%s, want retained/unmerged", state, reason)
+	}
+	// One commit, message "land", with later.txt as well as f.txt. Two
+	// commitFile calls can recreate the branch commit (same tree, parent,
+	// and message in the same second), which would make HEAD an ancestor.
+	if err := os.WriteFile(filepath.Join(f.repoPath, "f.txt"), []byte("work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoPath, "later.txt"), []byte("later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, f.repoPath, "add", "f.txt", "later.txt")
+	gitOutput(t, f.repoPath, "-c", "commit.gpgsign=false", "commit", "-m", "land")
+	gitOutput(t, f.repoPath, "push", "-q", "origin", "main")
+	head := strings.TrimSpace(gitOutput(t, wt.Path, "rev-parse", "HEAD"))
+	anc := exec.Command("git", "merge-base", "--is-ancestor", head, "refs/remotes/origin/main")
+	anc.Dir = wt.Path
+	if err := anc.Run(); err == nil {
+		t.Fatal("precondition: a squashed HEAD is not an ancestor of origin/main")
+	}
+	if _, err := f.s.ReclaimWorktreesWith(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason := reclaimWorktreeState(t, f.s, wt.ID); state != "removed" || reason != "" {
+		t.Fatalf("after the squash: state/reason = %s/%s, want removed", state, reason)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("path still exists: %v", err)
+	}
 }
 
 func TestReclaimUsesMergedItemMergeHeadBranch(t *testing.T) {

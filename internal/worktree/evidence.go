@@ -75,18 +75,39 @@ func (s *Service) isAncestor(ctx context.Context, dir, commit, ref string) bool 
 }
 
 // mergedElsewhere is merged evidence 2-4: contained in the fetched remote
-// default branch, or vouched for by s.Evidence.
+// default branch, or the same content already on that branch (a squash), or
+// vouched for by s.Evidence.
 func (s *Service) mergedElsewhere(ctx context.Context, wt Worktree, head string) bool {
 	repoPath, err := s.repoPath(ctx, wt.RepoID)
 	if err != nil {
 		return false
 	}
 	s.fetchOnce(ctx, repoPath)
-	if name, err := s.defaultName(ctx, repoPath); err == nil &&
-		s.isAncestor(ctx, wt.Path, head, "refs/remotes/origin/"+name) {
-		return true
+	if name, err := s.defaultName(ctx, repoPath); err == nil {
+		ref := "refs/remotes/origin/" + name
+		if s.isAncestor(ctx, wt.Path, head, ref) || s.contentAlreadyOn(ctx, wt.Path, head, ref) {
+			return true
+		}
 	}
 	return s.Evidence != nil && s.Evidence.Merged(ctx, wt, repoPath, head)
+}
+
+// contentAlreadyOn reports whether merging head into ref changes nothing:
+// `git merge-tree --write-tree` (git >= 2.38) exits 0 and its tree equals
+// ref^{tree}. A conflict, a different tree, or any error — including
+// --write-tree missing on older git — is not evidence. A conflict is
+// unmerged, never merged.
+func (s *Service) contentAlreadyOn(ctx context.Context, dir, head, ref string) bool {
+	out, err := s.git(ctx, dir, "merge-tree", "--write-tree", ref, head)
+	if err != nil {
+		return false
+	}
+	got := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(got, '\n'); i >= 0 {
+		got = got[:i]
+	}
+	want, err := s.git(ctx, dir, "rev-parse", ref+"^{tree}")
+	return err == nil && got != "" && got == strings.TrimSpace(string(want))
 }
 
 func (s *Service) headSHA(ctx context.Context, wt Worktree) (string, bool) {
