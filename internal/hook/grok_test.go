@@ -497,3 +497,32 @@ func TestToolHooksTrackTheBusyState(t *testing.T) {
 		t.Fatal("a turn end must clear an unclosed tool call")
 	}
 }
+
+// G3 (TASK-1439): a worker making a tool call every few seconds with mail
+// pending must hear about it once per noticeGap, at both PreToolUse and
+// PostToolUse, for as long as the mail stays unread.
+func TestGrokNoticeCadenceHoldsAcrossManyToolCalls(t *testing.T) {
+	h, ses := seedGrok(t, 1, runtime.Running)
+	clock := now()
+	h.Now = func() time.Time { return clock }
+	start := clock
+	var at []time.Duration
+	for i := 0; clock.Sub(start) < 5*time.Minute; i++ {
+		event, fixture := "PreToolUse", "pre-tool-use-shell"
+		if i%2 == 1 {
+			event, fixture = "PostToolUse", "post-tool-use-swarm"
+		}
+		if strings.Contains(contextOf(t, grokHandle(t, h, event, ses, fixture)), "Call swarm_sync") {
+			at = append(at, clock.Sub(start))
+		}
+		clock = clock.Add(7 * time.Second)
+	}
+	if len(at) < 5 {
+		t.Fatalf("notices at %v in 5 min of tool calls, want one every ~60 s (5 or more)", at)
+	}
+	for i := 1; i < len(at); i++ {
+		if gap := at[i] - at[i-1]; gap < noticeGap || gap > noticeGap+14*time.Second {
+			t.Fatalf("notice gap %v at %v, want %v to %v", gap, at, noticeGap, noticeGap+14*time.Second)
+		}
+	}
+}
