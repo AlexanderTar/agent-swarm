@@ -379,12 +379,16 @@ func museAdvisorConfig(swarmHome, userHome string) (string, error) {
 		os.Remove(tmp.Name())
 		return "", werr
 	}
+	// Linked once and never replaced: if muse ever rewrites the link as a
+	// file on a token refresh, that file is the newest login.
 	auth := filepath.Join(userHome, ".config", "muse", "auth.json")
 	link := filepath.Join(dir, "auth.json")
-	if cur, err := os.Readlink(link); err == nil && cur == auth {
+	if _, err := os.Lstat(link); err == nil {
 		return cfg, nil
 	}
-	os.Remove(link)
+	if _, err := os.Stat(auth); err != nil {
+		return cfg, nil // not logged in: muse says so itself
+	}
 	if err := os.Symlink(auth, link); err != nil && !os.IsExist(err) {
 		return "", err
 	}
