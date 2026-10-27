@@ -1737,6 +1737,23 @@ func (s *Store) failSessionWith(ctx context.Context, a Agent, ses Session, paneT
 	if err := s.Tmux.Kill(ctx, ses.TmuxName); err != nil {
 		s.logf("failSession: kill %s: %v", ses.TmuxName, err)
 	}
+	// A workflow run whose launch failed otherwise waits for the next workflow
+	// tick before it auto-retries or escalates (TASK-1438, BUG-127: a failed
+	// launch sat "active" for ~15 s). Advance now, like the crashed path does.
+	var workflowID string
+	err := s.DB.QueryRowContext(ctx, `SELECT workflow_id FROM workflow_runs WHERE agent_id = ?
+		ORDER BY round DESC, created_at DESC LIMIT 1`, a.ID).Scan(&workflowID)
+	// A failure reported from inside advance itself (startSession's synchronous
+	// error path) already holds the workflow lock and its caller handles the
+	// error, so skip when the lock is taken instead of deadlocking on it.
+	if err == nil {
+		if lock := lockForWorkflow(workflowID); lock.TryLock() {
+			lock.Unlock()
+			if aerr := s.advance(context.WithoutCancel(ctx), workflowID); aerr != nil {
+				s.logf("failSession: advance %s: %v", workflowID, aerr)
+			}
+		}
+	}
 	return nil
 }
 

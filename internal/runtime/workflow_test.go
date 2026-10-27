@@ -1758,6 +1758,52 @@ func TestHealStrandedActiveRunStartupFailure(t *testing.T) {
 	}
 }
 
+// TASK-1438 (BUG-127): a launch failure (watchStartup -> failSession) used to
+// leave the run 'active' until the next workflow tick, so a failed launch after
+// its auto-retry showed "active / failed" for ~15 s before the escalation
+// reached the orchestrator. failSession must advance the workflow itself.
+func TestFailedLaunchAfterAutoRetryEscalatesWithoutATick(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder, err := s.agentByID(ctx, agentIDForStep(t, s, st.ID, "build"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runState := func() (state string, retries int) {
+		if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries FROM workflow_runs
+			WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&state, &retries); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	// First launch fails: the workflow auto-retries on the spot, no advance call.
+	if err := s.failSession(ctx, coder, agentSessionForStep(t, s, st.ID, "build"), "Loading…"); err != nil {
+		t.Fatal(err)
+	}
+	if state, retries := runState(); state != "active" || retries != 1 {
+		t.Fatalf("after the first launch failure run = %s/%d, want active/1 (auto-retried)", state, retries)
+	}
+	// The retry's launch fails too: the workflow escalates on the spot.
+	if err := s.failSession(ctx, coder, agentSessionForStep(t, s, st.ID, "build"), "Loading…"); err != nil {
+		t.Fatal(err)
+	}
+	var wfState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id = ?`, st.ID).Scan(&wfState); err != nil {
+		t.Fatal(err)
+	}
+	if wfState != "escalated" {
+		t.Fatalf("workflow state = %s after the retry's launch failed, want escalated", wfState)
+	}
+}
+
 // TestHealStrandedActiveRunDirectCancel is Opus review finding 1, path 2: a
 // direct swarm_control cancel of a workflow agent (not swarm_workflow
 // cancel, which cancels the whole workflow itself) marks the session
