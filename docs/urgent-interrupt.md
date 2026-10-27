@@ -1,0 +1,34 @@
+# When Swarm interrupts a worker
+
+Mail normally reaches a busy worker at a tool boundary (the hook notice, at most once every 60 s) or after its turn ends (wake and paste). Inside one long tool call, such as a 10-minute build, nothing arrives. Swarm cancels a running turn in exactly one case: a pending **pause or handoff** request for a worker that is busy and silent.
+
+## What is urgent
+
+`runtime.IsUrgent` (internal/runtime/inbox.go): a `control` message whose payload action is `pause` or `handoff`, created only by the daemon (`requestPreservationTx`, the subtree pause). It is stored with `priority = 0`; every other message is `1`. No agent-facing tool can send urgent mail: `swarm_send` accepts question, answer and finding only, and `enqueueRaw` derives priority from `IsUrgent`, not from the caller. Never add a way to mark an ordinary message urgent. Findings, answers, assignment updates and relays wait for the next tool gap like before.
+
+## When the interrupt fires
+
+`interruptForUrgent` (internal/runtime/urgent.go), called per candidate session from `WakeDue` every 5 s. All of these must hold:
+
+1. An urgent message is pending and older than `urgentGrace` (30 s).
+2. The session's `last_seen_at` is older than `urgentGrace`: a worker whose hooks still fire gets the notice at its next tool gap and needs no interrupt.
+3. The worker is busy by the shared signal `Store.BusySince` (internal/runtime/busy.go: an open PreToolUse, or the grok leader's "working" push). There is no second busy signal; the 60-minute busy ceiling does not apply, because a hung tool is exactly when to interrupt.
+4. Nobody is being waited on: no open question row for the session, and for grok no card on screen (`PasteReady`). A question dialog is dismissed by the pause path (`dismissQuestionDialog`), not here.
+5. The pane runs the agent's process and is not at its idle prompt, read from a fresh capture right before the keys go out.
+
+Then it sends the adapter's `InterruptKeys()` once, logs `wake: interrupted <name> …`, and raises the `agent.urgent_interrupt` notification (info level, shown on the board). The wake loop delivers the message as the next prompt as usual (native wake, then the control paste after 5 s). The message id is remembered in `Store.urgentInterrupted`, so one message causes one interrupt.
+
+## Per kind
+
+| Kind | Keys | Why |
+| --- | --- | --- |
+| claude, codex | `Escape` | the adapters' existing `InterruptKeys` |
+| grok | one `C-c` | probe TASK-1126 (`~/.swarm/research/SPIKE-52/TASK-1126.md`): `C-c` mid-turn prints "Turn cancelled by user" and returns to idle; `C-c` at idle arms quit and a second one **exits grok** |
+
+For grok never send `C-c` twice and never to an idle pane. That is why the idle-prompt check (step 5) runs right before the keys and why the once-per-message memory exists; after a daemon restart a repeat is still safe because the cancelled turn leaves an idle pane. The pause deadline's own `interrupt` (`TickPause`) is a separate, later step with its own kill timer.
+
+ACP `session/cancel` through the grok leader would avoid keystrokes but is **not probed**; do not switch to it without a recorded live probe. Grok steer mode (`follow_up_behavior = "steer"`) already lets a pasted message join a running turn at the next tool gap, so the interrupt only matters inside one long tool call.
+
+## Tests
+
+`go test ./internal/runtime -run 'Urgent|Ordinary'` covers urgency marking, the grace, the hook-silence rule, the once-only rule, the idle, question and ordinary-mail exclusions, and the per-kind keys (including grok at its idle prompt). To check a live worker, queue a pause for an agent running `sleep 120` and watch `~/.swarm/logs/daemon.err.log` for `wake: interrupted`.

@@ -24,6 +24,8 @@ Briefs and launch commands have hard size limits (6000-character brief cap check
 
 Queued agents and parked operations (capacity pauses, resumes, retries) start only from the reconcile tick (`EnforceCapacity`, `ResumeOperations`, `DrainQueue` in `Reconcile`, every 5 s), so a change that affects scheduling, such as `max_concurrent_agents`, must call `runtime.Store.Kick()` (coalescing; wakes `ReconcileLoop` now) from the code that saves it (`putSettings` in internal/httpapi/config.go). Never call `DrainQueue` or `ResumeOperations` from a request goroutine: `startQueued`'s claim has no `state='queued'` guard, so two concurrent drains can start the same agent twice. A test that needs to prove "starts without waiting for a tick" runs `ReconcileLoop` with an `After` that never fires (see `TestKickRunsAReconcileTickBeforeTheTimer`, `TestPutSettingsKicksReconcileWhenTheAgentLimitChanges`).
 
+Swarm cancels a running turn only for a pending pause or handoff request (`IsUrgent`) to a busy worker whose hooks have been silent for 30 s, once per message, never for an idle worker, an open question or a grok card, and grok gets one `C-c` only (a second quits it). When and how, per kind: docs/urgent-interrupt.md.
+
 # /api/state stays bounded
 
 The menu bar refetches `GET /api/state` on every daemon event. Never add per-node DB work for finished agents, and prune before building nodes, not after. How the trim works, the caps, and how to measure the response (`curl -w` with `~/.swarm/run/daemon.port` and `daemon.token`): docs/api-state.md.
