@@ -80,7 +80,7 @@ final class PanePreviewPanelRenderTests: XCTestCase {
         win.orderFront(nil)
         defer { win.orderOut(nil) }
         host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(500)) // let SwiftUI's scroll view lay out and anchor its content
+        try await taskSleep(.milliseconds(500)) // let SwiftUI's scroll view lay out and anchor its content
         host.layoutSubtreeIfNeeded()
         let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: rep)

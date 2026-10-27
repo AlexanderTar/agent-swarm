@@ -60,7 +60,7 @@ public final class PanePreviewModel {
     private var generation = 0
 
     public init(client: DaemonClient, connected: @escaping @MainActor () -> Bool,
-                sleep: @escaping EventStream.Sleep = { try await Task.sleep(for: $0) }) {
+                sleep: @escaping EventStream.Sleep = taskSleep) {
         self.client = client
         self.connected = connected
         self.sleep = sleep

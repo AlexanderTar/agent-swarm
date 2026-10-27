@@ -356,7 +356,7 @@ struct InstructionsTab: View {
             await model.setInstructions(draft)
             editing = false
             saved = true
-            try? await Task.sleep(for: .seconds(2))
+            try? await taskSleep(.seconds(2))
             saved = false
         }
     }
@@ -366,7 +366,7 @@ struct InstructionsTab: View {
         NSPasteboard.general.setString(model.instructions, forType: .string)
         copied = true
         Task {
-            try? await Task.sleep(for: .seconds(2))
+            try? await taskSleep(.seconds(2))
             copied = false
         }
     }

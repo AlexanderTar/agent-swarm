@@ -152,14 +152,14 @@ final class EventStreamTests: XCTestCase {
                                  connect: { _ in AsyncThrowingStream { $0.finish() } },
                                  sleep: { d in
                                      rec.lock.withLock { rec.slept.append(d) }
-                                     try await Task.sleep(for: .seconds(3600))
+                                     try await taskSleep(.seconds(3600))
                                  },
                                  onEvent: { _ in }, onConnected: { status.append($0) })
         stream.start()
         stream.start()
-        try await Task.sleep(for: .milliseconds(100))
+        try await taskSleep(.milliseconds(100))
         stream.restart()
-        try await Task.sleep(for: .milliseconds(100))
+        try await taskSleep(.milliseconds(100))
         stream.stop()
         XCTAssertEqual(status, [false, false])
         XCTAssertEqual(rec.lock.withLock { rec.slept }, [.seconds(1), .seconds(1)])

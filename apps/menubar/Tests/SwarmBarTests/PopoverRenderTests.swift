@@ -166,7 +166,7 @@ final class PopoverRenderTests: XCTestCase {
         let top = window.frame.maxY
         for _ in 0..<10 {
             host.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(20))
+            try await taskSleep(.milliseconds(20))
         }
         let content = NSHostingView(rootView: PopoverView(model: m, openNewOrchestrator: {}, openSettings: {})).fittingSize.height
         XCTAssertLessThan(content, 700, "sparse content is shorter than the stale window")

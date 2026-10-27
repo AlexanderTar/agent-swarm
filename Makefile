@@ -43,7 +43,10 @@ test-go: vet fmt web-build
 test-web:
 	cd web && pnpm install --frozen-lockfile && pnpm test
 
+# Generic Task.sleep(for:) / clock sleeps abort the menubar tests on Swift 6.3; use taskSleep(_:) (docs/ci.md).
 test-menubar:
+	@! grep -rnE '\.sleep\((for|until):' --exclude=TaskSleep.swift apps/menubar/Sources apps/menubar/Tests \
+		|| { echo 'use taskSleep(_:), not Task.sleep(for:) or a clock sleep (docs/ci.md)'; exit 1; }
 	cd apps/menubar && swift build -c release && swift test
 	apps/menubar/scripts/cover.sh
 

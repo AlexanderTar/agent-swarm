@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let terminals: Terminals
         if mock != nil {
             connect = { _ in
-                try await Task.sleep(for: .seconds(365 * 86400))
+                try await taskSleep(.seconds(365 * 86400))
                 throw CancellationError()
             }
             terminals = Terminals(runner: NoOpCommandRunner(), script: NoOpScriptRunner(), ghosttyPIDs: { [] })
@@ -145,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // can take a while to get a place there.
             if ProcessInfo.processInfo.environment["SWARM_OPEN_POPOVER"] != nil {
                 for _ in 0..<90 {
-                    try? await Task.sleep(for: .seconds(1))
+                    try? await taskSleep(.seconds(1))
                     if NSApp.windows.contains(where: { String(describing: type(of: $0)).contains("MenuBarExtraWindow") && $0.isVisible }) { break }
                     NSApp.activate(ignoringOtherApps: true)
                     if let b = StatusItemWatcher.statusItem()?.button { _ = b.sendAction(b.action, to: b.target) }

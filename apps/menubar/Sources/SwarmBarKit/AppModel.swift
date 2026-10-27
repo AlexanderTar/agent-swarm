@@ -143,7 +143,7 @@ public final class AppModel {
 
     public init(client: DaemonClient, endpoint: DaemonEndpoint, terminals: Terminals, poster: NotificationPosting,
                 defaults: KeyValueStore, cache: StateCache, connect: @escaping EventStream.Connect,
-                sleep: @escaping EventStream.Sleep = { try await Task.sleep(for: $0) },
+                sleep: @escaping EventStream.Sleep = taskSleep,
                 now: @escaping @MainActor () -> Date = { Date() }, timeZone: TimeZone = .current,
                 openURL: @escaping @MainActor (URL) -> Void) {
         self.client = client

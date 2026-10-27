@@ -112,7 +112,7 @@ public final class EventStream {
     public private(set) var lastEventID: Int64?
     public private(set) var delays: [Duration] = []
 
-    public init(endpoint: DaemonEndpoint, connect: @escaping Connect, sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+    public init(endpoint: DaemonEndpoint, connect: @escaping Connect, sleep: @escaping Sleep = taskSleep,
                 onEvent: @escaping @MainActor (SwarmEvent) -> Void, onConnected: @escaping @MainActor (Bool) -> Void) {
         self.endpoint = endpoint
         self.connect = connect

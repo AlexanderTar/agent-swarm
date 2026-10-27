@@ -72,10 +72,10 @@ enum NativeDialogCheck {
 
     static func start() {
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(600))
+            try? await taskSleep(.milliseconds(600))
             for name in ["new", "board", "board-selected", "settings"] {
                 openMenuOnce()
-                try? await Task.sleep(for: .milliseconds(400))
+                try? await taskSleep(.milliseconds(400))
                 check(popover?.isVisible == true, "\(name): one request opens menu")
                 if name == "board" || name == "board-selected" {
                     check(boardAction != nil, "\(name): callback registered")
@@ -83,7 +83,7 @@ enum NativeDialogCheck {
                     check(actions[name] != nil, "\(name): callback registered")
                 }
                 launch(name)
-                try? await Task.sleep(for: .milliseconds(600))
+                try? await taskSleep(.milliseconds(600))
                 check(popover?.isVisible != true, "\(name): dialog dismisses menu")
                 let dialogs = NSApp.windows.filter {
                     $0.isVisible && !String(describing: type(of: $0)).contains("StatusBar")
@@ -103,18 +103,18 @@ enum NativeDialogCheck {
                 }
                 dialogs.forEach { $0.close() }
                 openMenuOnce()
-                for _ in 0..<20 where popover?.isVisible != true { try? await Task.sleep(for: .milliseconds(100)) }
+                for _ in 0..<20 where popover?.isVisible != true { try? await taskSleep(.milliseconds(100)) }
                 check(popover?.isVisible == true, "\(name): menu reopens after one request")
                 // Close through the real menu action again; direct NSWindow.close()
                 // is exactly the stale scene state this regression must avoid.
                 launch(name)
-                for _ in 0..<20 where popover?.isVisible == true { try? await Task.sleep(for: .milliseconds(100)) }
+                for _ in 0..<20 where popover?.isVisible == true { try? await taskSleep(.milliseconds(100)) }
                 check(popover?.isVisible != true, "\(name): repeated launch dismisses menu")
                 NSApp.windows.filter {
                     $0.isVisible && !String(describing: type(of: $0)).contains("StatusBar")
                         && !String(describing: type(of: $0)).contains("MenuBarExtraWindow")
                 }.forEach { $0.close() }
-                try? await Task.sleep(for: .milliseconds(150))
+                try? await taskSleep(.milliseconds(150))
             }
             print("Native dialog check: \(failures) failure(s); OS \(ProcessInfo.processInfo.operatingSystemVersionString)")
             fflush(stdout)

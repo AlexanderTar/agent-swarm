@@ -19,7 +19,7 @@ final class AppModelTests: XCTestCase {
     }
 
     private func make(connect: @escaping EventStream.Connect = { _ in throw URLError(.cannotConnectToHost) },
-                      sleep: @escaping EventStream.Sleep = { _ in try await Task.sleep(for: .seconds(3600)) },
+                      sleep: @escaping EventStream.Sleep = { _ in try await taskSleep(.seconds(3600)) },
                       tokenFile: URL = URL(fileURLWithPath: "/nonexistent")) -> AppModel {
         let terminals = Terminals(runner: runner, script: script, ghosttyPIDs: { [] }, fileExists: { $0 == "/opt/homebrew/bin/tmux" })
         return AppModel(client: client, endpoint: DaemonEndpoint(baseURL: URL(string: "http://127.0.0.1:7777")!,
@@ -131,7 +131,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(m.connected)
         client.stateResult = .success(try Fixture.decode("state.json"))
         for _ in 0..<100 where !m.connected {
-            try await Task.sleep(for: .milliseconds(20))
+            try await taskSleep(.milliseconds(20))
         }
         XCTAssertTrue(m.connected, "an open stream refetches state and clears the banner without any event")
         XCTAssertNil(m.banner)
@@ -502,7 +502,7 @@ final class AppModelTests: XCTestCase {
     // The timeout must fire on its own: no event may ever arrive.
     func testInFlightTimeoutFiresWithoutAnEvent() async {
         let m = make(sleep: { d in
-            guard d == .seconds(AppModel.inFlightTimeout) else { return try await Task.sleep(for: .seconds(3600)) }
+            guard d == .seconds(AppModel.inFlightTimeout) else { return try await taskSleep(.seconds(3600)) }
             try Task.checkCancellation()
         })
         await m.refresh()
@@ -518,7 +518,7 @@ final class AppModelTests: XCTestCase {
     func testInFlightTimeoutIsCancelledOnceTheStateMoves() async {
         let cancelled = OpenCount()
         let m = make(sleep: { d in
-            do { try await Task.sleep(for: .seconds(3600)) } catch {
+            do { try await taskSleep(.seconds(3600)) } catch {
                 if d == .seconds(AppModel.inFlightTimeout) { _ = cancelled.next() }
                 throw error
             }
@@ -678,7 +678,7 @@ final class AppModelTests: XCTestCase {
     // button must not sit on a disabled "Resuming…" forever.
     func testResumeAllPendingTimesOutWhenAnOrchestratorStaysPaused() async throws {
         let m = make(sleep: { d in
-            guard d == .seconds(AppModel.inFlightTimeout) else { return try await Task.sleep(for: .seconds(3600)) }
+            guard d == .seconds(AppModel.inFlightTimeout) else { return try await taskSleep(.seconds(3600)) }
             try Task.checkCancellation()
         })
         client.stateResult = .success(try allPausedState())
