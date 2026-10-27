@@ -51,13 +51,9 @@ var questionHooked = map[kinds.AgentKind]bool{
 	kinds.Cursor: false, kinds.Muse: false,
 }
 
-// advisorDisabled lists the kinds with a deliberate "no advisor". muse's
-// read-only argv and parser exist but its write block was never proved live
-// (muse answered 429), so it stays off until CHORE-102. Remove the entry when
-// kinds.MuseAdvisorEnabled flips.
-var advisorDisabled = map[kinds.AgentKind]string{
-	kinds.Muse: "disabled until live-proven (CHORE-102)",
-}
+// advisorDisabled lists the kinds with a deliberate "no advisor". Every kind
+// can advise today.
+var advisorDisabled = map[kinds.AgentKind]string{}
 
 // usageNone lists kinds with no usage source. Every kind has one today.
 var usageNone = map[kinds.AgentKind]string{}

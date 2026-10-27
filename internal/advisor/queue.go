@@ -295,7 +295,11 @@ func (s *Service) run(sess advisorSession, adv runtime.Advice, deliver func(runt
 		deliver(s.finishError(ctx, adv, "failed", err.Error(), 0))
 		return
 	}
-	env := advisorEnv(runtime.AgentKind(adv.AdvisorKind), s.Home)
+	env, err := advisorEnv(runtime.AgentKind(adv.AdvisorKind), s.Home, s.UserHome)
+	if err != nil {
+		deliver(s.finishError(ctx, adv, "failed", err.Error(), 0))
+		return
+	}
 	if (env == nil && s.Run == nil) || (env != nil && s.RunEnv == nil) {
 		deliver(s.finishError(ctx, adv, "failed", "no advisor runner configured", 0))
 		return
@@ -331,12 +335,60 @@ func (s *Service) run(sess advisorSession, adv runtime.Advice, deliver func(runt
 
 // advisorEnv is the environment an advisor kind must run with, or nil when it
 // runs in the daemon's own. Grok without GROK_HOME reads ~/.grok and loads the
-// operator's other agents' config.
-func advisorEnv(kind runtime.AgentKind, swarmHome string) map[string]string {
-	if kind == runtime.Grok {
-		return grokhome.Env(swarmHome)
+// operator's other agents' config. Muse without its own XDG_CONFIG_HOME loads
+// ~/.config/muse/settings.json, whose swarm MCP server hands the advisor
+// swarm_instructions and swarm_kb, which write; `-c` refuses to override a
+// server named swarm (CHORE-102).
+func advisorEnv(kind runtime.AgentKind, swarmHome, userHome string) (map[string]string, error) {
+	switch kind {
+	case runtime.Grok:
+		return grokhome.Env(swarmHome), nil
+	case runtime.Muse:
+		cfg, err := museAdvisorConfig(swarmHome, userHome)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"XDG_CONFIG_HOME": cfg}, nil
 	}
-	return nil
+	return nil, nil
+}
+
+// museAdvisorConfig builds <swarm home>/run/advisor/muse-config, shared by
+// every muse advisor run and kept out of the advice dir the model reads:
+// muse/settings.json with no mcpServers, and muse/auth.json linked to the real
+// login (muse reads credentials only from its config dir; the muse adapter's
+// setupEnv links it the same way).
+func museAdvisorConfig(swarmHome, userHome string) (string, error) {
+	cfg := filepath.Join(swarmHome, "run", "advisor", "muse-config")
+	dir := filepath.Join(cfg, "muse")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".settings-*.json")
+	if err != nil {
+		return "", err
+	}
+	_, werr := tmp.WriteString(`{"schema_version":1}` + "\n")
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), filepath.Join(dir, "settings.json"))
+	}
+	if werr != nil {
+		os.Remove(tmp.Name())
+		return "", werr
+	}
+	auth := filepath.Join(userHome, ".config", "muse", "auth.json")
+	link := filepath.Join(dir, "auth.json")
+	if cur, err := os.Readlink(link); err == nil && cur == auth {
+		return cfg, nil
+	}
+	os.Remove(link)
+	if err := os.Symlink(auth, link); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	return cfg, nil
 }
 
 // List returns one agent's advice, newest first (§11.6). Another agent's

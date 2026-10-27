@@ -229,7 +229,7 @@ public enum CatalogRules {
         agentOptions(enabled: enabled.filter { canAdvise($0, catalog) }) + [PickerOption("none", Copy.noAdvisor)]
     }
 
-    /// An agent whose catalog entry says `advisor_enabled` is false (muse, until its write block is proven) can't advise.
+    /// An agent whose catalog entry says `advisor_enabled` is false can't advise.
     private static func canAdvise(_ kind: AgentKind, _ catalog: [AgentCatalogEntry]) -> Bool {
         entry(catalog, kind)?.advisorEnabled != false
     }

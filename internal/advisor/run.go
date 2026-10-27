@@ -84,10 +84,13 @@ func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) (
 
 // museAdvisorCommand is the read-only `muse exec` form from SPIKE-52 probe 10:
 // every tool that writes, runs a command, asks the user or reaches the web is
-// switched off, no session log is kept, and the workspace is the advice dir.
+// switched off, no session log is kept, other agents' personal rules and
+// skills and muse's reminder agents stay out, and the workspace is the advice
+// dir. It runs with advisorEnv's config dir, which drops every MCP server.
 func museAdvisorCommand(model, effort, dir, prompt string) ([]string, error) {
 	a := []string{"muse", "exec", "--json", "--disable-write", "--disable-shell", "--disable-request-user-input",
-		"--disable-web-tools", "--no-session-log", "--workspace", dir}
+		"--disable-web-tools", "--no-session-log", "--no-foreign-personal-context", "--disable-reminders",
+		"--workspace", dir}
 	if model != "" {
 		a = append(a, "--model", model)
 	}

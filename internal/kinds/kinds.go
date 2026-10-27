@@ -18,13 +18,16 @@ const (
 // AgentKinds is the settings order (claude first).
 var AgentKinds = []AgentKind{Claude, Codex, Agy, Cursor, Muse, Grok}
 
-// MuseAdvisorEnabled keeps muse without an advisor. Its read-only argv
-// (advisor.museAdvisorCommand) and parser are built and unit-tested, but the
-// write block was never proved live: muse answered 429 (quota exhausted until
-// 2026-10-19) before any tool ran. Enabling it is CHORE-102, once a live write
-// test passes. The advisor runner, the settings validation and the catalog's
-// advisor_enabled flag all follow this one constant.
-const MuseAdvisorEnabled = false
+// MuseAdvisorEnabled lets muse advise. CHORE-102 proved its read-only form
+// live on muse 1.4.13 (2026-10-27): told to write in and outside its
+// workspace, append to its context file and run a shell command, it wrote
+// nothing (0 of 5), had no write, edit or shell tool, and with advisorEnv's
+// config dir no MCP tool either; delegation is off in an untrusted workspace.
+// Rerun with MUSE_LIVE_WRITE_TEST=1 (advisor.TestMuseAdvisorCannotWriteLive).
+// The advisor runner, the settings validation and the catalog's
+// advisor_enabled flag all follow this one constant; set it back to false if
+// a muse release breaks that test.
+const MuseAdvisorEnabled = true
 
 // AdvisorEnabled reports whether the kind can be picked as the advisor.
 func (k AgentKind) AdvisorEnabled() bool {

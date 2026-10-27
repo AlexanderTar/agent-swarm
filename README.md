@@ -174,7 +174,7 @@ swarm uninstall                    remove launchd job and agent integrations (ke
 
 ## Advisor
 
-Every agent can consult a stronger model before big decisions, when stuck, and before finishing. Claude agents use Claude Code's built-in advisor (set with the Advisor default, e.g. Fable). Codex, Antigravity, Cursor and Grok agents call `swarm_advise`; Swarm runs the advisor model you chose on a condensed copy of the agent's session and returns the answer. Muse has no advisor yet: its read-only form is built but stays off until a live test proves it blocks writes. Advice shows up in each item's Checkpoints tab.
+Every agent can consult a stronger model before big decisions, when stuck, and before finishing. Claude agents use Claude Code's built-in advisor (set with the Advisor default, e.g. Fable). Codex, Antigravity, Cursor and Grok agents call `swarm_advise`; Swarm runs the advisor model you chose on a condensed copy of the agent's session and returns the answer. Muse can be the advisor too: it runs with writes, shell, web tools and MCP servers switched off, proven by a live write test. Advice shows up in each item's Checkpoints tab.
 
 ## How agents talk to Swarm
 

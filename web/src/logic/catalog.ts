@@ -64,7 +64,7 @@ export function modelLabel(entry: AgentCatalogEntry | undefined, value: string):
 export const agentOptions = (enabled: AgentKind[]): Option[] =>
   enabled.map((k) => ({ value: k, label: AGENT_LABEL[k] }));
 
-// An agent whose catalog entry says advisor_enabled is false (muse, until its write block is proven) can't advise.
+// An agent whose catalog entry says advisor_enabled is false can't advise.
 const canAdvise = (catalog: AgentCatalogEntry[], kind: AgentKind) =>
   entryFor(catalog, kind)?.advisor_enabled !== false;
 
