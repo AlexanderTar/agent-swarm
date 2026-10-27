@@ -92,10 +92,14 @@ describe("Kanban view (§16.7)", () => {
     };
     renderWithDaemon(<Host />, { daemon: d, events: false });
     const c = await screen.findByTestId("card-TASK-101");
-    const busyLine = within(c).getByText("Busy 12 min · 2 waiting");
+    const busyLine = within(c).getByText("12 min · 2 waiting");
     const name = within(c).getByText(coder.name);
     expect(busyLine.parentElement).not.toBe(name.parentElement);
-    expect(name).not.toHaveClass("max-w-[50%]");
+    expect(name).toHaveClass("flex-1", "min-w-0", "truncate");
+    expect(name.className).not.toMatch(/max-w/);
+    const label = within(name.parentElement as HTMLElement).getByText("Busy");
+    expect(label).toHaveClass("shrink-0");
+    expect(within(c).queryByText(/running a long task/)).not.toBeInTheDocument();
   });
 
   it("builds lanes, headers and collapsed columns for task cards", async () => {

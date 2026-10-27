@@ -788,11 +788,10 @@ describe("Details panel (§16.9)", () => {
     setup("TASK-101", {}, d);
     const overview = await screen.findByRole("tabpanel", { name: "Overview" });
     const agents = within(overview).getByRole("region", { name: "Agents" });
-    const label = await within(agents).findByText(
-      "Busy · running a long task · 2 messages waiting · for 12 min",
-    );
+    const label = await within(agents).findByText("Busy 12 min · 2 waiting");
     const name = within(agents).getByText(coder.name);
-    expect(name).toHaveClass("shrink-0", "max-w-[50%]", "truncate");
+    expect(name).toHaveClass("flex-1", "min-w-0", "truncate");
+    expect(name.className).not.toMatch(/max-w|shrink-0/);
     expect(label).not.toHaveClass("shrink-0");
     expect(label).toHaveClass("min-w-0", "text-right");
   });

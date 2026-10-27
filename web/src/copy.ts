@@ -342,6 +342,9 @@ export const T = {
   busyFor: (min: number) => `for ${min} min`,
   busyCompact: (waiting: number, min: number) =>
     joinParts([`Busy ${min} min`, waiting ? `${waiting} waiting` : ""]),
+  // Kanban line 2: the card's first line already says "Busy".
+  busyLine: (waiting: number, min: number) =>
+    joinParts([`${min} min`, waiting ? `${waiting} waiting` : ""]),
   mergedLocally: (sha: string) => `merged locally ${sha7(sha)}`,
   toastItemCreated: (key: string) => `Created ${key}`,
   toastStarted: (name: string, key: string) => `Started ${name} on ${key}`,

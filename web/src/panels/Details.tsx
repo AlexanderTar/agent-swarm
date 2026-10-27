@@ -336,9 +336,9 @@ export function Details(p: DetailsProps) {
                 .filter((agent) => !isFinished(agent))
                 .map((agent) => (
                   <li key={agent.id} className="flex justify-between gap-2">
-                    <span className="max-w-[50%] shrink-0 truncate">{agent.name}</span>
+                    <span className="min-w-0 flex-1 truncate">{agent.name}</span>
                     <span className="min-w-0 text-right text-muted-foreground">
-                      {stateText(agent, now)}
+                      {stateText(agent, now, true)}
                     </span>
                   </li>
                 ))}

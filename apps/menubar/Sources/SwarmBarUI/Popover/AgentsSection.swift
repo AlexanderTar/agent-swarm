@@ -114,7 +114,10 @@ struct AgentRowView: View {
                             if AgentTree.showsLowTokenLeaf(agent) { EcoLeaf() }
                         }
                     }
-                    Text(AgentTree.subtitle(agent)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    // A minute timer so a busy worker's "Busy N min" keeps moving between popover refreshes.
+                    TimelineView(.periodic(from: .now, by: 60)) { ctx in
+                        Text(AgentTree.subtitle(agent, now: ctx.date)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
             .contentShape(Rectangle())

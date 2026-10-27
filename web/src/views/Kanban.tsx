@@ -126,15 +126,17 @@ function Card(p: {
       {p.agent && (
         <p className="flex items-center gap-1">
           <AgentIcon kind={p.agent.agent.kind} />
-          <span className="truncate">{p.agent.agent.name}</span>
+          <span className="min-w-0 flex-1 truncate">{p.agent.agent.name}</span>
           {p.agent.extra > 0 && <span className="text-muted-foreground">+{p.agent.extra}</span>}
-          <span className="ml-auto text-muted-foreground">
-            {stateLabel(displayState(p.agent.agent))}
+          <span className="shrink-0 whitespace-nowrap text-muted-foreground">
+            {displayState(p.agent.agent) === "busy"
+              ? "Busy"
+              : stateLabel(displayState(p.agent.agent))}
           </span>
         </p>
       )}
       {p.agent && displayState(p.agent.agent) === "busy" && (
-        <p className="text-muted-foreground">{stateText(p.agent.agent, now, true)}</p>
+        <p className="text-muted-foreground">{stateText(p.agent.agent, now, "line")}</p>
       )}
       {p.crew && (
         <div

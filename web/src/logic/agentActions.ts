@@ -40,12 +40,17 @@ export const stateLabel = (s: DisplayState): string => SESSION_LABEL[s];
 // stateLabel plus, for a busy worker, the messages waiting for it and how long it has been busy.
 // compact is the short form for a narrow card. The daemon only sends busy_since once the worker
 // has been busy for minutes, so a short tool call still reads Running.
-export function stateText(a: AgentNode, now = Date.now(), compact = false): string {
+export function stateText(
+  a: AgentNode,
+  now = Date.now(),
+  compact: boolean | "line" = false,
+): string {
   const state = displayState(a);
   const s = a.session;
   if (state !== "busy" || !s || s.busy_since == null) return stateLabel(state);
   const min = Math.floor(Math.max(0, now - s.busy_since) / 60_000);
   const waiting = s.messages_waiting ?? 0;
+  if (compact === "line") return T.busyLine(waiting, min);
   if (compact) return T.busyCompact(waiting, min);
   const parts = [stateLabel(state)];
   if (waiting) parts.push(T.messagesWaiting(waiting));
