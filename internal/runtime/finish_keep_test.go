@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -106,6 +107,9 @@ func TestStuckRootStaysUnfinishableAfterRealChanges(t *testing.T) {
 		mustExec(t, s.DB, `UPDATE items SET status = 'in_progress', updated_at = 9999999999999 WHERE id = ?`, child.ID)
 		stick(s, key)
 		requireNothingToFinish(t, s, ses, "reopened child")
+		if st := acceptState(t, s, key); st == "approved" {
+			t.Fatal("finishing refused while the finish request was still approved")
+		}
 		if st := itemStatus(t, s, key); st != items.InProgress {
 			t.Fatalf("status = %s, want in_progress", st)
 		}
@@ -138,6 +142,56 @@ func TestStuckRootStaysUnfinishableAfterRealChanges(t *testing.T) {
 		}
 		_ = orch
 	})
+}
+
+func acceptState(t *testing.T, s *Store, key string) string {
+	t.Helper()
+	var state string
+	if err := s.DB.QueryRowContext(context.Background(), `SELECT state FROM requests
+		WHERE item_id = ? AND kind IN ('accept_epic', 'accept_fix')
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, mustItemID(t, s, key)).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// Adding a task after the user approved the finish changes what they approved.
+// The approval goes stale at that moment; finishing is refused, and a new
+// integrated checkpoint opens a fresh request. The request must not stay
+// approved while finishing refuses it.
+func TestAddingWorkAfterApprovedFinishStalesIt(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	ctx := context.Background()
+	child, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: key, Title: "More work"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := acceptState(t, s, key); st != "stale" {
+		t.Fatalf("request after adding a task = %s, want stale", st)
+	}
+	if st := itemStatus(t, s, key); st != items.InProgress {
+		t.Fatalf("status after adding a task = %s, want in_progress", st)
+	}
+	mustExec(t, s.DB, `UPDATE items SET status = 'done', updated_at = ? WHERE id = ?`, db.Millis(s.Now()), child.ID)
+	if err := s.Items.Reconcile(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	_, err = finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{
+		{Repo: "proj", Note: "branch stays"}, {Repo: "docs", Note: "same"}}})
+	if err == nil || !strings.Contains(err.Error(), "Nothing to finish") {
+		t.Fatalf("finishing err = %v, want Nothing to finish", err)
+	}
+	if st := acceptState(t, s, key); st == "approved" {
+		t.Fatal("finishing refused while the finish request was still approved")
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "includes the new task",
+		Git:          []GitRef{{Repo: "proj", Branch: "swarm/chore-1", SHA: "4a0d1bc0000"}, {Repo: "docs", Branch: "swarm/chore-1", SHA: "bbb2220000"}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if st := acceptState(t, s, key); st != "open" {
+		t.Fatalf("request after a new integration = %s, want open", st)
+	}
 }
 
 // A fix-round coder's accepted still reopens a task that reached review.

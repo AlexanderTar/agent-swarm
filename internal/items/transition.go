@@ -1000,8 +1000,15 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 		}
 	}
 
-	// 4. finished children plus a fresh integration open exactly one request
+	// 4. finished children plus a fresh integration open exactly one request.
+	// Unfinished children mean the approval no longer matches the work: stale it
+	// now. Leaving it approved makes finishing refuse a request it still calls current.
 	if !st.finished || st.ckpID == "" || st.ckpAt < st.lastChild {
+		if !st.finished {
+			if err := s.staleApprovedFinish(ctx, tx, it); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	seen, err := exists(ctx, tx, `SELECT 1 FROM requests WHERE item_id = ? AND kind = ?
