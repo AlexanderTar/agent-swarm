@@ -162,6 +162,41 @@ paths = ["/user/skills"]
 	}
 }
 
+// A message pasted into a busy grok turn must join that turn (steer), not queue
+// as an extra metered turn after it. An operator's own choice is kept.
+func TestWriteGrokSetsFollowUpSteer(t *testing.T) {
+	behavior := func(t *testing.T, c install.Config) any {
+		t.Helper()
+		ui, _ := readTOML(t, c.Grok("config.toml"))["ui"].(map[string]any)
+		return ui["follow_up_behavior"]
+	}
+	t.Run("fresh home and refresh", func(t *testing.T) {
+		c := fakeHome(t)
+		seedGrokConfig(t, c, "[ui]\ntheme = \"dark\"\n")
+		for i := 0; i < 2; i++ {
+			if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+				t.Fatal(err)
+			}
+			if got := behavior(t, c); got != "steer" {
+				t.Errorf("run %d: [ui] follow_up_behavior = %v, want steer", i, got)
+			}
+		}
+		if ui, _ := readTOML(t, c.Grok("config.toml"))["ui"].(map[string]any); ui["theme"] != "dark" {
+			t.Errorf("[ui] theme lost: %v", ui)
+		}
+	})
+	t.Run("operator choice kept", func(t *testing.T) {
+		c := fakeHome(t)
+		seedGrokConfig(t, c, "[ui]\nfollow_up_behavior = \"queue\"\n")
+		if _, _, err := install.WriteGrok(context.Background(), c, grokFake().Runner()); err != nil {
+			t.Fatal(err)
+		}
+		if got := behavior(t, c); got != "queue" {
+			t.Errorf("follow_up_behavior = %v, want the operator's queue", got)
+		}
+	})
+}
+
 func TestWriteGrokLinksAuth(t *testing.T) {
 	c := fakeHome(t)
 	userGrok := filepath.Join(c.UserHome, ".grok")

@@ -208,6 +208,17 @@ func mergeGrokConfig(c Config, m map[string]any) {
 	}
 	skills["paths"] = paths
 	m["skills"] = skills
+
+	// Steer makes a message pasted into a busy turn join that turn at the next
+	// safe gap; the default "queue" runs it as an extra metered turn afterwards.
+	ui, _ := m["ui"].(map[string]any)
+	if ui == nil {
+		ui = map[string]any{}
+	}
+	if _, set := ui["follow_up_behavior"]; !set {
+		ui["follow_up_behavior"] = "steer"
+	}
+	m["ui"] = ui
 }
 
 // dropGrokHookGroups removes Swarm's commands from the matcher groups. A group
