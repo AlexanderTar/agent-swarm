@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -17,14 +18,15 @@ const urgentGrace = 30 * time.Second
 //     silent that long (a firing hook delivers the notice at the next tool gap);
 //   - the worker is busy by the shared busy signal (open tool call or grok
 //     leader "working"), not merely quiet;
-//   - nobody is being waited on (no open question, no grok card);
+//   - nobody is being waited on (no open question or permission dialog, no grok card);
 //   - the pane runs the agent and is not at its idle prompt, rechecked right
 //     before the keys: grok's C-c at idle arms quit and a second one exits it.
 //
 // The adapter's own InterruptKeys are used (Escape for claude and codex, one C-c
 // for grok: the TASK-1126 probe showed C-c mid-turn cancels the turn). One
-// interrupt per message, remembered in memory: after a daemon restart a repeat
-// is still safe because the idle-prompt guard sees the cancelled turn's pane.
+// interrupt per message, remembered in memory only: after a daemon restart a
+// worker that already got it and is now busy running its handoff turn with quiet
+// hooks gets one more (accepted risk, see docs/urgent-interrupt.md).
 func (s *Store) interruptForUrgent(ctx context.Context, r wakeRow) {
 	if r.UrgentID == "" || r.OpenQuestion || s.Now().Sub(r.UrgentAt) < urgentGrace {
 		return
@@ -79,4 +81,38 @@ func (s *Store) markUrgentInterrupted(msgID string) {
 		s.urgentInterrupted = map[string]bool{}
 	}
 	s.urgentInterrupted[msgID] = true
+}
+
+// pruneUrgentInterrupted forgets messages that are no longer pending: once
+// delivered they cannot interrupt anyone again.
+func (s *Store) pruneUrgentInterrupted(ctx context.Context) {
+	s.bookkeepingMu.Lock()
+	ids := make([]any, 0, len(s.urgentInterrupted))
+	for id := range s.urgentInterrupted {
+		ids = append(ids, id)
+	}
+	s.bookkeepingMu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM messages WHERE state = 'pending' AND id IN (?`+
+		strings.Repeat(",?", len(ids)-1)+`)`, ids...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	pending := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			pending[id] = true
+		}
+	}
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	for _, id := range ids {
+		if !pending[id.(string)] {
+			delete(s.urgentInterrupted, id.(string))
+		}
+	}
 }

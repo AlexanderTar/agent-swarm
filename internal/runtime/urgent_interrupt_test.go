@@ -195,3 +195,57 @@ func TestUrgentInterruptUsesTheAdapterKeyPerKind(t *testing.T) {
 		}
 	})
 }
+
+// A terminal permission dialog is an open 'prompt' row: the person is being
+// asked right now, and Escape would reject the permission for them.
+func TestUrgentMessageNeverInterruptsAWorkerWaitingOnAPermissionDialog(t *testing.T) {
+	s, tm, ses, a := urgentSession(t, Fake, "swarm-fake-agent", "running a long build…\n")
+	if _, _, err := s.OpenDialogPrompt(context.Background(), ses.ID, "Allow Bash: rm -rf build?"); err != nil {
+		t.Fatal(err)
+	}
+	enq(t, s, a.ID, a.RootItemID, "control", pauseControl, 0)
+	tickWake(t, s, tm, 2*urgentGrace)
+	if got := interruptsSent(tm, ses.TmuxName); len(got) != 0 {
+		t.Fatalf("interrupted a worker waiting on a permission dialog: %v", got)
+	}
+}
+
+// After the interrupt the worker is idle and the pending pause is pasted as
+// its next prompt, with no second interrupt.
+func TestUrgentMessageIsPastedAfterTheInterrupt(t *testing.T) {
+	s, tm, ses, a := urgentSession(t, Fake, "swarm-fake-agent", "running a long build…\n")
+	enq(t, s, a.ID, a.RootItemID, "control", pauseControl, 0)
+	tickWake(t, s, tm, urgentGrace+time.Second)
+	if got := interruptsSent(tm, ses.TmuxName); len(got) != 1 {
+		t.Fatalf("want one interrupt, got %v", got)
+	}
+	s.TurnEnded(ses.ID)
+	tm.captures[ses.TmuxName] = []string{"─────\n❯ \n─────\n"}
+	for i := 0; i < 4; i++ {
+		tickWake(t, s, tm, 10*time.Second)
+	}
+	if len(tm.pasted) == 0 {
+		t.Fatalf("the pause notice was never pasted after the interrupt")
+	}
+	if got := interruptsSent(tm, ses.TmuxName); len(got) != 1 {
+		t.Fatalf("second interrupt sent: %v", got)
+	}
+}
+
+// The once-only memory does not outlive its message.
+func TestUrgentInterruptMemoryIsPrunedOnceTheMessageIsDelivered(t *testing.T) {
+	s, tm, ses, a := urgentSession(t, Fake, "swarm-fake-agent", "running a long build…\n")
+	enq(t, s, a.ID, a.RootItemID, "control", pauseControl, 0)
+	tickWake(t, s, tm, urgentGrace+time.Second)
+	if n := len(s.urgentInterrupted); n != 1 {
+		t.Fatalf("remembered %d interrupts, want 1", n)
+	}
+	if _, err := s.DB.Exec(`UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	tickWake(t, s, tm, 5*time.Second)
+	if n := len(s.urgentInterrupted); n != 0 {
+		t.Fatalf("delivered message still remembered: %d entries", n)
+	}
+	_ = ses
+}

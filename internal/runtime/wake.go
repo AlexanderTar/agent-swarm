@@ -60,7 +60,7 @@ type wakeRow struct {
 	// UrgentID/UrgentAt: the oldest pending urgent message (IsUrgent), if any.
 	UrgentID     string
 	UrgentAt     time.Time
-	OpenQuestion bool // an open question row raised this session: a person is being waited on
+	OpenQuestion bool // an open question or permission-dialog row raised this session: a person is being waited on
 }
 
 // wakeCandidates loads every live session with at least one pending
@@ -82,7 +82,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		(SELECT m.created_at FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending'
 			AND m.kind = 'control' AND json_extract(m.payload_json, '$.action') IN ('pause', 'handoff')
 			ORDER BY m.seq LIMIT 1),
-		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open'
+		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind IN ('question', 'prompt') AND q.state = 'open'
 			AND q.created_at >= ses.started_at)
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
@@ -167,6 +167,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 func (s *Store) WakeDue(ctx context.Context) error {
 	s.sampleMuseContexts(ctx)
 	s.pruneNoticeSeen(ctx)
+	s.pruneUrgentInterrupted(ctx)
 	renamed, err := s.pasteSessionRenames(ctx)
 	if err != nil {
 		return err
