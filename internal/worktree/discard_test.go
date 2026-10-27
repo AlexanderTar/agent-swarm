@@ -108,6 +108,60 @@ func TestDiscardRefusesALiveOwnerEvenWhenTheRootIsInProgress(t *testing.T) {
 	}
 }
 
+func TestDiscardRefusesATrailingSlashPathOfALiveOwner(t *testing.T) {
+	s, wt, _ := retainedUnmerged(t)
+	_, _, err := s.Discard(context.Background(), wt.Path+"/")
+	if err == nil || !strings.Contains(err.Error(), "orch") {
+		t.Fatalf("err = %v, want it to name the live owner", err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("trailing-slash discard removed the tree: %v", err)
+	}
+	var state string
+	if err := s.DB.QueryRowContext(context.Background(), `SELECT state FROM worktrees WHERE id = ?`, wt.ID).Scan(&state); err != nil || state != "retained" {
+		t.Fatalf("state = %s, %v; want retained", state, err)
+	}
+}
+
+func TestDiscardRefusesASymlinkedSpellingOfALiveOwnerTree(t *testing.T) {
+	s, wt, _ := retainedUnmerged(t)
+	link := wt.Path + "-link"
+	if err := os.Symlink(wt.Path, link); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.Discard(context.Background(), link)
+	if err == nil || !strings.Contains(err.Error(), "recorded as "+wt.Path) {
+		t.Fatalf("err = %v, want a refusal that names the recorded path", err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("symlinked discard removed the tree: %v", err)
+	}
+	var state string
+	if err := s.DB.QueryRowContext(context.Background(), `SELECT state FROM worktrees WHERE id = ?`, wt.ID).Scan(&state); err != nil || state != "retained" {
+		t.Fatalf("state = %s, %v; want retained", state, err)
+	}
+}
+
+func TestDiscardRefusesAFinishedOwnerWhoseSessionIsStillQuiescing(t *testing.T) {
+	s, wt, _ := retainedUnmerged(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO sessions
+		(id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES ('ses_1', 'agt_1', 1, 1, 'tok', 'tmux', ?, 'quiescing', 'worktree', 1)`, wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.Discard(ctx, wt.Path)
+	if err == nil || !strings.Contains(err.Error(), "orch") {
+		t.Fatalf("err = %v, want it to name the owner whose session is still quiescing", err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("quiescing owner discard removed the tree: %v", err)
+	}
+}
+
 func TestDiscardRemovesAPathWithNoSwarmRow(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)

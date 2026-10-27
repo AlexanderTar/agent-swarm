@@ -918,6 +918,10 @@ func (s *Service) List(ctx context.Context, rootKey, state string) ([]Listed, er
 // path under the worktrees directory with no row is removed the same way
 // when some repo lists it as a worktree.
 func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error) {
+	// A trailing slash, "//", or "/./" must still hit the row. Clean does not
+	// resolve symlinks; discardUntracked refuses those so they cannot skip
+	// the live-owner and reservation gates.
+	ref = filepath.Clean(ref)
 	wts, err := s.query(ctx, `WHERE id = ? OR path = ?`, ref, ref)
 	if err != nil {
 		return Worktree{}, 0, err
@@ -943,7 +947,11 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	if err := s.DB.QueryRowContext(ctx, `SELECT name, state FROM agents WHERE id = ?`, wt.OwnerAgentID).Scan(&ownerName, &ownerState); err != nil {
 		return Worktree{}, 0, err
 	}
-	if ownerState == "queued" || ownerState == "active" {
+	sessionLive, err := s.ownerSessionLive(ctx, wt.OwnerAgentID)
+	if err != nil {
+		return Worktree{}, 0, err
+	}
+	if ownerState == "queued" || ownerState == "active" || sessionLive {
 		return Worktree{}, 0, fmt.Errorf("worktree %s is held by live agent %s", wt.Path, ownerName)
 	}
 	var holder string
@@ -1000,6 +1008,11 @@ func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, i
 	if !s.underWorktrees(ref) || !fileExists(ref) {
 		return Worktree{}, 0, unknown
 	}
+	if recorded, ok, err := s.nonRemovedPathResolvingTo(ctx, ref); err != nil {
+		return Worktree{}, 0, err
+	} else if ok {
+		return Worktree{}, 0, fmt.Errorf("worktree %s is recorded as %s; pass that path or its id", ref, recorded)
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT path FROM repos`)
 	if err != nil {
 		return Worktree{}, 0, err
@@ -1046,6 +1059,45 @@ func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, i
 	}
 	now := s.Now()
 	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil
+}
+
+// ownerSessionLive is the same session list reclaimGateWhere uses: a finished
+// agent whose session is still spawning, running, pause_requested, quiescing,
+// or stopping is a live owner.
+func (s *Service) ownerSessionLive(ctx context.Context, agentID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?
+		AND state IN ('spawning','running','pause_requested','quiescing','stopping')`, agentID).Scan(&n)
+	return n > 0, err
+}
+
+// nonRemovedPathResolvingTo reports a non-removed worktree whose directory is
+// ref once symlinks are resolved. filepath.Clean does not do that, so a
+// symlink spelling would otherwise miss the row and be force-removed.
+func (s *Service) nonRemovedPathResolvingTo(ctx context.Context, ref string) (string, bool, error) {
+	want, err := filepath.EvalSymlinks(ref)
+	if err != nil {
+		want = filepath.Clean(ref)
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT path FROM worktrees WHERE state <> 'removed'`)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return "", false, err
+		}
+		got, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			got = filepath.Clean(p)
+		}
+		if got == want {
+			return p, true, nil
+		}
+	}
+	return "", false, rows.Err()
 }
 
 func (s *Service) underWorktrees(path string) bool {
