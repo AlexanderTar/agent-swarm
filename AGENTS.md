@@ -14,6 +14,8 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
+A grok launch that fails with "Couldn't start agent." usually means macOS `fseventsd` is overloaded (grok's startup waits on it for minutes), not a broken grok or config; the Swarm grok home must never self-update away from the probed build. Cause, detection (`grep '"connect finished"' ~/.swarm/grok/logs/unified.jsonl | tail -5`, `swarm doctor`) and the traps: docs/adding-an-agent-kind.md, the TASK-1438 grok notes.
+
 A usage gate check (`Exhausted`) never stands alone: ask `Store.kindExhausted` (internal/runtime/usagelimit.go), which adds the pane-observed limit to the poller. Every kind declares its pane usage-limit line or a reason it has none: docs/adding-an-agent-kind.md section 5, guarded by `go test ./internal/runtime/ -run TestKindParity -count=1`.
 
 Running the `swarm` binary against a scratch `SWARM_HOME`, or writing a test near `install`, `uninstall`, `migrate` or `launchctl`: follow docs/isolated-runs.md. A scratch `SWARM_HOME` alone does not protect the live daemon (the launchd labels are fixed); use a fake `HOME`, a `launchctl` stub on `PATH`, and never `--live` without both. Tests inject `execx.Fake`; the real runners refuse `launchctl` under `go test`.
