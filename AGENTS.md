@@ -32,7 +32,7 @@ The menu bar refetches `GET /api/state` on every daemon event. Never add per-nod
 
 # Continuous integration
 
-GitHub Actions runs every check on pull requests and pushes to `main` (`.github/workflows/ci.yml`); `main` requires a PR for everyone but the owner. What runs where, how to reproduce a job locally and the CI traps (tmux 3.6+, `SWARM_E2E_PATH`, embedded `web/dist`, plus the runner-only failures: OCR tests need `ocrCapture`/`ocrText` (dark, opaque, 2x), Playwright must wait for animations and renders, e2e scenarios leave no live agents behind): docs/ci.md. When you add a check, add it to the workflow and to that doc in the same change.
+GitHub Actions runs every check on pull requests and pushes to `main` (`.github/workflows/ci.yml`); `main` requires a PR for everyone but the owner. What runs where, how to reproduce a job locally and the CI traps (tmux 3.6+, `SWARM_E2E_PATH`, embedded `web/dist`, plus the runner-only failures: OCR tests need `ocrCapture`/`ocrText` (dark, opaque, 2x), Playwright must wait for animations and renders, e2e scenarios leave no live agents behind, menubar code sleeps only through `taskSleep(_:)`, never `Task.sleep(for:)`): docs/ci.md. When you add a check, add it to the workflow and to that doc in the same change.
 
 # Contributing
 
