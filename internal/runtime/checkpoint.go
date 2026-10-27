@@ -164,6 +164,10 @@ type Waiver struct {
 // who can lift it, so the worker is told whom to ask.
 const waiveHint = " An orchestrator can waive this gate with a reason: swarm_items update {key, revision, waive:[{gate, reason}]}."
 
+// integratedWaiveHint ends the integration_verify and final_review refusals:
+// those gates are waived on the integrated checkpoint, not on the item.
+const integratedWaiveHint = " An orchestrator can waive this gate with a reason: pass waive:[{gate, reason}] on the integrated checkpoint."
+
 func waived(it items.Item, gate string) bool {
 	return slices.ContainsFunc(it.Waivers, func(w items.Waiver) bool { return w.Gate == gate })
 }
@@ -1681,7 +1685,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if !passed {
 						return &items.Error{Code: items.CodeBadRequest,
-							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd) + waiveHint}
+							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd) + integratedWaiveHint}
 					}
 				}
 				finalRoles, err := s.finalReviewRoles(ctx, it, a.ID)
@@ -1706,7 +1710,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if !passed {
 						return &items.Error{Code: items.CodeBadRequest,
-							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7) + waiveHint}
+							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7) + integratedWaiveHint}
 					}
 				}
 			}
