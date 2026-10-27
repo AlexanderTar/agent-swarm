@@ -5,9 +5,12 @@ import XCTest
 final class AgentActionsTests: XCTestCase {
     private func agent(_ state: SessionState? = .running, waiting: Bool = false, stale: Bool = false,
                        role: Role = .coder, agentState: AgentState = .active, preflight: String? = nil,
-                       children: [AgentNode] = [], name: String = "a") -> AgentNode {
+                       children: [AgentNode] = [], name: String = "a", busySince: Timestamp? = nil,
+                       messagesWaiting: Int? = nil) -> AgentNode {
         AgentNode(name: name, model: "test-model", role: role, state: agentState,
-                  session: state.map { SessionInfo(state: $0, waiting: waiting, stale: stale) },
+                  session: state.map {
+                      SessionInfo(state: $0, waiting: waiting, stale: stale, busySince: busySince, messagesWaiting: messagesWaiting)
+                  },
                   preflightError: preflight, children: children)
     }
 
@@ -25,6 +28,8 @@ final class AgentActionsTests: XCTestCase {
             (agent(nil, agentState: .queued, preflight: "x"), .preflightFailed, "Failed", .red),
             (agent(.running), .running, nil, .green),
             (agent(.running, waiting: true), .waiting, "Waiting", .greenHollow),
+            (agent(.running, busySince: Timestamp(ms: 1)), .busy, "Busy · running a long task", .green),
+            (agent(.running, waiting: true, busySince: Timestamp(ms: 1)), .waiting, "Waiting", .greenHollow),
             (agent(.running, stale: true), .stale, "No activity for 30 min", .amber),
             (agent(.spawning), .spawning, "Starting", .greyPulse),
             (agent(.pauseRequested), .pauseRequested, "Pause requested", .amber),
@@ -43,7 +48,30 @@ final class AgentActionsTests: XCTestCase {
             XCTAssertEqual(DisplayState(a).tone, tone, "\(state)")
         }
         XCTAssertEqual(DisplayState.allCases.filter(\.isPausing), [.pauseRequested, .quiescing, .stopping])
-        XCTAssertEqual(DisplayState.allCases.filter(\.isPausable), [.spawning, .running, .waiting, .stale])
+        XCTAssertEqual(DisplayState.allCases.filter(\.isPausable), [.spawning, .running, .waiting, .busy, .stale])
+    }
+
+    // The daemon holds busy_since back for the first minutes, so any value here is a long task.
+    func testBusyWorkerShowsMessagesWaitingAndHowLong() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let since = Timestamp(now.addingTimeInterval(-12 * 60 - 5))
+        let busy = agent(.running, busySince: since, messagesWaiting: 2)
+        XCTAssertEqual(AgentTree.stateLabel(busy, now: now), "Busy · running a long task · 2 messages waiting · for 12 min")
+        XCTAssertEqual(AgentTree.stateLabel(agent(.running, busySince: since, messagesWaiting: 1), now: now),
+                       "Busy · running a long task · 1 message waiting · for 12 min")
+        XCTAssertEqual(AgentTree.stateLabel(agent(.running, busySince: since), now: now), "Busy · running a long task · for 12 min")
+        XCTAssertNil(AgentTree.stateLabel(agent(.running), now: now))
+        XCTAssertEqual(AgentTree.stateLabel(agent(.paused), now: now), "Paused")
+        XCTAssertTrue(AgentTree.subtitle(busy).contains("Busy · running a long task"))
+    }
+
+    func testSessionDecodesBusySinceAndMessagesWaiting() throws {
+        let json = #"{"id":"s","state":"running","attempt":1,"generation":1,"waiting":false,"stale":false,"tmux_alive":true,"started_at":1,"busy_since":720000,"messages_waiting":3}"#
+        let s = try JSONDecoder().decode(SessionInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(s.busySince, Timestamp(ms: 720_000))
+        XCTAssertEqual(s.messagesWaiting, 3)
+        let old = #"{"id":"s","state":"running","attempt":1,"generation":1,"waiting":false,"stale":false,"tmux_alive":true,"started_at":1,"busy_since":null}"#
+        XCTAssertNil(try JSONDecoder().decode(SessionInfo.self, from: Data(old.utf8)).busySince)
     }
 
     // §10.7, one test per row.

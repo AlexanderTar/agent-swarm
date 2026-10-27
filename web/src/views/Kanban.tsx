@@ -124,9 +124,11 @@ function Card(p: {
       {p.agent && (
         <p className="flex items-center gap-1">
           <AgentIcon kind={p.agent.agent.kind} />
-          <span className="truncate">{p.agent.agent.name}</span>
+          <span className="max-w-[50%] truncate">{p.agent.agent.name}</span>
           {p.agent.extra > 0 && <span className="text-muted-foreground">+{p.agent.extra}</span>}
-          <span className="ml-auto text-muted-foreground">{stateText(p.agent.agent)}</span>
+          <span className="ml-auto truncate text-muted-foreground">
+            {stateText(p.agent.agent, Date.now(), true)}
+          </span>
         </p>
       )}
       {p.crew && (

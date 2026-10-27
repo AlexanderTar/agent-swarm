@@ -351,7 +351,7 @@ public final class SettingsModel {
         case .agents:
             let running = AgentTree.flatten(agents).filter {
                 !AgentTree.isFinished($0) &&
-                [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
+                [.spawning, .running, .waiting, .busy, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
             }
             return running.count - value
         case .pauseDeadline:

@@ -339,7 +339,9 @@ const joinParts = (parts: string[]) => parts.filter((p) => p !== "").join(" · "
 
 export const T = {
   messagesWaiting: (n: number) => `${n} ${n === 1 ? "message" : "messages"} waiting`,
-  busyFor: (min: number) => (min < 1 ? "under 1 min" : `${min} min`),
+  busyFor: (min: number) => `for ${min} min`,
+  busyCompact: (waiting: number, min: number) =>
+    joinParts(["Busy", waiting ? `${waiting} waiting` : "", `${min} min`]),
   mergedLocally: (sha: string) => `merged locally ${sha7(sha)}`,
   toastItemCreated: (key: string) => `Created ${key}`,
   toastStarted: (name: string, key: string) => `Started ${name} on ${key}`,

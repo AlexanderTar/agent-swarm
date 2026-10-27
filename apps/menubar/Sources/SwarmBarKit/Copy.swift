@@ -83,6 +83,12 @@ public enum Copy {
     /// DisplayState.label returns nil for .running (it's the unlabelled default state); this is
     /// only the accessibility-string fallback for that case, not a DisplayState value.
     public static let runningLabel = "Running"
+    public static let busyLabel = "Busy · running a long task"
+    /// "Busy · running a long task · 2 messages waiting · for 12 min" (same words as the board).
+    public static func busyDetail(waiting: Int, minutes: Int) -> String {
+        [busyLabel, waiting > 0 ? "\(waiting) \(waiting == 1 ? "message" : "messages") waiting" : nil, "for \(minutes) min"]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
 
     // §17.1 new orchestrator window
     public static func agentName(_ kebab: String) -> String { "Agent name: \(kebab)" }

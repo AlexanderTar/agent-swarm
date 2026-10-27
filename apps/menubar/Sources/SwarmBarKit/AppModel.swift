@@ -105,7 +105,7 @@ public final class AppModel {
     private var inFlightTimers: [String: Task<Void, Never>] = [:]
     nonisolated public static let inFlightTimeout: TimeInterval = 60
 
-    /// What an in-flight request watches. Running, waiting and stale are one bucket:
+    /// What an in-flight request watches. Running, waiting, busy and stale are one bucket:
     /// flipping between them is not the request landing. Handoff also watches
     /// `replacement`, since on an agent that isn't live only that moves.
     private struct InFlightMark: Equatable {
@@ -115,7 +115,7 @@ public final class AppModel {
         init(_ a: AgentNode?, _ endpoint: AgentEndpoint) {
             guard let a else { return }
             let d = DisplayState(a)
-            state = d == .waiting || d == .stale ? .running : d
+            state = d == .waiting || d == .busy || d == .stale ? .running : d
             if endpoint == .handoff { replacement = a.replacement }
         }
     }

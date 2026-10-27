@@ -43,6 +43,12 @@ public struct SessionInfo: Codable, Sendable, Equatable {
     public var generation: Int
     public var waiting: Bool
     public var stale: Bool
+    /// When the worker started a tool call or grok turn it has not finished. The daemon sends it only once
+    /// that has lasted minutes (so a short tool call is plain running) and then never flags the worker stale.
+    /// Optional: older daemons omit the key.
+    public var busySince: Timestamp?
+    /// Pending messages the worker has not read yet (sent with `busy_since`).
+    public var messagesWaiting: Int?
     public var tmuxAlive: Bool
     public var startedAt: Timestamp
     public var endedAt: Timestamp?
@@ -55,14 +61,17 @@ public struct SessionInfo: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, state, attempt, generation, waiting, stale
+        case busySince = "busy_since", messagesWaiting = "messages_waiting"
         case tmuxAlive = "tmux_alive", startedAt = "started_at", endedAt = "ended_at", pausePending = "pause_pending"
         case contextTokens = "context_tokens", contextWindow = "context_window"
     }
 
     public init(id: String = "ses_1", state: SessionState, attempt: Int = 1, generation: Int = 1,
-                waiting: Bool = false, stale: Bool = false, tmuxAlive: Bool = true,
+                waiting: Bool = false, stale: Bool = false, busySince: Timestamp? = nil, messagesWaiting: Int? = nil,
+                tmuxAlive: Bool = true,
                 startedAt: Timestamp = Timestamp(ms: 0), endedAt: Timestamp? = nil,
                 contextTokens: Int? = nil, contextWindow: Int? = nil) {
+        self.busySince = busySince; self.messagesWaiting = messagesWaiting
         self.contextTokens = contextTokens; self.contextWindow = contextWindow
         self.id = id; self.state = state; self.attempt = attempt; self.generation = generation
         self.waiting = waiting; self.stale = stale; self.tmuxAlive = tmuxAlive

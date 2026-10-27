@@ -754,6 +754,8 @@ describe("Details panel (§16.9)", () => {
     expect(within(agents).getByText("login-form-coder")).toBeInTheDocument();
     expect(within(agents).getByText("login-review")).toBeInTheDocument();
     expect(within(overview).queryByTestId("agent-auth-epic-orchestrator")).not.toBeInTheDocument();
+    // the overview list uses the same status text as the Agents tab, not the raw state key
+    expect(within(agents).queryByText(/^[a-z_]+$/)).not.toBeInTheDocument();
     await user.click(tabs[1]!);
     expect(
       within(screen.getByRole("tabpanel", { name: "Agents" })).getByTestId(

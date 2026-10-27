@@ -49,12 +49,24 @@ describe("busy workers", () => {
   });
   it("shows how long it has been busy and how many messages wait", () => {
     expect(stateText(busy({ messages_waiting: 2 }), 112 * MIN)).toBe(
-      "Busy · running a long task · 2 messages waiting · 12 min",
+      "Busy · running a long task · 2 messages waiting · for 12 min",
     );
-    expect(stateText(busy({ messages_waiting: 1 }), 100 * MIN + 20_000)).toBe(
-      "Busy · running a long task · 1 message waiting · under 1 min",
+    expect(stateText(busy({ messages_waiting: 1 }), 105 * MIN)).toBe(
+      "Busy · running a long task · 1 message waiting · for 5 min",
     );
-    expect(stateText(busy(), 105 * MIN)).toBe("Busy · running a long task · 5 min");
+    expect(stateText(busy(), 105 * MIN)).toBe("Busy · running a long task · for 5 min");
+  });
+  it("has a compact form for a narrow Kanban card", () => {
+    expect(stateText(busy({ messages_waiting: 2 }), 112 * MIN, true)).toBe(
+      "Busy · 2 waiting · 12 min",
+    );
+    expect(stateText(busy(), 112 * MIN, true)).toBe("Busy · 12 min");
+    expect(stateText(makeAgent({ session: session("running") }), 0, true)).toBe("Running");
+  });
+  it("a worker with no busy_since reads Running even mid-tool (the daemon holds the label back)", () => {
+    expect(stateText(makeAgent({ session: session("running", { busy_since: null }) }))).toBe(
+      "Running",
+    );
   });
   it("an idle worker keeps its plain label", () => {
     const a = makeAgent({ session: session("running", { stale: true }) });

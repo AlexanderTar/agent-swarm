@@ -25,7 +25,7 @@ import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useConnection, useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
-import { displayState, flattenAgents, isFinished } from "../logic/agentActions";
+import { flattenAgents, isFinished, stateText } from "../logic/agentActions";
 import { ARTIFACT_LABEL, requestTitle } from "../logic/requestTitle";
 import { agentActionToast } from "../logic/toasts";
 import { checkMove, failureMessage } from "../logic/transitions";
@@ -335,7 +335,7 @@ export function Details(p: DetailsProps) {
                 .map((agent) => (
                   <li key={agent.id} className="flex justify-between gap-2">
                     <span className="truncate">{agent.name}</span>
-                    <span className="shrink-0 text-muted-foreground">{displayState(agent)}</span>
+                    <span className="shrink-0 text-muted-foreground">{stateText(agent)}</span>
                   </li>
                 ))}
             </ul>

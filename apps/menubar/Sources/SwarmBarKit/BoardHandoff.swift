@@ -32,7 +32,7 @@ public enum BoardHandoffRules {
     public static func detail(_ r: BoardItemRow, catalog: [AgentCatalogEntry]) -> String {
         guard let o = r.orchestrator else { return "\(Copy.itemType(r.item.type)) · \(r.item.status == "draft" ? Copy.draft : Copy.ready)" }
         let entry = CatalogRules.entry(catalog, o.kind)
-        let state = AgentTree.handoffStatus(o) ?? DisplayState(o).label ?? Copy.runningLabel
+        let state = AgentTree.handoffStatus(o) ?? AgentTree.stateLabel(o) ?? Copy.runningLabel
         return [o.name, CatalogRules.modelLabel(entry, o.model), CatalogRules.previewEffortLabel(entry, o.model, o.effort), state]
             .compactMap { $0 }.joined(separator: " · ")
     }

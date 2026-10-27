@@ -93,7 +93,7 @@ describe("AgentRow (§10.7 on the board)", () => {
       { events: false },
     );
     const row = screen.getByTestId("agent-build-coder");
-    expect(row).toHaveTextContent("Busy · running a long task · 2 messages waiting · 12 min");
+    expect(row).toHaveTextContent("Busy · running a long task · 2 messages waiting · for 12 min");
     expect(row).not.toHaveTextContent("No activity");
   });
 

@@ -71,7 +71,7 @@ public final class NewOrchestratorForm {
         let live = AgentTree.flatten(agents).filter { !AgentTree.isFinished($0) }
         if live.contains(where: { $0.state == .queued }) { return true }
         let running = live.filter {
-            [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
+            [.spawning, .running, .waiting, .busy, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
         }
         return running.count >= max
     }

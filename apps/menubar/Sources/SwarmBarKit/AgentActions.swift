@@ -4,7 +4,7 @@ import Foundation
 public enum DisplayState: String, Sendable, CaseIterable {
     case spawning, running, pauseRequested, quiescing, stopping, paused
     case interrupted, completed, failed, crashed, cancelled
-    case queued, waiting, stale, preflightFailed
+    case queued, waiting, busy, stale, preflightFailed
 
     public init(_ a: AgentNode) {
         // Contracts §3.2: failed at preflight ⇔ no session and a preflight error, whatever `a.state` is.
@@ -14,7 +14,7 @@ public enum DisplayState: String, Sendable, CaseIterable {
         }
         if a.state == .queued { self = .queued; return }
         switch s.state {
-        case .running: self = s.pausePending == true ? .pauseRequested : s.waiting ? .waiting : s.stale ? .stale : .running
+        case .running: self = s.pausePending == true ? .pauseRequested : s.waiting ? .waiting : s.busySince != nil ? .busy : s.stale ? .stale : .running
         case .spawning: self = .spawning
         case .pauseRequested: self = .pauseRequested
         case .quiescing: self = .quiescing
@@ -44,13 +44,14 @@ public enum DisplayState: String, Sendable, CaseIterable {
         case .cancelled: return "Cancelled"
         case .queued: return "Queued"
         case .waiting: return "Waiting"
+        case .busy: return Copy.busyLabel
         case .stale: return "No activity for 30 min"
         }
     }
 
     public var tone: DotTone {
         switch self {
-        case .running: return .green
+        case .running, .busy: return .green
         case .waiting: return .greenHollow
         case .spawning: return .greyPulse
         case .queued, .completed, .cancelled: return .grey
@@ -63,9 +64,9 @@ public enum DisplayState: String, Sendable, CaseIterable {
     /// Counted by "Pause all" as still settling.
     public var isPausing: Bool { [.pauseRequested, .quiescing, .stopping].contains(self) }
     /// Something "Pause all" can pause.
-    public var isPausable: Bool { [.spawning, .running, .waiting, .stale].contains(self) }
+    public var isPausable: Bool { [.spawning, .running, .waiting, .busy, .stale].contains(self) }
     /// Whether this agent is running (active) or waiting/stale (idle) with a live session for hover preview.
-    public var isActiveOrIdle: Bool { [.spawning, .running, .waiting, .stale].contains(self) }
+    public var isActiveOrIdle: Bool { [.spawning, .running, .waiting, .busy, .stale].contains(self) }
 }
 
 public enum DotTone: String, Sendable {
@@ -98,7 +99,7 @@ public enum AgentTree {
 
     /// VoiceOver label for an agent row; the leaf is hidden from VoiceOver, so the mode is read here.
     public static func rowLabel(_ a: AgentNode) -> String {
-        let base = "\(a.name), \(DisplayState(a).label ?? Copy.runningLabel)"
+        let base = "\(a.name), \(stateLabel(a) ?? Copy.runningLabel)"
         return showsLowTokenLeaf(a) ? "\(base), \(Copy.lowTokenA11y)" : base
     }
 
@@ -126,7 +127,7 @@ public enum AgentTree {
     static func handoff(_ a: AgentNode, disabled: Bool, waiting: Bool) -> AgentAction? {
         if isFinished(a) { return nil }
         switch DisplayState(a) {
-        case .running, .waiting, .stale, .paused, .interrupted, .crashed, .failed, .cancelled:
+        case .running, .waiting, .busy, .stale, .paused, .interrupted, .crashed, .failed, .cancelled:
             return AgentAction(endpoint: .handoff, label: Copy.handoff, disabled: disabled, placement: .menu)
         case .spawning, .queued:
             guard waiting else { return nil }
@@ -185,7 +186,7 @@ public enum AgentTree {
             return [cancel] + (handoff.map { [$0] } ?? [])
         case .spawning:
             return [terminal, cancel] + (handoff.map { [$0] } ?? [])
-        case .running, .waiting, .stale:
+        case .running, .waiting, .busy, .stale:
             let pause = AgentAction(endpoint: .pause, label: orch ? Copy.pauseGroup : Copy.pause, disabled: off,
                                     scope: orch ? .subtree : .session, placement: .button)
             return withHandoff([terminal, pause, cancel])
@@ -280,6 +281,13 @@ public enum AgentTree {
         return out
     }
 
+    /// DisplayState.label, plus for a busy worker the messages waiting for it and how long it has been busy.
+    public static func stateLabel(_ a: AgentNode, now: Date = Date()) -> String? {
+        let state = DisplayState(a)
+        guard state == .busy, let s = a.session, let since = s.busySince else { return state.label }
+        return Copy.busyDetail(waiting: s.messagesWaiting ?? 0, minutes: max(0, Int(now.timeIntervalSince(since.date) / 60)))
+    }
+
     /// Line 2: merge progress while the root awaits merge, else the orchestrator's progress ("3/8 · <current>") when the daemon
     /// sends one, else workflow step for a workflow agent, item key for a
     /// legacy agent, plus the handoff phase while a replacement is in flight,
@@ -288,7 +296,7 @@ public enum AgentTree {
         let middle = a.merge.map { Copy.awaitingMerge($0.merged, $0.total) }
             ?? a.progress.map { "\($0.done)/\($0.total) · \($0.current.isEmpty ? Copy.progressDone : $0.current)" }
             ?? a.step ?? a.itemKey
-        return ([Copy.roleLabel(a.role), middle] + [handoffStatus(a) ?? DisplayState(a).label].compactMap { $0 })
+        return ([Copy.roleLabel(a.role), middle] + [handoffStatus(a) ?? stateLabel(a)].compactMap { $0 })
             .joined(separator: " · ")
     }
 }
