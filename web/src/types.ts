@@ -305,6 +305,8 @@ export interface SessionInfo {
   generation: number;
   waiting: boolean;
   stale: boolean; // A1: no hook call or sync for 30 min while not waiting
+  busy_since?: number | null; // ms: inside a tool call or grok turn (never stale while set)
+  messages_waiting?: number; // pending messages it has not read yet
   tmux_alive: boolean; // the tmux session exists
   started_at: number;
   ended_at: number | null;

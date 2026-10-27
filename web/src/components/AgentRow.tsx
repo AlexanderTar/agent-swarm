@@ -13,7 +13,13 @@ import { useEffect, useState } from "react";
 import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
-import { type AgentAction, agentActions, displayState, isFinished } from "../logic/agentActions";
+import {
+  type AgentAction,
+  agentActions,
+  displayState,
+  isFinished,
+  stateText,
+} from "../logic/agentActions";
 import { agentActionToast } from "../logic/toasts";
 import { useSession } from "../state/session";
 import type { AgentEndpoint, AgentNode } from "../types";
@@ -91,7 +97,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
           </p>
         )}
         <span className="inline-flex items-center gap-1.5">
-          <StateDot state={displayState(agent)} withLabel />
+          <StateDot state={displayState(agent)} text={stateText(agent)} withLabel />
           {agent.role === "orchestrator" && agent.low_token_effective && !isFinished(agent) && (
             <span title={C.lowTokenOn} className="inline-flex">
               <Leaf role="img" aria-label={C.lowTokenOn} className="size-3 text-success" />

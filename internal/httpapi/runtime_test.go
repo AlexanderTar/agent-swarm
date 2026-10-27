@@ -641,3 +641,49 @@ func TestSessionInfoCarriesContextSample(t *testing.T) {
 		t.Fatalf("context = %v/%v, want 120000/1000000", after["context_tokens"], after["context_window"])
 	}
 }
+
+// A worker inside a tool call is busy, not stale: the board reads busy_since and
+// the count of messages waiting for its next tool boundary.
+func TestStateShowsABusyWorkerAsBusyNotStale(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	var agentID, sesID string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT a.id, ses.id FROM agents a JOIN sessions ses ON ses.agent_id = a.id
+		WHERE a.name = ?`, seed.AgentName).Scan(&agentID, &sesID); err != nil {
+		t.Fatal(err)
+	}
+	long := db.Millis(time.Now().Add(-2 * time.Hour))
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE sessions SET last_seen_at = ?, waiting = 0 WHERE id = ?`, long, sesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.s.DB.ExecContext(bg, `INSERT INTO messages
+		(id,seq,kind,wake_class,priority,origin,to_agent_id,root_item_id,payload_json,state,created_at)
+		SELECT 'msg_busy1', 9001, 'finding','immediate',1,'daemon',?, root_item_id,'{"body":"x"}','pending',1 FROM agents WHERE id = ?`,
+		agentID, agentID); err != nil {
+		t.Fatal(err)
+	}
+	session := func() map[string]any {
+		var body struct {
+			Agents []map[string]any `json:"agents"`
+		}
+		if err := json.Unmarshal(s.get(t, "/api/state").Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range body.Agents {
+			if a["name"] == seed.AgentName {
+				return a["session"].(map[string]any)
+			}
+		}
+		t.Fatalf("%q not in /api/state", seed.AgentName)
+		return nil
+	}
+
+	if got := session(); got["busy_since"] != nil || got["stale"] != true {
+		t.Fatalf("idle worker: busy_since=%v stale=%v, want null and true", got["busy_since"], got["stale"])
+	}
+	s.s.RT.ToolStarted(sesID)
+	got := session()
+	if got["busy_since"] == nil || got["stale"] != false || got["messages_waiting"] != float64(1) {
+		t.Fatalf("busy worker: busy_since=%v stale=%v messages_waiting=%v, want set, false and 1",
+			got["busy_since"], got["stale"], got["messages_waiting"])
+	}
+}

@@ -8,12 +8,19 @@ import {
   isFinished,
   makeAgent,
   stateLabel,
+  stateText,
   stateTone,
 } from "./agentActions";
 
 const session = (
   state: SessionState,
-  extra: Partial<{ waiting: boolean; stale: boolean; tmux_alive: boolean }> = {},
+  extra: Partial<{
+    waiting: boolean;
+    stale: boolean;
+    tmux_alive: boolean;
+    busy_since: number | null;
+    messages_waiting: number;
+  }> = {},
 ) => ({
   id: "ses_1",
   state,
@@ -28,6 +35,37 @@ const session = (
 });
 const labels = (a: ReturnType<typeof makeAgent>) =>
   agentActions(a).map((x) => `${x.endpoint}:${x.label}${x.disabled ? ":disabled" : ""}`);
+
+describe("busy workers", () => {
+  const MIN = 60_000;
+  const busy = (extra = {}) =>
+    makeAgent({ session: session("running", { busy_since: 100 * MIN, ...extra }) });
+
+  it("a busy worker is busy, not stale, and keeps the running actions", () => {
+    const a = busy({ stale: true });
+    expect(displayState(a)).toBe("busy");
+    expect(stateTone("busy")).toBe("green");
+    expect(labels(a)).toEqual(["terminal:Terminal", "pause:Pause", "cancel:Cancel"]);
+  });
+  it("shows how long it has been busy and how many messages wait", () => {
+    expect(stateText(busy({ messages_waiting: 2 }), 112 * MIN)).toBe(
+      "Busy · running a long task · 2 messages waiting · 12 min",
+    );
+    expect(stateText(busy({ messages_waiting: 1 }), 100 * MIN + 20_000)).toBe(
+      "Busy · running a long task · 1 message waiting · under 1 min",
+    );
+    expect(stateText(busy(), 105 * MIN)).toBe("Busy · running a long task · 5 min");
+  });
+  it("an idle worker keeps its plain label", () => {
+    const a = makeAgent({ session: session("running", { stale: true }) });
+    expect(stateText(a, 0)).toBe("No activity for 30 min");
+  });
+  it("a waiting prompt wins over a stale busy flag", () => {
+    expect(
+      displayState(makeAgent({ session: session("running", { waiting: true, busy_since: 1 }) })),
+    ).toBe("waiting");
+  });
+});
 
 describe("displayState and labels (§16.2)", () => {
   it.each([

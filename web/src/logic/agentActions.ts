@@ -6,6 +6,7 @@ export type DisplayState =
   | "queued"
   | "waiting"
   | "stale"
+  | "busy"
   | "preflight_failed"
   | "capacity_paused"
   | "resume_queued";
@@ -26,14 +27,30 @@ export function displayState(a: AgentNode): DisplayState {
   if (r?.reason && r.phase !== "starting")
     return r.reason === "capacity" ? "capacity_paused" : "resume_queued";
   if (a.state === "queued") return "queued";
-  if (s.state === "running") return s.waiting ? "waiting" : s.stale ? "stale" : "running";
+  if (s.state === "running") {
+    if (s.waiting) return "waiting";
+    if (s.busy_since != null) return "busy";
+    return s.stale ? "stale" : "running";
+  }
   return s.state;
 }
 
 export const stateLabel = (s: DisplayState): string => SESSION_LABEL[s];
 
+// stateLabel plus, for a busy worker, the messages waiting for it and how long it has been busy.
+export function stateText(a: AgentNode, now = Date.now()): string {
+  const state = displayState(a);
+  const s = a.session;
+  if (state !== "busy" || !s || s.busy_since == null) return stateLabel(state);
+  const parts = [stateLabel(state)];
+  if (s.messages_waiting) parts.push(T.messagesWaiting(s.messages_waiting));
+  parts.push(T.busyFor(Math.floor(Math.max(0, now - s.busy_since) / 60_000)));
+  return parts.join(" · ");
+}
+
 const TONE: Record<DisplayState, Tone> = {
   running: "green",
+  busy: "green",
   waiting: "green-hollow",
   spawning: "grey-pulse",
   queued: "grey",
@@ -79,6 +96,7 @@ export function agentActions(a: AgentNode): AgentAction[] {
     case "spawning":
       return [terminal, cancel];
     case "running":
+    case "busy":
     case "waiting":
     case "stale":
       return [

@@ -90,9 +90,17 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 	return since, !since.IsZero()
 }
 
-// busyWithinCeiling is the alert gate: busy, and not for so long that a hang is
-// the likelier reading.
-func (s *Store) busyWithinCeiling(sessionID string) bool {
+// BusyNow is BusySince under the ceiling: what the alerts and the board treat as
+// busy rather than a likely hang.
+func (s *Store) BusyNow(sessionID string) (time.Time, bool) {
 	since, ok := s.BusySince(sessionID)
-	return ok && s.Now().Sub(since) < busyCeiling
+	if !ok || s.Now().Sub(since) >= busyCeiling {
+		return time.Time{}, false
+	}
+	return since, true
+}
+
+func (s *Store) busyWithinCeiling(sessionID string) bool {
+	_, ok := s.BusyNow(sessionID)
+	return ok
 }

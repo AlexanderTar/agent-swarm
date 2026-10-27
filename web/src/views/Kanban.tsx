@@ -18,7 +18,7 @@ import { AgentIcon, Key, TypeIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { C, ROLE_EMOJI, STATUS_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
-import { displayState, stateLabel } from "../logic/agentActions";
+import { stateText } from "../logic/agentActions";
 import {
   DEFAULT_COLLAPSED_COLUMNS,
   type Lane,
@@ -126,9 +126,7 @@ function Card(p: {
           <AgentIcon kind={p.agent.agent.kind} />
           <span className="truncate">{p.agent.agent.name}</span>
           {p.agent.extra > 0 && <span className="text-muted-foreground">+{p.agent.extra}</span>}
-          <span className="ml-auto text-muted-foreground">
-            {stateLabel(displayState(p.agent.agent))}
-          </span>
+          <span className="ml-auto text-muted-foreground">{stateText(p.agent.agent)}</span>
         </p>
       )}
       {p.crew && (

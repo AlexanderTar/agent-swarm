@@ -77,6 +77,26 @@ describe("AgentRow (§10.7 on the board)", () => {
     }
   });
 
+  it("shows a busy worker as busy with the messages waiting, not as stale", () => {
+    renderWithDaemon(
+      <AgentRow
+        agent={makeAgent({
+          name: "build-coder",
+          session: {
+            ...ses("running"),
+            stale: false,
+            busy_since: Date.now() - 12 * 60_000 - 5_000,
+            messages_waiting: 2,
+          },
+        })}
+      />,
+      { events: false },
+    );
+    const row = screen.getByTestId("agent-build-coder");
+    expect(row).toHaveTextContent("Busy · running a long task · 2 messages waiting · 12 min");
+    expect(row).not.toHaveTextContent("No activity");
+  });
+
   it("marks a low-token orchestrator with a leaf after the status label, never a worker", () => {
     const { unmount } = renderWithDaemon(
       <AgentRow

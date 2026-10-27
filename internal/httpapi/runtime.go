@@ -30,6 +30,11 @@ type sessionInfoWire struct {
 	Waiting    bool   `json:"waiting"`
 	Stale      bool   `json:"stale"`
 	TmuxAlive  bool   `json:"tmux_alive"`
+	// BusySince is when the worker started a tool call or a grok turn it has not
+	// finished (ms); null when idle or busy past runtime's ceiling. A busy worker
+	// is never Stale. MessagesWaiting counts what it has not read yet.
+	BusySince       *int64 `json:"busy_since"`
+	MessagesWaiting int    `json:"messages_waiting"`
 	// PausePending: this session is the root of a subtree pause that hasn't
 	// reached it yet (it keeps running until every descendant pauses, §10.5).
 	PausePending bool    `json:"pause_pending"`
@@ -460,7 +465,14 @@ func (s *Server) sessionInfoOut(ctx context.Context, ses runtime.Session, live m
 		Waiting: ses.Waiting, TmuxAlive: live[ses.TmuxName], StartedAt: db.Millis(ses.StartedAt), EndedAt: optMs(ses.EndedAt),
 		FailureText: ses.FailureText, Cwd: ses.Cwd, ContextTokens: ses.ContextTokens, ContextWindow: ses.ContextWindow,
 		PausePending: ses.PauseRoot && ses.State.Live() && !ses.State.Pausing()}
-	if !ses.Waiting {
+	if s.RT != nil && !ses.Waiting {
+		if since, ok := s.RT.BusyNow(ses.ID); ok {
+			w.BusySince = optMs(&since)
+			_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND state = 'pending'`,
+				ses.AgentID).Scan(&w.MessagesWaiting)
+		}
+	}
+	if !ses.Waiting && w.BusySince == nil {
 		last := ses.StartedAt
 		if ses.LastSeenAt != nil {
 			last = *ses.LastSeenAt

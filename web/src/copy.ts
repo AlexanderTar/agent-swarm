@@ -78,6 +78,7 @@ export const SESSION_LABEL: Record<
   | "queued"
   | "waiting"
   | "stale"
+  | "busy"
   | "preflight_failed"
   | "capacity_paused"
   | "resume_queued",
@@ -97,6 +98,7 @@ export const SESSION_LABEL: Record<
   queued: "Queued",
   waiting: "Waiting",
   stale: "No activity for 30 min",
+  busy: "Busy · running a long task",
   preflight_failed: "Failed",
   capacity_paused: "Paused: over the agent limit",
   resume_queued: "Queued: waiting for a free slot",
@@ -336,6 +338,8 @@ export const C = {
 const joinParts = (parts: string[]) => parts.filter((p) => p !== "").join(" · ");
 
 export const T = {
+  messagesWaiting: (n: number) => `${n} ${n === 1 ? "message" : "messages"} waiting`,
+  busyFor: (min: number) => (min < 1 ? "under 1 min" : `${min} min`),
   mergedLocally: (sha: string) => `merged locally ${sha7(sha)}`,
   toastItemCreated: (key: string) => `Created ${key}`,
   toastStarted: (name: string, key: string) => `Started ${name} on ${key}`,

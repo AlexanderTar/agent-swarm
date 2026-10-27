@@ -37,8 +37,9 @@ const DOT = {
 export function StateDot({
   state,
   withLabel = false,
-}: { state: DisplayState; withLabel?: boolean }) {
-  const label = stateLabel(state);
+  text,
+}: { state: DisplayState; withLabel?: boolean; text?: string }) {
+  const label = text ?? stateLabel(state);
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
