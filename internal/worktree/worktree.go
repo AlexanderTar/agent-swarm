@@ -676,12 +676,14 @@ func (s *Service) discardable(ctx context.Context, wt Worktree) bool {
 	return s.buildChurn(ctx, wt)
 }
 
-// buildChurn is a branch tree whose owner has finished, with no commit beyond
-// the remote default branch (or the local one when there is no remote) and
-// whose porcelain is only modifications of tracked files. An untracked path,
-// a deletion, or a commit of the tree's own keeps it.
+// buildChurn is a branch tree whose owner has finished and whose root is
+// done or cancelled, with no commit beyond the remote default branch (or
+// the local one when there is no remote) and whose porcelain is only
+// modifications of tracked files. An in-progress root stays retained: a
+// finished owner can be retried, and those edits are still its work. An
+// untracked path, a deletion, or a commit of the tree's own keeps it too.
 func (s *Service) buildChurn(ctx context.Context, wt Worktree) bool {
-	if wt.Branch == "" || !s.ownerFinished(ctx, wt.OwnerAgentID) {
+	if wt.Branch == "" || !s.ownerFinished(ctx, wt.OwnerAgentID) || !s.rootFinished(ctx, wt.RootItemID) {
 		return false
 	}
 	repoPath, err := s.repoPath(ctx, wt.RepoID)
@@ -707,6 +709,12 @@ func (s *Service) ownerFinished(ctx context.Context, agentID string) bool {
 	var state string
 	err := s.DB.QueryRowContext(ctx, `SELECT state FROM agents WHERE id = ?`, agentID).Scan(&state)
 	return err == nil && (state == "finished" || state == "acknowledged")
+}
+
+func (s *Service) rootFinished(ctx context.Context, rootItemID string) bool {
+	var status string
+	err := s.DB.QueryRowContext(ctx, `SELECT status FROM items WHERE id = ?`, rootItemID).Scan(&status)
+	return err == nil && (status == "done" || status == "cancelled")
 }
 
 // onlyTrackedModifications is true when status --porcelain lists at least one
@@ -820,13 +828,14 @@ func (s *Service) Candidates(ctx context.Context, where string, args ...any) ([]
 	return s.query(ctx, where, args...)
 }
 
-// Sweep is §12.2: it runs Remove's rules on every active or retained worktree
-// of one root, ignoring reservations, because the caller has checked the
-// whole tree is finished. Retained rows are included so a tree kept as
-// unmerged or dirty is judged again once the root is done or cancelled
-// (a squash landed, the dirt was only build churn).
+// Sweep is §12.2: it runs Remove's rules on every active worktree of one
+// root, ignoring reservations, because the caller has checked the whole
+// tree is finished. Retained rows are not selected. Sweep runs from
+// Reconcile every few seconds and outside BeginPass, so re-checking a
+// still-unmerged retained tree would fetch on every tick. The reclaim pass
+// (reclaimGateWhere) already selects retained rows, inside one BeginPass.
 func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, error) {
-	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state IN ('active', 'retained')`, rootItemID)
+	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state = 'active'`, rootItemID)
 	if err != nil {
 		return nil, err
 	}

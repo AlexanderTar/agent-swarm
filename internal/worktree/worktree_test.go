@@ -566,9 +566,9 @@ func TestSweepRemovesEveryActiveWorktreeOfTheRoot(t *testing.T) {
 	}
 }
 
-// A tree retained as unmerged stays in that state until new evidence appears.
-// Once the branch is on the default branch, the sweep of a finished root must
-// remove it. Sweep used to select only state='active', so the row was stranded.
+// Sweep does not re-judge a retained row: it runs every reconcile tick,
+// outside a pass. Once the branch is on the default branch, the reclaim
+// pass (ReclaimOne) removes it.
 func TestSweepRemovesARetainedTreeOfADoneRootOnceMerged(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)
@@ -588,12 +588,22 @@ func TestSweepRemovesARetainedTreeOfADoneRootOnceMerged(t *testing.T) {
 	wt.State, wt.RetainedReason = "retained", "unmerged"
 	run(t, repo, "-c", "commit.gpgsign=false", "merge", "--no-ff", "-m", "merge it", "task/was-retained")
 
+	// Sweep leaves retained rows alone (the 5s tick must not re-fetch them).
+	// The reclaim pass removes the tree once the branch has landed.
 	out, err := s.Sweep(ctx, "itm_1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 1 || out[0].ID != wt.ID || out[0].State != "removed" {
-		t.Fatalf("sweep = %+v, %v; want the retained tree removed", out, err)
+	if len(out) != 0 {
+		t.Fatalf("sweep = %+v, want nothing: Sweep does not re-judge retained rows", out)
+	}
+	wt.State, wt.RetainedReason = "retained", "unmerged"
+	outOne, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outOne.State != "removed" {
+		t.Fatalf("reclaim = %+v, want the retained tree removed once merged", outOne)
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("path still exists: %v", err)
@@ -620,11 +630,57 @@ func TestSweepKeepsARetainedTreeThatIsStillUnmerged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 1 || out[0].State != "retained" || out[0].RetainedReason != "unmerged" {
-		t.Fatalf("sweep = %+v, %v; want retained/unmerged", out, err)
+	if len(out) != 0 {
+		t.Fatalf("sweep = %+v, want nothing: Sweep does not re-judge retained rows", out)
+	}
+	var state, reason string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, retained_reason FROM worktrees WHERE id = ?`, wt.ID).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != "retained" || reason != "unmerged" {
+		t.Fatalf("row = %s/%s, want retained/unmerged", state, reason)
 	}
 	if _, err := os.Stat(wt.Path); err != nil {
 		t.Fatalf("unmerged tree must stay on disk: %v", err)
+	}
+}
+
+// Sweep runs from Reconcile every few seconds, outside a reclaim pass. A
+// retained tree that is still unmerged must not make that tick fetch again.
+func TestSecondSweepOfAStillUnmergedRetainedTreeDoesNoFetch(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/still-fetching",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, wt.Path, "only-here.txt")
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'unmerged' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE id = 'itm_1'`); err != nil {
+		t.Fatal(err)
+	}
+	fetches := fetchCounter(s)
+	if _, err := s.Sweep(ctx, "itm_1"); err != nil {
+		t.Fatal(err)
+	}
+	afterFirst := fetches[repo]
+	if _, err := s.Sweep(ctx, "itm_1"); err != nil {
+		t.Fatal(err)
+	}
+	if fetches[repo] != afterFirst {
+		t.Fatalf("second sweep fetched (total %d, after first %d); a still-unmerged retained tree must not be fetched again", fetches[repo], afterFirst)
+	}
+	var state, reason string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, retained_reason FROM worktrees WHERE id = ?`, wt.ID).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != "retained" || reason != "unmerged" {
+		t.Fatalf("row = %s/%s, want retained/unmerged", state, reason)
 	}
 }
 

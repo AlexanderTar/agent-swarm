@@ -108,9 +108,29 @@ func TestReclaimOneKeepsTrackedModificationsWhileTheOwnerIsLive(t *testing.T) {
 	}
 }
 
+func TestReclaimOneKeepsTrackedEditsWhileTheRootIsInProgress(t *testing.T) {
+	s, wt := churnTree(t)
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(context.Background(), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty: a finished owner on an in-progress root can still be retried", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("in-progress tree must stay: %v", err)
+	}
+}
+
 func TestReclaimOneDiscardsTrackedModificationsWithNoOwnCommits(t *testing.T) {
 	s, wt := churnTree(t)
 	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE id = 'itm_1'`); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("build\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,6 @@
 # Worktree reclaim
 
-A squash whose content is already on the remote default branch counts as merged. A conflicting or differing `git merge-tree --write-tree` does not, and an error (including git older than 2.38) is not evidence. Sweep and the hourly reclaim pass re-check retained rows of a finished root. Build churn — no commits beyond the default branch, only tracked-file modifications, owner finished — is discarded; untracked files, deletions, and the tree's own commits stay. `swarm cleanup --dry-run` prints why a tree is kept. `swarm cleanup --discard` follows the tree (no live owner, no live reservation), not the root's status. Full rules and the commands: docs/worktree-cleanup.md.
+A squash already on the remote default branch counts as merged; a conflicting or differing merge-tree does not. Retained trees are re-checked by the reclaim pass, and build churn is discarded only after the root is done or cancelled. Rules and commands: docs/worktree-cleanup.md.
 
 # Testing and coverage (strict)
 
