@@ -180,6 +180,13 @@ if [ "${1:-}" = "serve" ]; then
   : >"$STUB_TMP/ollama-serving"
   exit 0
 fi
+if [ "${1:-}" = "list" ] && [ -f "$STUB_TMP/ollama-list-fails-left" ]; then
+  n="$(cat "$STUB_TMP/ollama-list-fails-left")"
+  if [ "$n" -gt 0 ]; then
+    printf '%s' "$((n - 1))" >"$STUB_TMP/ollama-list-fails-left"
+    exit 1
+  fi
+fi
 if [ "${STUB_OLLAMA_NEEDS_SERVE:-}" = "1" ] && [ ! -f "$STUB_TMP/ollama-serving" ]; then
   exit 1
 fi
@@ -399,6 +406,39 @@ t_ollama_server_starts_before_pull() {
     ok "server start runs before the model pull"
   else
     not_ok "server start runs before the model pull" "$(cat "$CALL_LOG")"
+  fi
+  cleanup_tmp
+}
+
+t_ollama_app_start_awaits_server() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  # The app takes two polls to listen: open must be followed by retries of
+  # ollama list, not by an immediate private ollama serve.
+  printf '2' >"$TMP_ROOT/ollama-list-fails-left"
+  run_install
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "app-start run exits zero"
+  else
+    not_ok "app-start run exits zero" "$RUN_OUT"
+  fi
+  case "$(cat "$CALL_LOG")" in
+    *"ollama serve"*)
+      not_ok "opened app is awaited instead of raced by serve" "$(cat "$CALL_LOG")"
+      ;;
+    *)
+      ok "opened app is awaited instead of raced by serve"
+      ;;
+  esac
+  if grep -q '^ollama pull qwen3-embedding:0.6b$' "$CALL_LOG"; then
+    ok "model pull still runs after the app starts"
+  else
+    not_ok "model pull still runs after the app starts" "$(cat "$CALL_LOG")"
   fi
   cleanup_tmp
 }
@@ -701,6 +741,7 @@ t_installs_only_missing_tools
 t_ghostty_app_counts_as_installed
 t_ollama_cli_counts_as_installed
 t_ollama_server_starts_before_pull
+t_ollama_app_start_awaits_server
 t_doctor_failure_warns
 t_pulls_model_once
 t_fresh_clone

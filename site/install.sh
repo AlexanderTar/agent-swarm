@@ -91,6 +91,16 @@ main() {
   if ! ollama list <"$tty_in" >/dev/null 2>&1; then
     if command -v open >/dev/null 2>&1; then
       open -a Ollama <"$tty_in" >/dev/null 2>&1 || true
+      # open returns before the app's server is listening; polling list
+      # first avoids racing it with our own ollama serve on port 11434.
+      tries=0
+      while ! ollama list <"$tty_in" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge "${SWARM_OLLAMA_TRIES:-30}" ]; then
+          break
+        fi
+        sleep "${SWARM_OLLAMA_SLEEP:-2}"
+      done
     fi
     if ! ollama list <"$tty_in" >/dev/null 2>&1; then
       ollama serve <"$tty_in" >/dev/null 2>&1 &
