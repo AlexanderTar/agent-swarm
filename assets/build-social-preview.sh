@@ -7,4 +7,7 @@ dir="$(cd "$(dirname "$0")" && pwd)"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 "$chrome" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
   --window-size=1280,640 --screenshot="$dir/social-preview.png" "file://$dir/social-preview.html" >/dev/null 2>&1
+# The site serves its copy at /social-preview.png; keep the tracked source under
+# site/ in sync so a card-only change still touches site/ (Vercel ignoreCommand).
+cp "$dir/social-preview.png" "$dir/../site/assets/social-preview.png"
 sips -g pixelWidth -g pixelHeight "$dir/social-preview.png"

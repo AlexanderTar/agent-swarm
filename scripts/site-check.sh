@@ -1,9 +1,10 @@
 #!/bin/sh
 # site-check.sh: fail when the swarmrun.dev site is stale or broken.
 # Checks: tokens fresh, the build runs, every local link and asset exists
-# (including /install.sh and /social-preview.png), no raw colours in
-# site/*.css (hex or colour functions), no "Agent Swarm" text, and every
-# Screens string present in dist/index.html.
+# (including /install.sh and /social-preview.png), the tracked sources of the
+# served images exist (site/assets/social-preview.png, board-kanban png/webp),
+# no raw colours in site/*.css (hex or colour functions), no "Agent Swarm"
+# text, and every Screens string present in dist/index.html.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +20,10 @@ node "$ROOT/design/scripts/gen-tokens-css.mjs" --check || fail "design/tokens.cs
 sh "$ROOT/site/build.sh" || fail "site/build.sh failed"
 [ -f "$PAGE" ] || fail "dist/index.html missing after build"
 [ -f "$DIST/install.sh" ] || fail "dist/install.sh missing (build must copy site/install.sh)"
-[ -f "$DIST/social-preview.png" ] || fail "dist/social-preview.png missing (build must copy assets/social-preview.png for og:image)"
+[ -f "$DIST/social-preview.png" ] || fail "dist/social-preview.png missing (build must copy site/assets/social-preview.png for og:image)"
+[ -f "$ROOT/site/assets/social-preview.png" ] || fail "site/assets/social-preview.png missing (tracked source of og:image; a card-only commit must touch site/ so Vercel deploys it)"
+[ -f "$ROOT/site/assets/board-kanban.png" ] || fail "site/assets/board-kanban.png missing (hero board capture)"
+[ -f "$ROOT/site/assets/board-kanban.webp" ] || fail "site/assets/board-kanban.webp missing (hero board capture)"
 
 if grep -rEi '#[0-9a-f]{3,8}\b' "$ROOT"/site/*.css >/dev/null 2>&1; then
   grep -rEi '#[0-9a-f]{3,8}\b' "$ROOT"/site/*.css >&2
