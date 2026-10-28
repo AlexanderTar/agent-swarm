@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	issueRepo     = "AlexanderTar/agent-swarm"
+	issueRepo     = "AlexanderTar/swarmrun"
 	testToken     = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 	bugDetailJSON = `{"id":"bug_x","created_at":1790000000000,"reporter":"coder-1","root_item_key":"CHORE-1","title":"Daemon drops events","board_item_key":"","issue_url":"%s","what_happened":"It dropped events for me@example.com","repro":"run swarm sync","evidence":"token %s in env, sha 0404ace7747d0a2d005b6946c4261f9821a77ef6","user_said":"why","cause":"a race","area":"runtime","transcript_path":"/h/t.jsonl"}`
 	filedURL      = "https://github.com/AlexanderTar/swarmrun/issues/3"

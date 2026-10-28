@@ -13,8 +13,8 @@ Third-party material keeps its own licence. If you vendor anything, add its upst
 You need a Mac with the toolchain from the README's Requirements section: Go 1.27+, tmux 3.6+, Node 22 + pnpm 10, Xcode 16+ command line tools. Then:
 
 ```bash
-git clone https://github.com/AlexanderTar/agent-swarm.git
-cd agent-swarm
+git clone https://github.com/AlexanderTar/swarmrun.git
+cd swarmrun
 make test      # Go tests with the coverage gate, web tests, menu bar tests
 make dev       # daemon on :17777 with a scratch ~/.swarm-dev, so your real board is untouched
 make e2e       # end-to-end run with the fake agent (no model calls)
@@ -47,7 +47,7 @@ When an agent running under Swarm hits a bug in Swarm itself, it calls `swarm_re
 ```bash
 swarm bugs --issue <id>              # the id is in swarm_report_bug's result and in `swarm bugs`
 swarm bugs --issue <id> --dry-run    # print the title, body and target; post nothing
-swarm bugs --issue <id> --repo OWNER/NAME   # file somewhere else (default AlexanderTar/agent-swarm)
+swarm bugs --issue <id> --repo OWNER/NAME   # file somewhere else (default AlexanderTar/swarmrun)
 ```
 
 It needs an authenticated [`gh`](https://cli.github.com). Swarm builds the issue (label `bug`) from the report's fields, masks emails and token-like strings, shortens home folders to `~`, and leaves out the transcript. If an open issue already has the same title it comments there instead of opening a duplicate. The issue URL is stored on the report and shown in `swarm bugs`; a second `--issue` for the same report refuses. Read the `--dry-run` output first: the masking recognises common token formats, not every secret, and private repository names are left as they are.
@@ -65,7 +65,7 @@ Or, if you work on Swarm yourself, turn fixes into pull requests:
 ```markdown
 ## Fixing Swarm bugs upstream
 
-Whenever you report a Swarm bug with `swarm_report_bug`, pass `board: true` so it lands on the board as a Draft bug. When I start that bug and it's fixed and verified in my fork of agent-swarm, offer to open a pull request against AlexanderTar/agent-swarm `main` (`gh pr create -R AlexanderTar/agent-swarm`), following CONTRIBUTING.md: signed conventional commits, `make test-go` passing, and the bug report summarised in the description. Ask me before pushing or opening the pull request.
+Whenever you report a Swarm bug with `swarm_report_bug`, pass `board: true` so it lands on the board as a Draft bug. When I start that bug and it's fixed and verified in my fork of agent-swarm, offer to open a pull request against AlexanderTar/swarmrun `main` (`gh pr create -R AlexanderTar/swarmrun`), following CONTRIBUTING.md: signed conventional commits, `make test-go` passing, and the bug report summarised in the description. Ask me before pushing or opening the pull request.
 ```
 
 ## Security

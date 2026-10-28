@@ -42,8 +42,8 @@ ollama pull qwen3-embedding:0.6b
 ## Install
 
 ```bash
-git clone https://github.com/AlexanderTar/agent-swarm.git
-cd agent-swarm
+git clone https://github.com/AlexanderTar/swarmrun.git
+cd swarmrun
 make install        # builds swarm into ~/.swarm/bin and Swarm.app into /Applications
 swarm install       # launchd service, tmux config, agent MCP/hooks/skill, first-run checks
 swarm doctor        # verify everything

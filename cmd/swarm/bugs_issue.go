@@ -13,7 +13,7 @@ import (
 )
 
 // defaultBugRepo is where `swarm bugs --issue` files reports unless --repo says otherwise.
-const defaultBugRepo = "AlexanderTar/agent-swarm"
+const defaultBugRepo = "AlexanderTar/swarmrun"
 
 // ghRun runs the gh CLI; a package var so tests inject a recorder.
 var ghRun execx.Runner = execx.Run

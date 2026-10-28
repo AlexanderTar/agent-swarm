@@ -32,7 +32,7 @@ set -euo pipefail
 PROJECT_NAME="${RELAY_PROJECT_NAME:-Agent Swarm}"
 PROJECT_DESCRIPTION="${RELAY_PROJECT_DESCRIPTION:-Agent Swarm remote access relay}"
 SERVICE_NAME="${RELAY_SERVICE_NAME:-relay}"
-ICON_URL="${RELAY_ICON_URL:-https://raw.githubusercontent.com/AlexanderTar/agent-swarm/main/apps/menubar/Resources/AppIconLayers/Composed-1024.png}"
+ICON_URL="${RELAY_ICON_URL:-https://raw.githubusercontent.com/AlexanderTar/swarmrun/main/apps/menubar/Resources/AppIconLayers/Composed-1024.png}"
 WORKSPACE_NAME="${RAILWAY_WORKSPACE:-My Projects}"
 ENVIRONMENT_NAME="${RAILWAY_ENVIRONMENT:-production}"
 TOKEN_FILE="${RAILWAY_TOKEN_FILE:-$HOME/.config/railway-personal/token}"
