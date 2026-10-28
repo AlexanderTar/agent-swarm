@@ -83,9 +83,6 @@ section + section { border-top: 1px solid var(--border); }
   -webkit-mask-image: radial-gradient(70% 60% at 50% 20%, black 0%, transparent 75%); mask-image: radial-gradient(70% 60% at 50% 20%, black 0%, transparent 75%);
 }
 .hero .wrap { position: relative; }
-.hero-icon { width: 72px; height: 72px; margin: 0 auto var(--space-4); filter: var(--shadow-icon); }
-@media (min-width: 640px) { .hero-icon { width: 96px; height: 96px; margin-bottom: var(--space-5); } }
-.hero-name { margin: 0 0 var(--space-5); font-size: var(--text-wordmark); line-height: 1; font-weight: var(--weight-display); letter-spacing: var(--tracking-title); color: var(--foreground); }
 .hero h1 { margin: var(--space-6) auto 0; max-width: 17em; font-size: var(--text-display); line-height: var(--leading-display); font-weight: var(--weight-display); letter-spacing: var(--tracking-display); text-wrap: balance; }
 .hero .lead { margin: var(--space-6) auto 0; max-width: 36rem; font-size: var(--text-lead); line-height: 1.55; color: var(--foreground-soft); text-wrap: pretty; }
 .ctas { margin-top: var(--space-10); display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-3); }

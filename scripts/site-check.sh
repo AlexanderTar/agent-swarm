@@ -84,6 +84,12 @@ while IFS= read -r tag; do
 done < "$tmp_tags"
 rm -f "$tmp_tags"
 
+# The hero starts with the headline: no logo lockup (nav already has it).
+if grep -qE 'hero-icon|hero-name' "$PAGE"; then
+  grep -oE '.{0,40}hero-(icon|name).{0,40}' "$PAGE" >&2
+  fail "hero logo lockup present in dist/index.html (hero starts with the h1)"
+fi
+
 # Every Screens string, word for word.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
