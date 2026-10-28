@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
@@ -39,6 +40,9 @@ type Server struct {
 	// Version is reported in the MCP initialize response.
 	Version string
 	Log     func(format string, args ...any)
+
+	// SlowAfter is the duration above which a /mcp request is logged; 0 means 5 s.
+	SlowAfter time.Duration
 }
 
 // ToolDef is one MCP tool: a hand-written JSON Schema and a handler taking
@@ -183,26 +187,37 @@ func (s *Server) Handler(resolve func(*http.Request) (Caller, bool)) http.Handle
 			writeUnauthorized(w)
 			return
 		}
-		s.recordMethod(r, c)
+		method := s.recordMethod(r, c)
+		start := time.Now()
 		inner.ServeHTTP(w, r.WithContext(withCaller(r.Context(), c)))
+		slow := s.SlowAfter
+		if slow == 0 {
+			slow = 5 * time.Second
+		}
+		if d := time.Since(start); d > slow && s.Log != nil {
+			s.Log("mcp: slow request: agent=%s session=%s method=%s took=%s", c.AgentName, c.SessionID, method, d.Round(time.Millisecond))
+		}
 	})
 }
 
 // recordMethod tells the runtime which JSON-RPC method a bound session's shim
-// just sent (mcp_down detection). It reads the body and puts it back.
-func (s *Server) recordMethod(r *http.Request, c Caller) {
-	if s.RT == nil || c.Unbound || c.SessionID == "" || r.Body == nil {
-		return
+// just sent (mcp_down detection) and returns it for the slow-request log. It
+// reads the body and puts it back.
+func (s *Server) recordMethod(r *http.Request, c Caller) string {
+	if r.Body == nil {
+		return ""
 	}
 	body, err := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
-		return
+		return ""
 	}
 	var head struct {
 		Method string `json:"method"`
 	}
-	if json.Unmarshal(body, &head) == nil && head.Method != "" {
+	json.Unmarshal(body, &head)
+	if s.RT != nil && !c.Unbound && c.SessionID != "" && head.Method != "" {
 		s.RT.MCPSeen(c.SessionID, head.Method)
 	}
+	return head.Method
 }
