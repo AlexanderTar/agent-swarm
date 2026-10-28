@@ -166,7 +166,35 @@ func (s *Service) DirtyStrict(ctx context.Context, path string) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	return strings.TrimSpace(string(out)) != "", nil
+	return !onlyCookies(string(out)), nil
+}
+
+// cookiePrefix starts the files watchman drops into a watched folder to sync
+// with the filesystem. They are never work, and they keep appearing while git
+// deletes the folder.
+const cookiePrefix = ".watchman-cookie-"
+
+// onlyCookies is true when porcelain output lists nothing but watchman cookies.
+func onlyCookies(porcelain string) bool {
+	for _, line := range strings.Split(porcelain, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if len(line) < 4 || line[:3] != "?? " || !strings.HasPrefix(line[3:], cookiePrefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// clearWatchman stops watchman watching path and deletes the cookies it left
+// there. Both are best effort: watchman may not be installed or running.
+func (s *Service) clearWatchman(ctx context.Context, path string) {
+	_, _ = s.Run(ctx, "watchman", "watch-del", path)
+	cookies, _ := filepath.Glob(filepath.Join(path, cookiePrefix+"*"))
+	for _, c := range cookies {
+		_ = os.Remove(c)
+	}
 }
 
 // branchExists reports whether branch is a known local branch.
@@ -769,7 +797,14 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if s.discardable(ctx, wt) {
 		rmArgs = []string{"worktree", "remove", "--force", wt.Path}
 	}
-	if out, rerr := s.git(ctx, repoPath, rmArgs...); rerr != nil {
+	s.clearWatchman(ctx, wt.Path)
+	out, rerr := s.git(ctx, repoPath, rmArgs...)
+	if rerr != nil && strings.Contains(string(out)+rerr.Error(), "Directory not empty") {
+		// A watchman cookie landed while git was deleting the folder.
+		s.clearWatchman(ctx, wt.Path)
+		out, rerr = s.git(ctx, repoPath, rmArgs...)
+	}
+	if rerr != nil {
 		s.logf("worktree: remove %s failed: %v: %s", wt.Path, rerr, out)
 		wt, err := s.retain(ctx, wt, "remove_failed")
 		wt.RemoveError = strings.TrimSpace(rerr.Error() + ": " + string(out))
