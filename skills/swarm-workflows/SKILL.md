@@ -36,7 +36,7 @@ This example is a complete plan block. The task has three related units, one cod
 ```swarm-tree
 {"root":{"type":"epic","title":"Reliable uploads","brief":"Keep retries safe","acceptance":["Uploads recover"],"workflow":{"integration":{"verify":["go test ./..."],"final_review":["reviewer"]}}},
  "children":[{"ref":"s-upload","type":"story","title":"Upload reliability","brief":"Finish the upload slice","acceptance":["Retries work"],"workflow":{"after_tasks":{"id":"review","review":["reviewer"]}},"children":[
-  {"ref":"t-upload","type":"task","title":"Make uploads retry safely","brief":"Persist attempts and recover interrupted uploads","acceptance":["Attempts are idempotent","Recovery succeeds"],"repos":["agent-swarm"],"workflow":{"template":"tdd-reviewed"},"units":[
+  {"ref":"t-upload","type":"task","title":"Make uploads retry safely","brief":"Persist attempts and recover interrupted uploads","acceptance":["Attempts are idempotent","Recovery succeeds"],"repos":["swarmrun"],"workflow":{"template":"tdd-reviewed"},"units":[
    {"title":"Attempt model","steps":["Write a failing attempt persistence test; record red for unit 1","Implement attempt storage; record green","Commit unit 1"]},
    {"title":"Retry behavior","steps":["Write a failing retry test; record red for unit 2","Implement idempotent retry; record green","Commit unit 2"]},
    {"title":"Recovery","steps":["Write a failing recovery test; record red for unit 3","Implement recovery; record green","Commit unit 3"]}],"verify":["go test ./internal/upload/..."]}]}],"deps":[]}

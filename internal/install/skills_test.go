@@ -70,7 +70,7 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 	agent := string(install.SkillBody("swarm"))
 	for _, want := range []string{
 		"name: swarm\n",
-		"description: Rules for any agent spawned by Agent Swarm (SWARM_SESSION is set).",
+		"description: Rules for any agent spawned by Swarm (SWARM_SESSION is set).",
 		"# Working as a Swarm agent",
 		"Never add `Co-Authored-By`, \"Generated with\", session links, emoji signatures or agent names",
 		"## Workflow",

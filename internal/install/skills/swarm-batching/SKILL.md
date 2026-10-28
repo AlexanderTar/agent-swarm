@@ -58,7 +58,7 @@ Also split when:
 {"ref": "t-limits", "type": "task", "title": "Unified agent limit: settings, API and menubar wire",
  "brief": "Replace the two limits with one max_concurrent_agents end to end.",
  "acceptance": ["Admit counts every role in one pool", "GET/PUT /api/settings round-trips the field", "Menubar decodes it"],
- "role_hint": "coder", "repos": ["agent-swarm"],
+ "role_hint": "coder", "repos": ["swarmrun"],
  "units": [
    {"title": "Settings model", "steps": ["Write TestSettingsDefaultUnifiedLimit; run; record red (unit 1)", "Add MaxConcurrentAgents and validation; run; record green", "Commit"]},
    {"title": "Admit uses one pool", "steps": ["Write TestAdmitCountsAllRoles; record red (unit 2)", "Change Admit; record green", "Commit"]},
