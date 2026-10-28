@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarmrun.dev/design/tokens.schema.json",
+  "title": "Swarm design tokens",
+  "description": "Single token source for design/tokens.css. Groups preserve output order; token names are CSS custom properties.",
+  "type": "object",
+  "required": ["groups"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "tokens"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "tokens": {
+            "type": "object",
+            "minProperties": 1,
+            "patternProperties": {
+              "^--[a-z0-9-]+$": {
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": {
+                  "value": { "type": "string", "minLength": 1 },
+                  "comment": { "type": "string" }
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  }
+}
