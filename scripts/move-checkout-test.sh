@@ -35,10 +35,10 @@ move_env() {
   mkdir -p "$OLD_CHECKOUT/.git"
   mkdir -p "$TEST_HOME/.swarm/worktrees/agent-swarm--abc"
   : >"$TEST_HOME/.swarm/swarm.db"
-  printf '{"repoUrl": "%s"}\n' "$OLD_CHECKOUT" >"$TEST_HOME/.swarm/config.json"
+  printf '{"repoUrl": "https://github.com/AlexanderTar/agent-swarm.git"}\n' >"$TEST_HOME/.swarm/config.json"
   mkdir -p "$TEST_HOME/.codex"
-  printf 'trust = ["%s"]\n' "$OLD_CHECKOUT" >"$TEST_HOME/.codex/config.toml"
-  printf '{"projects": {"%s": {}}}\n' "$OLD_CHECKOUT" >"$TEST_HOME/.claude.json"
+  printf 'trust = ["%s", "%s-foo"]\n' "$OLD_CHECKOUT" "$OLD_CHECKOUT" >"$TEST_HOME/.codex/config.toml"
+  printf '{"projects": {"%s": {}, "%s-foo": {}}}\n' "$OLD_CHECKOUT" "$OLD_CHECKOUT" >"$TEST_HOME/.claude.json"
   mkdir -p "$TEST_HOME/.claude/projects/$(slug_of "$OLD_CHECKOUT")"
   mkdir -p "$TEST_HOME/Library/LaunchAgents"
   : >"$TEST_HOME/Library/LaunchAgents/dev.swarm.daemon.plist"
@@ -46,6 +46,7 @@ move_env() {
   : >"$CALL_LOG"
   export CALL_LOG
   export OLD_CHECKOUT NEW_CHECKOUT
+  export STUB_STATE_DIR="$TMP_ROOT"
   cat >"$STUB_BIN/launchctl" <<'STUB_EOF'
 #!/bin/sh
 echo "launchctl $*" >>"$CALL_LOG"
@@ -91,19 +92,39 @@ STUB_EOF
   cat >"$STUB_BIN/swarm" <<'STUB_EOF'
 #!/bin/sh
 echo "swarm $*" >>"$CALL_LOG"
+if [ "${1:-}" = "doctor" ]; then
+  if [ -f "$STUB_STATE_DIR/doctor-fails-left" ]; then
+    n="$(cat "$STUB_STATE_DIR/doctor-fails-left")"
+    if [ "$n" -gt 0 ]; then
+      printf '%s' "$((n - 1))" >"$STUB_STATE_DIR/doctor-fails-left"
+      exit 1
+    fi
+  fi
+  if [ "${STUB_DOCTOR_FAIL:-}" = "1" ]; then
+    exit 1
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "repos" ]; then
+  printf '%s\n' "${STUB_RESCAN_OUTPUT:-swarmrun $NEW_CHECKOUT}"
+  if [ "${STUB_RESCAN_FAIL:-}" = "1" ]; then
+    exit 1
+  fi
+fi
 exit 0
 STUB_EOF
   chmod +x "$STUB_BIN/swarm"
 }
 
 cleanup_tmp() {
-  unset STUB_MAKE_FAIL STUB_SQLITE_FAIL_ON
+  unset STUB_MAKE_FAIL STUB_SQLITE_FAIL_ON STUB_DOCTOR_FAIL
+  unset STUB_RESCAN_FAIL STUB_RESCAN_OUTPUT STUB_STATE_DIR
   rm -rf "$TMP_ROOT"
 }
 
 run_move() {
   # run_move [--dry-run]
-  if RUN_OUT="$(HOME="$TEST_HOME" PATH="$STUB_BIN:/usr/bin:/bin" sh "$MOVE_SH" "$@" 2>&1)"; then
+  if RUN_OUT="$(HOME="$TEST_HOME" MOVE_DAEMON_SLEEP=0 MOVE_DAEMON_TRIES=30 PATH="$STUB_BIN:/usr/bin:/bin" sh "$MOVE_SH" "$@" 2>&1)"; then
     RUN_STATUS=0
   else
     RUN_STATUS=$?
@@ -170,11 +191,22 @@ t_success_runs_steps_in_order() {
     not_ok "checkout is moved" "old or new checkout in the wrong place"
   fi
   if grep -q "$NEW_CHECKOUT" "$TEST_HOME/.codex/config.toml" \
-    && grep -q "$NEW_CHECKOUT" "$TEST_HOME/.claude.json" \
-    && grep -q "$NEW_CHECKOUT" "$TEST_HOME/.swarm/config.json"; then
-    ok "tool and swarm config point at the new checkout"
+    && grep -q "$NEW_CHECKOUT" "$TEST_HOME/.claude.json"; then
+    ok "tool config points at the new checkout"
   else
-    not_ok "tool and swarm config point at the new checkout" "config still names the old path"
+    not_ok "tool config points at the new checkout" "config still names the old path"
+  fi
+  if grep -q "$OLD_CHECKOUT-foo" "$TEST_HOME/.codex/config.toml" \
+    && grep -q "$OLD_CHECKOUT-foo" "$TEST_HOME/.claude.json"; then
+    ok "sibling paths are left alone"
+  else
+    not_ok "sibling paths are left alone" "a sibling path was rewritten"
+  fi
+  if grep -F -q "https://github.com/AlexanderTar/swarmrun.git" "$TEST_HOME/.swarm/config.json" \
+    && ! grep -q "agent-swarm" "$TEST_HOME/.swarm/config.json"; then
+    ok "swarm config repoUrl names the swarmrun remote"
+  else
+    not_ok "swarm config repoUrl names the swarmrun remote" "$(cat "$TEST_HOME/.swarm/config.json")"
   fi
   if [ -d "$TEST_HOME/.claude/projects/$(slug_of "$NEW_CHECKOUT")" ] \
     && [ ! -e "$TEST_HOME/.claude/projects/$(slug_of "$OLD_CHECKOUT")" ]; then
@@ -216,6 +248,26 @@ t_failure_after_db_update_rolls_back() {
   else
     not_ok "failed move moves the folder back" "checkout not restored"
   fi
+  if grep -q "$OLD_CHECKOUT" "$TEST_HOME/.codex/config.toml" \
+    && ! grep -q "$NEW_CHECKOUT" "$TEST_HOME/.codex/config.toml" \
+    && grep -q "$OLD_CHECKOUT" "$TEST_HOME/.claude.json" \
+    && grep -q "agent-swarm.git" "$TEST_HOME/.swarm/config.json"; then
+    ok "failed move restores config backups"
+  else
+    not_ok "failed move restores config backups" "config still names the new path"
+  fi
+  if [ -d "$TEST_HOME/.claude/projects/$(slug_of "$OLD_CHECKOUT")" ] \
+    && [ ! -e "$TEST_HOME/.claude/projects/$(slug_of "$NEW_CHECKOUT")" ]; then
+    ok "failed move moves the Claude projects folder back"
+  else
+    not_ok "failed move moves the Claude projects folder back" "projects folder not restored"
+  fi
+  n_repairs="$(grep -c 'worktree repair' "$CALL_LOG" || true)"
+  if [ "$n_repairs" -ge 2 ]; then
+    ok "failed move repairs worktrees again after moving back"
+  else
+    not_ok "failed move repairs worktrees again after moving back" "repairs: $n_repairs"
+  fi
   case "$(cat "$CALL_LOG")" in
     *"bootstrap"*)
       ok "failed move restarts the daemon"
@@ -240,6 +292,134 @@ t_failure_after_db_update_rolls_back() {
       not_ok "failure tells how to retry" "$RUN_OUT"
       ;;
   esac
+  cleanup_tmp
+}
+
+t_both_checkouts_refuse() {
+  move_env
+  mkdir -p "$NEW_CHECKOUT/.git"
+  run_move
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    ok "old and new checkouts together exit non-zero"
+  else
+    not_ok "old and new checkouts together exit non-zero" "exit was 0"
+  fi
+  case "$RUN_OUT" in
+    *"already exists"*)
+      ok "old and new checkouts together say so"
+      ;;
+    *)
+      not_ok "old and new checkouts together say so" "$RUN_OUT"
+      ;;
+  esac
+  if [ -d "$OLD_CHECKOUT/.git" ] && [ -d "$NEW_CHECKOUT/.git" ]; then
+    ok "old and new checkouts together leave both folders alone"
+  else
+    not_ok "old and new checkouts together leave both folders alone" "a folder moved"
+  fi
+  if [ ! -s "$CALL_LOG" ]; then
+    ok "old and new checkouts together run nothing"
+  else
+    not_ok "old and new checkouts together run nothing" "$(cat "$CALL_LOG")"
+  fi
+  cleanup_tmp
+}
+
+t_doctor_failure_is_warning() {
+  move_env
+  STUB_DOCTOR_FAIL="1"
+  export STUB_DOCTOR_FAIL
+  run_move
+  unset STUB_DOCTOR_FAIL
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "doctor failure still exits zero"
+  else
+    not_ok "doctor failure still exits zero" "$RUN_OUT"
+  fi
+  case "$RUN_OUT" in
+    *"doctor reported issues"*)
+      ok "doctor failure prints a warning"
+      ;;
+    *)
+      not_ok "doctor failure prints a warning" "$RUN_OUT"
+      ;;
+  esac
+  if [ -d "$NEW_CHECKOUT/.git" ] && [ ! -e "$OLD_CHECKOUT" ]; then
+    ok "doctor failure keeps the moved checkout"
+  else
+    not_ok "doctor failure keeps the moved checkout" "checkout was moved back"
+  fi
+  cleanup_tmp
+}
+
+t_daemon_health_wait() {
+  move_env
+  printf '2' >"$TMP_ROOT/doctor-fails-left"
+  run_move
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "slow daemon still exits zero"
+  else
+    not_ok "slow daemon still exits zero" "$RUN_OUT"
+  fi
+  n_doctor="$(grep -c '^swarm doctor' "$CALL_LOG" || true)"
+  if [ "$n_doctor" -ge 3 ]; then
+    ok "move waits for the daemon to become healthy"
+  else
+    not_ok "move waits for the daemon to become healthy" "doctor runs: $n_doctor"
+  fi
+  cleanup_tmp
+}
+
+t_bad_rescan_rolls_back() {
+  move_env
+  STUB_RESCAN_OUTPUT="swarmrun /somewhere/else"
+  export STUB_RESCAN_OUTPUT
+  run_move
+  unset STUB_RESCAN_OUTPUT
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    ok "rescan without the new row exits non-zero"
+  else
+    not_ok "rescan without the new row exits non-zero" "exit was 0"
+  fi
+  case "$RUN_OUT" in
+    *"Repo rescan failed"*)
+      ok "rescan failure names the failed step"
+      ;;
+    *)
+      not_ok "rescan failure names the failed step" "$RUN_OUT"
+      ;;
+  esac
+  if [ -d "$OLD_CHECKOUT" ] && [ ! -e "$NEW_CHECKOUT" ]; then
+    ok "rescan failure moves the folder back"
+  else
+    not_ok "rescan failure moves the folder back" "checkout not restored"
+  fi
+  cleanup_tmp
+}
+
+t_rollback_after_bootstrap_boots_out() {
+  move_env
+  STUB_RESCAN_FAIL="1"
+  export STUB_RESCAN_FAIL
+  run_move
+  unset STUB_RESCAN_FAIL
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    ok "post-bootstrap failure exits non-zero"
+  else
+    not_ok "post-bootstrap failure exits non-zero" "exit was 0"
+  fi
+  n_bootout="$(grep -c '^launchctl bootout' "$CALL_LOG" || true)"
+  n_bootstrap="$(grep -c '^launchctl bootstrap' "$CALL_LOG" || true)"
+  if [ "$n_bootout" -ge 2 ] && [ "$n_bootstrap" -ge 2 ]; then
+    ok "post-bootstrap rollback boots out before restarting the daemon"
+  else
+    not_ok "post-bootstrap rollback boots out before restarting the daemon" "$(cat "$CALL_LOG")"
+  fi
+  if [ -d "$OLD_CHECKOUT" ] && [ ! -e "$NEW_CHECKOUT" ]; then
+    ok "post-bootstrap failure moves the folder back"
+  else
+    not_ok "post-bootstrap failure moves the folder back" "checkout not restored"
+  fi
   cleanup_tmp
 }
 
@@ -310,6 +490,11 @@ t_dry_run_changes_nothing() {
 
 t_success_runs_steps_in_order
 t_failure_after_db_update_rolls_back
+t_both_checkouts_refuse
+t_doctor_failure_is_warning
+t_daemon_health_wait
+t_bad_rescan_rolls_back
+t_rollback_after_bootstrap_boots_out
 t_already_moved
 t_dry_run_changes_nothing
 

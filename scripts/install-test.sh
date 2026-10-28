@@ -25,6 +25,8 @@ new_tmp() {
   STUB_BIN="$TMP_ROOT/bin"
   TEST_HOME="$TMP_ROOT/home"
   mkdir -p "$STUB_BIN" "$TEST_HOME"
+  unset STUB_MAKE_FAIL STUB_CAPTURE_STDIN STUB_NO_OLLAMA_BIN
+  unset STUB_OLLAMA_NEEDS_SERVE STUB_DOCTOR_FAIL
 }
 
 write_stub() {
@@ -41,7 +43,9 @@ cleanup_tmp() {
 
 run_install() {
   # run_install: runs install.sh, sets RUN_OUT and RUN_STATUS.
-  if RUN_OUT="$(SWARM_TTY=/dev/null HOME="$TEST_HOME" SWARM_SRC="$TEST_HOME/.swarm/src/swarmrun" PATH="$STUB_BIN:/usr/bin:/bin" sh "$INSTALL_SH" 2>&1)"; then
+  # GHOSTTY_APP points at a nonexistent dir unless the test creates it, so
+  # the real /Applications/Ghostty.app on a Mac never leaks into tests.
+  if RUN_OUT="$(SWARM_TTY=/dev/null HOME="$TEST_HOME" SWARM_SRC="$TEST_HOME/.swarm/src/swarmrun" GHOSTTY_APP="$TMP_ROOT/Ghostty.app" SWARM_OLLAMA_TRIES=30 SWARM_OLLAMA_SLEEP=0 PATH="$STUB_BIN:/usr/bin:/bin" sh "$INSTALL_SH" 2>&1)"; then
     RUN_STATUS=0
   else
     RUN_STATUS=$?
@@ -159,9 +163,32 @@ exit 1'
 std_stubs() {
   # Full success-path stubs with call logging. Caller sets
   # STUB_INSTALLED_FORMULAE / STUB_INSTALLED_CASKS / STUB_GIT_DIRTY first.
+  # STUB_NO_OLLAMA_BIN=1 leaves out the ollama binary so the cask install
+  # path is exercised; the brew stub then provides ollama when the cask
+  # is installed, the way the real cask provides the CLI.
   CALL_LOG="$TMP_ROOT/calls.log"
   : >"$CALL_LOG"
   export CALL_LOG
+  export STUB_BIN STUB_TMP="$TMP_ROOT"
+  cat >"$TMP_ROOT/ollama-stub-template" <<'STUB_EOF'
+#!/bin/sh
+echo "ollama $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-ollama"
+fi
+if [ "${1:-}" = "serve" ]; then
+  : >"$STUB_TMP/ollama-serving"
+  exit 0
+fi
+if [ "${STUB_OLLAMA_NEEDS_SERVE:-}" = "1" ] && [ ! -f "$STUB_TMP/ollama-serving" ]; then
+  exit 1
+fi
+exit 0
+STUB_EOF
+  chmod +x "$TMP_ROOT/ollama-stub-template"
+  if [ "${STUB_NO_OLLAMA_BIN:-}" != "1" ]; then
+    cp "$TMP_ROOT/ollama-stub-template" "$STUB_BIN/ollama"
+  fi
   cat >"$STUB_BIN/brew" <<'STUB_EOF'
 #!/bin/sh
 echo "brew $*" >>"$CALL_LOG"
@@ -179,6 +206,15 @@ if [ "${1:-}" = "list" ]; then
   case " $list " in
     *" $name "*) exit 0 ;;
     *) exit 1 ;;
+  esac
+fi
+if [ "${1:-}" = "install" ]; then
+  case "$*" in
+    *--cask*ollama*|*ollama*--cask*)
+      if [ ! -x "$STUB_BIN/ollama" ]; then
+        cp "$STUB_TMP/ollama-stub-template" "$STUB_BIN/ollama"
+      fi
+      ;;
   esac
 fi
 exit 0
@@ -223,24 +259,28 @@ echo "swarm $*" >>"$CALL_LOG"
 if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
   cat >"$CALL_LOG.stdin-swarm"
 fi
-exit 0
-STUB_EOF
-  chmod +x "$STUB_BIN/swarm"
-  cat >"$STUB_BIN/ollama" <<'STUB_EOF'
-#!/bin/sh
-echo "ollama $*" >>"$CALL_LOG"
-if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
-  cat >"$CALL_LOG.stdin-ollama"
+if [ "${1:-}" = "doctor" ] && [ "${STUB_DOCTOR_FAIL:-}" = "1" ]; then
+  echo "✗ Agents: Install at least one agent CLI."
+  exit 1
 fi
 exit 0
 STUB_EOF
-  chmod +x "$STUB_BIN/ollama"
+  chmod +x "$STUB_BIN/swarm"
+  cat >"$STUB_BIN/open" <<'STUB_EOF'
+#!/bin/sh
+echo "open $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-open"
+fi
+exit 0
+STUB_EOF
+  chmod +x "$STUB_BIN/open"
 }
 
 run_install_piped() {
   # run_install with SENTINEL-DATA on stdin: proves prompt-capable commands
   # read from the tty, not from the piped script stream.
-  if RUN_OUT="$(printf 'SENTINEL-DATA\n' | SWARM_TTY=/dev/null HOME="$TEST_HOME" SWARM_SRC="$TEST_HOME/.swarm/src/swarmrun" PATH="$STUB_BIN:/usr/bin:/bin" sh "$INSTALL_SH" 2>&1)"; then
+  if RUN_OUT="$(printf 'SENTINEL-DATA\n' | SWARM_TTY=/dev/null HOME="$TEST_HOME" SWARM_SRC="$TEST_HOME/.swarm/src/swarmrun" GHOSTTY_APP="$TMP_ROOT/Ghostty.app" SWARM_OLLAMA_TRIES=30 SWARM_OLLAMA_SLEEP=0 PATH="$STUB_BIN:/usr/bin:/bin" sh "$INSTALL_SH" 2>&1)"; then
     RUN_STATUS=0
   else
     RUN_STATUS=$?
@@ -250,12 +290,14 @@ run_install_piped() {
 t_installs_only_missing_tools() {
   new_tmp
   STUB_INSTALLED_FORMULAE="go tmux"
-  STUB_INSTALLED_CASKS="ghostty"
+  STUB_INSTALLED_CASKS=""
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
-  export STUB_GIT_DIRTY
+  STUB_NO_OLLAMA_BIN="1"
+  export STUB_GIT_DIRTY STUB_NO_OLLAMA_BIN
   std_stubs
   run_install
+  unset STUB_NO_OLLAMA_BIN
   if [ "$RUN_STATUS" -eq 0 ]; then
     ok "tool install exits zero on the success path"
   else
@@ -266,18 +308,131 @@ t_installs_only_missing_tools() {
   else
     not_ok "only missing formulae are installed" "$(cat "$CALL_LOG")"
   fi
-  if grep -qx 'brew install --cask ollama' "$CALL_LOG"; then
+  if grep -qx 'brew install --cask ghostty ollama' "$CALL_LOG"; then
     ok "only missing casks are installed"
   else
     not_ok "only missing casks are installed" "$(cat "$CALL_LOG")"
   fi
   install_lines="$(grep '^brew install' "$CALL_LOG" || true)"
   case "$install_lines" in
-    *"tmux"* | *"ghostty"*)
+    *"tmux"*)
       not_ok "already-installed tools are not reinstalled" "$install_lines"
       ;;
     *)
       ok "already-installed tools are not reinstalled"
+      ;;
+  esac
+  cleanup_tmp
+}
+
+t_ghostty_app_counts_as_installed() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS=""
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  mkdir -p "$TMP_ROOT/Ghostty.app"
+  run_install
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "Ghostty.app run exits zero"
+  else
+    not_ok "Ghostty.app run exits zero" "$RUN_OUT"
+  fi
+  if grep -q '^brew install --cask' "$CALL_LOG"; then
+    not_ok "Ghostty.app skips the cask install" "$(grep '^brew install' "$CALL_LOG" || true)"
+  else
+    ok "Ghostty.app skips the cask install"
+  fi
+  cleanup_tmp
+}
+
+t_ollama_cli_counts_as_installed() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  # The default stubs put an ollama CLI on PATH with no ollama cask or
+  # formula installed.
+  run_install
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "ollama CLI run exits zero"
+  else
+    not_ok "ollama CLI run exits zero" "$RUN_OUT"
+  fi
+  if grep -q '^brew install' "$CALL_LOG"; then
+    not_ok "ollama CLI skips every brew install" "$(grep '^brew install' "$CALL_LOG" || true)"
+  else
+    ok "ollama CLI skips every brew install"
+  fi
+  cleanup_tmp
+}
+
+t_ollama_server_starts_before_pull() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  STUB_OLLAMA_NEEDS_SERVE="1"
+  export STUB_GIT_DIRTY STUB_OLLAMA_NEEDS_SERVE
+  std_stubs
+  run_install
+  unset STUB_OLLAMA_NEEDS_SERVE
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "serve-then-pull run exits zero"
+  else
+    not_ok "serve-then-pull run exits zero" "$RUN_OUT"
+  fi
+  if grep -q '^ollama serve' "$CALL_LOG"; then
+    ok "Ollama server is started before the pull"
+  else
+    not_ok "Ollama server is started before the pull" "$(cat "$CALL_LOG")"
+  fi
+  i_serve="$(grep -n '^ollama serve' "$CALL_LOG" | cut -d: -f1 | head -1)"
+  i_pull="$(grep -n '^ollama pull qwen3-embedding:0.6b$' "$CALL_LOG" | cut -d: -f1 | head -1)"
+  if [ -n "$i_serve" ] && [ -n "$i_pull" ] && [ "$i_serve" -lt "$i_pull" ]; then
+    ok "server start runs before the model pull"
+  else
+    not_ok "server start runs before the model pull" "$(cat "$CALL_LOG")"
+  fi
+  cleanup_tmp
+}
+
+t_doctor_failure_warns() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  STUB_DOCTOR_FAIL="1"
+  export STUB_GIT_DIRTY STUB_DOCTOR_FAIL
+  std_stubs
+  run_install
+  unset STUB_DOCTOR_FAIL
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "doctor failure still exits zero"
+  else
+    not_ok "doctor failure still exits zero" "$RUN_OUT"
+  fi
+  case "$RUN_OUT" in
+    *"swarm doctor reported issues"*)
+      ok "doctor failure prints a warning"
+      ;;
+    *)
+      not_ok "doctor failure prints a warning" "$RUN_OUT"
+      ;;
+  esac
+  case "$RUN_OUT" in
+    *"menu bar"*)
+      ok "closing message follows a doctor failure"
+      ;;
+    *)
+      not_ok "closing message follows a doctor failure" "$RUN_OUT"
       ;;
   esac
   cleanup_tmp
@@ -543,6 +698,10 @@ t_old_macos
 t_no_homebrew
 t_no_xcode_tools
 t_installs_only_missing_tools
+t_ghostty_app_counts_as_installed
+t_ollama_cli_counts_as_installed
+t_ollama_server_starts_before_pull
+t_doctor_failure_warns
 t_pulls_model_once
 t_fresh_clone
 t_fast_forward_update

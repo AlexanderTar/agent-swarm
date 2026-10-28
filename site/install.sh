@@ -20,7 +20,9 @@ main() {
 
   tty_in="${SWARM_TTY:-/dev/tty}"
   if [ "$tty_in" != "/dev/null" ]; then
-    if [ ! -r "$tty_in" ]; then
+    if (: <"$tty_in") 2>/dev/null; then
+      :
+    else
       tty_in=/dev/null
     fi
   fi
@@ -67,12 +69,17 @@ main() {
       fail "Tool install" "brew install$missing failed." "brew install$missing"
     fi
   fi
+  ghostty_app="${GHOSTTY_APP:-/Applications/Ghostty.app}"
   missing_casks=""
-  for cask in ghostty ollama; do
-    if ! brew list --cask --versions "$cask" >/dev/null 2>&1; then
-      missing_casks="$missing_casks $cask"
-    fi
-  done
+  if ! brew list --cask --versions ghostty >/dev/null 2>&1 \
+    && [ ! -d "$ghostty_app" ]; then
+    missing_casks="$missing_casks ghostty"
+  fi
+  if ! brew list --cask --versions ollama >/dev/null 2>&1 \
+    && ! brew list --formula --versions ollama >/dev/null 2>&1 \
+    && ! command -v ollama >/dev/null 2>&1; then
+    missing_casks="$missing_casks ollama"
+  fi
   if [ -n "$missing_casks" ]; then
     # shellcheck disable=SC2086
     if ! brew install --cask $missing_casks <"$tty_in"; then
@@ -81,6 +88,22 @@ main() {
   fi
 
   step "Downloading embedding model..."
+  if ! ollama list <"$tty_in" >/dev/null 2>&1; then
+    if command -v open >/dev/null 2>&1; then
+      open -a Ollama <"$tty_in" >/dev/null 2>&1 || true
+    fi
+    if ! ollama list <"$tty_in" >/dev/null 2>&1; then
+      ollama serve <"$tty_in" >/dev/null 2>&1 &
+      tries=0
+      while ! ollama list <"$tty_in" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge "${SWARM_OLLAMA_TRIES:-30}" ]; then
+          fail "Model download" "the Ollama server did not start." "ollama serve"
+        fi
+        sleep "${SWARM_OLLAMA_SLEEP:-2}"
+      done
+    fi
+  fi
   if ! ollama pull qwen3-embedding:0.6b <"$tty_in"; then
     fail "Model download" "ollama pull qwen3-embedding:0.6b failed." "ollama pull qwen3-embedding:0.6b"
   fi
@@ -115,8 +138,10 @@ main() {
   fi
 
   step "Checking Swarm..."
-  if ! swarm doctor <"$tty_in"; then
-    fail "Doctor check" "swarm doctor failed." "swarm doctor"
+  if swarm doctor <"$tty_in"; then
+    :
+  else
+    printf 'Warning: swarm doctor reported issues. Run swarm doctor to see details.\n'
   fi
 
   found_agent=""
