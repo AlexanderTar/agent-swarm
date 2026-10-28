@@ -105,8 +105,19 @@ if [ "${1:-}" = "doctor" ]; then
   fi
   exit 0
 fi
+if [ "${1:-}" = "repos" ] && [ "${2:-}" != "--rescan" ]; then
+  if [ -f "$STUB_STATE_DIR/repos-fails-left" ]; then
+    n="$(cat "$STUB_STATE_DIR/repos-fails-left")"
+    if [ "$n" -gt 0 ]; then
+      printf '%s' "$((n - 1))" >"$STUB_STATE_DIR/repos-fails-left"
+      exit 1
+    fi
+  fi
+  exit 0
+fi
 if [ "${1:-}" = "repos" ]; then
-  printf '%s\n' "${STUB_RESCAN_OUTPUT:-swarmrun $NEW_CHECKOUT}"
+  printf '%s\n' "${STUB_RESCAN_OUTPUT:-NAME  PATH  GROUPS
+swarmrun  ~/GitHub/swarmrun}"
   if [ "${STUB_RESCAN_FAIL:-}" = "1" ]; then
     exit 1
   fi
@@ -344,6 +355,14 @@ t_doctor_failure_is_warning() {
       not_ok "doctor failure prints a warning" "$RUN_OUT"
       ;;
   esac
+  case "$RUN_OUT" in
+    *"not healthy"*)
+      not_ok "doctor failure is not mistaken for a down daemon" "$RUN_OUT"
+      ;;
+    *)
+      ok "doctor failure is not mistaken for a down daemon"
+      ;;
+  esac
   if [ -d "$NEW_CHECKOUT/.git" ] && [ ! -e "$OLD_CHECKOUT" ]; then
     ok "doctor failure keeps the moved checkout"
   else
@@ -354,25 +373,26 @@ t_doctor_failure_is_warning() {
 
 t_daemon_health_wait() {
   move_env
-  printf '2' >"$TMP_ROOT/doctor-fails-left"
+  printf '2' >"$TMP_ROOT/repos-fails-left"
   run_move
   if [ "$RUN_STATUS" -eq 0 ]; then
     ok "slow daemon still exits zero"
   else
     not_ok "slow daemon still exits zero" "$RUN_OUT"
   fi
-  n_doctor="$(grep -c '^swarm doctor' "$CALL_LOG" || true)"
-  if [ "$n_doctor" -ge 3 ]; then
-    ok "move waits for the daemon to become healthy"
+  n_repos="$(grep -c '^swarm repos$' "$CALL_LOG" || true)"
+  if [ "$n_repos" -ge 3 ]; then
+    ok "move waits for the daemon by polling swarm repos"
   else
-    not_ok "move waits for the daemon to become healthy" "doctor runs: $n_doctor"
+    not_ok "move waits for the daemon by polling swarm repos" "bare repos runs: $n_repos"
   fi
   cleanup_tmp
 }
 
 t_bad_rescan_rolls_back() {
   move_env
-  STUB_RESCAN_OUTPUT="swarmrun /somewhere/else"
+  STUB_RESCAN_OUTPUT="NAME  PATH  GROUPS
+swarmrun  ~/GitHub/other"
   export STUB_RESCAN_OUTPUT
   run_move
   unset STUB_RESCAN_OUTPUT
@@ -397,6 +417,26 @@ t_bad_rescan_rolls_back() {
   cleanup_tmp
 }
 
+t_missing_row_rolls_back() {
+  move_env
+  STUB_RESCAN_OUTPUT="NAME  PATH  GROUPS
+swarmrun (missing)  ~/GitHub/swarmrun"
+  export STUB_RESCAN_OUTPUT
+  run_move
+  unset STUB_RESCAN_OUTPUT
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    ok "missing row exits non-zero"
+  else
+    not_ok "missing row exits non-zero" "exit was 0"
+  fi
+  if [ -d "$OLD_CHECKOUT" ] && [ ! -e "$NEW_CHECKOUT" ]; then
+    ok "missing row moves the folder back"
+  else
+    not_ok "missing row moves the folder back" "checkout not restored"
+  fi
+  cleanup_tmp
+}
+
 t_rollback_after_bootstrap_boots_out() {
   move_env
   STUB_RESCAN_FAIL="1"
@@ -414,6 +454,15 @@ t_rollback_after_bootstrap_boots_out() {
     ok "post-bootstrap rollback boots out before restarting the daemon"
   else
     not_ok "post-bootstrap rollback boots out before restarting the daemon" "$(cat "$CALL_LOG")"
+  fi
+  n_first_bootstrap="$(grep -n '^launchctl bootstrap' "$CALL_LOG" | head -1 | cut -d: -f1)"
+  tail_calls="$(awk -v b="$n_first_bootstrap" 'NR > b' "$CALL_LOG")"
+  i_boot="$(printf '%s\n' "$tail_calls" | grep -n '^launchctl bootout' | cut -d: -f1 | head -1)"
+  i_restore="$(printf '%s\n' "$tail_calls" | grep -n '\.restore' | cut -d: -f1 | head -1)"
+  if [ -n "$i_boot" ] && [ -n "$i_restore" ] && [ "$i_boot" -lt "$i_restore" ]; then
+    ok "post-bootstrap rollback boots out before restoring the database"
+  else
+    not_ok "post-bootstrap rollback boots out before restoring the database" "$(cat "$CALL_LOG")"
   fi
   if [ -d "$OLD_CHECKOUT" ] && [ ! -e "$NEW_CHECKOUT" ]; then
     ok "post-bootstrap failure moves the folder back"
@@ -494,6 +543,7 @@ t_both_checkouts_refuse
 t_doctor_failure_is_warning
 t_daemon_health_wait
 t_bad_rescan_rolls_back
+t_missing_row_rolls_back
 t_rollback_after_bootstrap_boots_out
 t_already_moved
 t_dry_run_changes_nothing

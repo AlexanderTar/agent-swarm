@@ -51,6 +51,12 @@ main() {
   rollback() {
     # rollback "step" "detail" "retry"
     log "$1 failed: $2 Retry with: $3"
+    # Stop the daemon this script started before touching the database, so
+    # the restore never runs against a live daemon.
+    if [ "$dry" -eq 0 ] && [ "$daemon_started" -eq 1 ]; then
+      launchctl bootout "gui/$(id -u)/$daemon_label" >>"$log_file" 2>&1 \
+        || log "Warning: stopping the restarted daemon failed."
+    fi
     if [ "$backup_done" -eq 1 ] && [ -f "$backup" ]; then
       if [ "$dry" -eq 0 ]; then
         if sqlite3 "$db" ".restore '$backup'" >>"$log_file" 2>&1; then
@@ -104,10 +110,6 @@ main() {
       fi
     fi
     if [ "$dry" -eq 0 ]; then
-      if [ "$daemon_started" -eq 1 ]; then
-        launchctl bootout "gui/$(id -u)/$daemon_label" >>"$log_file" 2>&1 \
-          || log "Warning: stopping the restarted daemon failed."
-      fi
       if launchctl bootstrap "gui/$(id -u)" "$plist" >>"$log_file" 2>&1; then
         log "Daemon restarted."
       else
@@ -270,11 +272,13 @@ main() {
   if [ "$dry" -eq 1 ]; then
     log "would run: wait for daemon health, then swarm repos --rescan and swarm doctor"
   else
+    # Probe the daemon itself: swarm doctor exits 1 for any failed check
+    # (missing agent CLI, unsigned commits), not just a down daemon.
     tries=0
-    while ! swarm doctor >>"$log_file" 2>&1; do
+    while ! swarm repos >>"$log_file" 2>&1; do
       tries=$((tries + 1))
       if [ "$tries" -ge "$daemon_tries" ]; then
-        log "Warning: the daemon is not healthy yet. Continuing anyway; run swarm doctor to see details."
+        log "Warning: the daemon is not answering yet. Continuing anyway; run swarm doctor to see details."
         break
       fi
       sleep "$daemon_sleep"
@@ -287,10 +291,19 @@ main() {
       rm -f "$rescan_out"
       rollback "Repo rescan" "swarm repos --rescan failed." "swarm repos --rescan"
     fi
-    n_rows="$(grep -F "$new_checkout" "$rescan_out" | grep -c "swarmrun" || true)"
+    # The repos table prints paths through tildePath, so the row reads
+    # "swarmrun  ~/GitHub/swarmrun". Match the name column exactly and
+    # either path form; a "swarmrun (missing)" row must not count.
+    case "$new_checkout" in
+      "$HOME"/*) tilde_checkout="~${new_checkout#"$HOME"}" ;;
+      *) tilde_checkout="$new_checkout" ;;
+    esac
+    n_rows="$(awk -v abs="$new_checkout" -v tld="$tilde_checkout" \
+      '$1 == "swarmrun" && ($2 == abs || $2 == tld) { c++ } END { print c+0 }' \
+      "$rescan_out")"
     rm -f "$rescan_out"
     if [ "$n_rows" -ne 1 ]; then
-      rollback "Repo rescan" "rescan did not list exactly one '$new_checkout' row." "swarm repos --rescan"
+      rollback "Repo rescan" "rescan did not list exactly one swarmrun row for '$new_checkout'." "swarm repos --rescan"
     fi
     log "Repo rescan lists the moved checkout."
     if swarm doctor >>"$log_file" 2>&1; then
