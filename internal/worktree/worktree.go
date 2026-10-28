@@ -670,8 +670,48 @@ func (s *Service) WouldRemove(ctx context.Context, wt Worktree) (bool, string) {
 	return reason == "", reason
 }
 
+// stray reports a folder that exists but has lost its .git, as after a half
+// finished `git worktree remove`. cookiesOnly says it holds nothing but
+// watchman cookies (or nothing), so deleting it loses no work.
+func stray(path string) (isStray, cookiesOnly bool) {
+	if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+		return false, false
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, false
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), cookiePrefix) {
+			return true, false
+		}
+	}
+	return true, true
+}
+
+// removeStray deletes a cookies-only stray folder and prunes the repo's
+// registration of it.
+func (s *Service) removeStray(ctx context.Context, wt Worktree) (Worktree, error) {
+	if err := os.RemoveAll(wt.Path); err != nil {
+		s.logf("worktree: removing stray %s failed: %v", wt.Path, err)
+		return s.retain(ctx, wt, "remove_failed")
+	}
+	if repoPath, err := s.repoPath(ctx, wt.RepoID); err == nil {
+		if _, err := s.git(ctx, repoPath, "worktree", "prune"); err != nil {
+			s.logf("worktree: prune after removing %s failed: %v", wt.Path, err)
+		}
+	}
+	return s.markRemoved(ctx, wt)
+}
+
 // keepReason is remove's dirty and merged checks: "" means safe to delete.
 func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
+	if isStray, cookiesOnly := stray(wt.Path); isStray {
+		if cookiesOnly && s.underWorktrees(wt.Path) {
+			return ""
+		}
+		return "not_a_worktree"
+	}
 	if s.discardable(ctx, wt) {
 		return ""
 	}
@@ -789,6 +829,9 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if reason := s.keepReason(ctx, wt); reason != "" {
 		return s.retain(ctx, wt, reason)
 	}
+	if isStray, _ := stray(wt.Path); isStray {
+		return s.removeStray(ctx, wt)
+	}
 	repoPath, err := s.repoPath(ctx, wt.RepoID)
 	if err != nil {
 		return Worktree{}, err
@@ -803,6 +846,10 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 		// A watchman cookie landed while git was deleting the folder.
 		s.clearWatchman(ctx, wt.Path)
 		out, rerr = s.git(ctx, repoPath, rmArgs...)
+		// git may already have taken .git before it failed.
+		if isStray, cookiesOnly := stray(wt.Path); rerr != nil && isStray && cookiesOnly {
+			return s.removeStray(ctx, wt)
+		}
 	}
 	if rerr != nil {
 		s.logf("worktree: remove %s failed: %v: %s", wt.Path, rerr, out)

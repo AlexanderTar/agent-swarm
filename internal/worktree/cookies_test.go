@@ -73,3 +73,75 @@ func TestRemoveSurvivesWatchmanCookiesAppearingMidDelete(t *testing.T) {
 		t.Fatalf("git worktree remove ran %d times, want 2 (one retry)", w.removes)
 	}
 }
+
+// strand leaves wt.Path the way a half-finished `git worktree remove` does: no
+// .git, the tracked files gone, and only the named files left behind.
+func strand(t *testing.T, path string, left ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(path, e.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range left {
+		if err := os.WriteFile(filepath.Join(path, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRemoveDeletesANonGitFolderHoldingOnlyWatchmanCookies(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/stray-cookies",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	strand(t, wt.Path, ".watchman-cookie-host-4242-3")
+
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+	if list := run(t, repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt.Path) {
+		t.Fatalf("git still lists the worktree after prune:\n%s", list)
+	}
+}
+
+func TestRemoveRetainsANonGitFolderWithOtherFilesAsNotAWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/stray-files",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	strand(t, wt.Path, ".watchman-cookie-host-4242-3", "notes.txt")
+
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "not_a_worktree" {
+		t.Fatalf("worktree = %+v, want retained/not_a_worktree", out)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "notes.txt")); err != nil {
+		t.Fatalf("a retained folder must keep its files: %v", err)
+	}
+	if ok, reason := s.WouldRemove(ctx, wt); ok || reason != "not_a_worktree" {
+		t.Fatalf("WouldRemove = %v, %q, want false, not_a_worktree", ok, reason)
+	}
+}
