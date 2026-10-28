@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/AlexanderTar/agent-swarm/internal/relay"
+	"github.com/AlexanderTar/swarmrun/internal/relay"
 )
 
 func main() {

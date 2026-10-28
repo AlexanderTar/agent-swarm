@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/events"
 )
 
 func TestSessionStateLive(t *testing.T) {

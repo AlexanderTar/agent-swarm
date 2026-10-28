@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 const MaxAge = 24 * time.Hour

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 func nativeReportMCPFixture(t *testing.T, kind runtime.AgentKind) (*Server, Caller, string, string, string) {

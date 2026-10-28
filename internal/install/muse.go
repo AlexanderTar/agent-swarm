@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"os"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // WriteMuse merges the swarm MCP server into muse's settings.json and installs

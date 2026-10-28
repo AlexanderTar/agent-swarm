@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 func reportKind(t *testing.T, s *Store, ses string, kind AgentKind) {

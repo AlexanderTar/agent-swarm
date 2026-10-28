@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func keys(its []items.Item) []string {

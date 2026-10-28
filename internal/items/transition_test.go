@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 func move(t *testing.T, s *items.Store, key string, to items.Status, by items.Actor) error {

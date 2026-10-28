@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/hook"
+	"github.com/AlexanderTar/swarmrun/internal/hook"
 )
 
 // Scenario 20: attribution gate. A `git commit` with a Co-Authored-By

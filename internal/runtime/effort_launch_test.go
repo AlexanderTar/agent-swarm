@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 // Rows cached before default_effort was filled hold "" — the read-time fill must cover them.

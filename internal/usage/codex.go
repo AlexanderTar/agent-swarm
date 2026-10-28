@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // Codex reads usage from `codex app-server`'s JSON-RPC stream, falling back

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 const testWorktreesDir = "/Users/x/.swarm/worktrees"

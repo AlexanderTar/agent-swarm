@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 // driveChangesRequested runs the seeded workflow, answering every review with

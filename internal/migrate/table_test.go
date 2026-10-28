@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/migrate"
+	"github.com/AlexanderTar/swarmrun/internal/migrate"
 )
 
 // §20's table, row by row. This test is the review artefact: if it disagrees with

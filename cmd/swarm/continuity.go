@@ -16,7 +16,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 func cmdLineage(args []string, stdout, stderr io.Writer) int {

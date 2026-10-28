@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/swarmrun/internal/catalog"
 )
 
 // resolveUsageFallback is the fallback-resolution step

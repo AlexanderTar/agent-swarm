@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 // A real tmux failure to list panes must surface, not be treated as "no

@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 const tunnelUsage = "usage: swarm tunnel enable [--url wss://RELAY] | disable | status\n"

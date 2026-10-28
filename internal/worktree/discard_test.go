@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/events"
 )
 
 // retainedUnmerged makes a tree with one commit not on main, retained as

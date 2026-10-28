@@ -1,6 +1,6 @@
 package runtime
 
-import "github.com/AlexanderTar/agent-swarm/internal/kinds"
+import "github.com/AlexanderTar/swarmrun/internal/kinds"
 
 // The enums live in internal/kinds so settings and catalog can use them without
 // importing runtime (which would be a cycle once Store holds them).

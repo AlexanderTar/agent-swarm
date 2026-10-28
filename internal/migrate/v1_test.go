@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/migrate"
+	"github.com/AlexanderTar/swarmrun/internal/migrate"
 	_ "modernc.org/sqlite"
 )
 

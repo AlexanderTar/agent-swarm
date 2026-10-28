@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 type GitInfo struct {

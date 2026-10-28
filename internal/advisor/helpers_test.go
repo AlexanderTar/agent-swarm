@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // clk is the movable clock every test in this package uses.

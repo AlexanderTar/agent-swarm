@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/catalog"
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
-	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/swarmrun/internal/catalog"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 var now = time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)

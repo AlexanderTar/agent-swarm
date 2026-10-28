@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func spikeOrchestrator(t *testing.T, s *Store, intent string) (Session, items.Item) {

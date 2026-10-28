@@ -4,7 +4,7 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 // NativeCapTokens is the native compaction cap a low-token orchestrator of this

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func golden(t *testing.T, name string) string {

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 func writeClaudePlugins(t *testing.T, home, body string) {

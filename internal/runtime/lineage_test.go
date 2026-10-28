@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // TestLegacyLineagePreservesHistory covers agents that predate the lineage

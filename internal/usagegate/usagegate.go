@@ -13,8 +13,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 // exhaustionPct is the UsedPct at/above which a meter counts as exhausted.

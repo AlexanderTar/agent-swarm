@@ -3,7 +3,7 @@ package advisor
 import (
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // §11.6: every row of the mode table.

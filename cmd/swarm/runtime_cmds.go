@@ -15,8 +15,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // execCommand is a package var so tests can inject a runner instead of really

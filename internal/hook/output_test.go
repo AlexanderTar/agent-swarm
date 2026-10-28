@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 func adapters(t *testing.T) map[runtime.AgentKind]adapter.Adapter {

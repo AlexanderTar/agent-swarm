@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 // passPrint marks every relay to the session's agent delivered (seen; the guard only skips pending) and ends the turn as a trusted kind,

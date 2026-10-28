@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
 )
 
 // Saving a changed max_concurrent_agents must wake the reconcile loop, so queued agents start (or

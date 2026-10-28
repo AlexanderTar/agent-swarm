@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
 )
 
 func TestParseGrokSessionUsage(t *testing.T) {

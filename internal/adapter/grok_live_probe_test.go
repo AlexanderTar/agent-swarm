@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
 )
 
 // Live probes against the real grok CLI. Each run is a paid headless turn on

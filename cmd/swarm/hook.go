@@ -4,7 +4,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/AlexanderTar/agent-swarm/internal/hook"
+	"github.com/AlexanderTar/swarmrun/internal/hook"
 )
 
 // cmdHook is `swarm hook <agent> <event>`. It never blocks the agent (§11.2):

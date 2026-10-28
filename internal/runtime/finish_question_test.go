@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // Tests for the finish question (docs/specs/2026-09-29-finish-with-pr.md).

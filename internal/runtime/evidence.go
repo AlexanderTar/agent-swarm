@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	"github.com/AlexanderTar/swarmrun/internal/worktree"
 )
 
 // mergeEvidence is worktree.MergeEvidence 3 to 5: a merged item_merges row's

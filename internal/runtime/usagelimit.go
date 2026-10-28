@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 // usageLimitUnnamedReset is how long a kind stays exhausted when its limit line

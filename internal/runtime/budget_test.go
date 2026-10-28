@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 func sampleRow(t *testing.T, s *Store, sessionID string) (tokens, window sql.NullInt64) {

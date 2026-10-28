@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // §6.7 + P0-12: the effort is in the slug and --effort is never passed.

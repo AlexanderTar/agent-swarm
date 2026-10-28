@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 // Print-then-ask (docs/specs/2026-09-29-approval-print-then-ask.md): an approval with a chat_block

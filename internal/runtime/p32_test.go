@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/worktree"
 )
 
 // P2 T35's P32: two one-liners over things that already exist, plus the two

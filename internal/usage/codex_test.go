@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // nopWriteCloser adapts an io.Writer (typically io.Discard) to the

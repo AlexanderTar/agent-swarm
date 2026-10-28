@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 // archivedKBFolders is §15's list: inbox (1,177 files on 2026-09-17) and handoffs

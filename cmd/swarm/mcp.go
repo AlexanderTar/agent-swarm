@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/mcpshim"
+	"github.com/AlexanderTar/swarmrun/internal/mcpshim"
 )
 
 // cmdMCP is `swarm mcp`: the stdio MCP server every agent launches (L16).

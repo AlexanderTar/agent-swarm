@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 // renameStore is newStore with the Fake adapter's session-rename command on.

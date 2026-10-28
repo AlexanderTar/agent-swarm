@@ -15,7 +15,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
+	"github.com/AlexanderTar/swarmrun/internal/httpapi"
 )
 
 const testSecret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // cursorEvents is §11.1's list. Cursor's event names are lowerCamelCase, unlike

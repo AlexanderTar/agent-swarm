@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
 )
 
 func TestLowTokenAgentRoute(t *testing.T) {

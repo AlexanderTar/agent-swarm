@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/events"
 )
 
 type sseEvent struct {

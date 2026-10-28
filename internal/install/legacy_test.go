@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 // seedV1Home builds the v1 layout this machine actually had on 2026-09-18, inside

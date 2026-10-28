@@ -13,7 +13,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // MarketplaceURL is §12.4's list. S-6: it is a constant here but never a default —

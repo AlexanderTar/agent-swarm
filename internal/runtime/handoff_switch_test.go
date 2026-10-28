@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
 )
 
 // claudeOrch starts a Claude orchestrator on EPIC-1 with role overrides set and

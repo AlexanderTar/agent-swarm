@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
-	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/worktree"
 )
 
 // BUG-77: a story review was started with a ro review tree that had already

@@ -9,8 +9,8 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
 )
 
 // AgentsOpts is everything Agents needs. Nothing has a production default (S-5,

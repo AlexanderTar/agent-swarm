@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 const (

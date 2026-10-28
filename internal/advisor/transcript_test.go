@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 func TestReadTranscriptPerAgent(t *testing.T) {

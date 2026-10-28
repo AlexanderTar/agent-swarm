@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/attachments"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/attachments"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 func (s *Server) spawnRoutes() []route {

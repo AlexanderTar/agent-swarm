@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/worktree"
 )
 
 // seedCleanupHome builds a home with a finished agent that owns a work dir and

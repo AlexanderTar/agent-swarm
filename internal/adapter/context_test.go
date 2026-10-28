@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 func TestReadContext(t *testing.T) {

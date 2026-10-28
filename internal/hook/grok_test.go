@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
-	"github.com/AlexanderTar/agent-swarm/internal/usagegate"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	usagesvc "github.com/AlexanderTar/swarmrun/internal/usage"
+	"github.com/AlexanderTar/swarmrun/internal/usagegate"
 )
 
 // seedGrok is seed with the agent's kind switched to grok.

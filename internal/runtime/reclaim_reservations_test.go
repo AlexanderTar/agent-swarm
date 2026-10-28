@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 func reservationReleased(t *testing.T, s *Store, wtID, agentID string) bool {

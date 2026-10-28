@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/webauth"
+	"github.com/AlexanderTar/swarmrun/internal/webauth"
 )
 
 const sessionCookie = "swarm_session"

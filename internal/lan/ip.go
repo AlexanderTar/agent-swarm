@@ -8,7 +8,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // PrimaryIPv4 is the address of the interface the default route leaves by

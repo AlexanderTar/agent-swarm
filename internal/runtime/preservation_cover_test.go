@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func TestPreservationGatesRefuseNonSaveToolsAndEmptyCommands(t *testing.T) {

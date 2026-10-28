@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/worktree"
 )
 
 // readKinds is the validated filter.kind vocabulary (spec §6, F6).

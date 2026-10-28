@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // onePNGBase64 is internal/attachments/testdata/one.png (a valid 1x1 PNG),

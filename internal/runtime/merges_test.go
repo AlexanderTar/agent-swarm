@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 const ghOpenArmed = `{"state":"OPEN","headRefName":"swarm/chore-1","baseRefName":"main","number":412,

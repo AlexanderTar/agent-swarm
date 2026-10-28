@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 // seedTwoTreesOneRepo gives coder two rw worktrees of the same repo "proj" on

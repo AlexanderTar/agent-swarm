@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
 )
 
 type applyCall struct {

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
-	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
-	"github.com/AlexanderTar/agent-swarm/internal/relay"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/httpapi"
+	"github.com/AlexanderTar/swarmrun/internal/relay"
 )
 
 func newManager(t *testing.T, secret string) (*Manager, string) {

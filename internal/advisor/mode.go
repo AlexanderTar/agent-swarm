@@ -2,7 +2,7 @@
 // advisor reads, and runs the simulated advisor (spec §11.6, §17.3).
 package advisor
 
-import "github.com/AlexanderTar/agent-swarm/internal/runtime"
+import "github.com/AlexanderTar/swarmrun/internal/runtime"
 
 // Mode is §11.6. "" means no advisor: roles.advisor.model is "none". A Claude
 // session with a Claude advisor whose model can advise (native tool support)

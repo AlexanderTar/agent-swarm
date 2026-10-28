@@ -15,17 +15,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/attachments"
-	"github.com/AlexanderTar/agent-swarm/internal/catalog"
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/notifyrules"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
-	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/attachments"
+	"github.com/AlexanderTar/swarmrun/internal/catalog"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/notifyrules"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/worktree"
 )
 
 // onePNG is a valid 1x1 PNG, matching internal/attachments/testdata/one.png.

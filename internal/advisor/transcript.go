@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // readLines reads path line by line. A missing or unreadable file is an

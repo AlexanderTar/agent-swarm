@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 func TestSwarmWorkflowToolsOnlyForOrchestrators(t *testing.T) {

@@ -3,7 +3,7 @@ package adapter
 import (
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 func TestRenameCommand(t *testing.T) {

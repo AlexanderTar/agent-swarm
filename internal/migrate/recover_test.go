@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/install"
-	"github.com/AlexanderTar/agent-swarm/internal/migrate"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/migrate"
 )
 
 // §23.3: "A crash after each of steps 2-9 (simulated) is followed by --resume

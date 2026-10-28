@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 const lanUsage = "usage: swarm lan enable | disable | status\n"

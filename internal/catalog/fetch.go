@@ -13,9 +13,9 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 type Fetched struct {

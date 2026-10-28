@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 type Type string

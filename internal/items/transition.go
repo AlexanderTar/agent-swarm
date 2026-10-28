@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
 )
 
 var allStatuses = []Status{Draft, Ready, InProgress, Blocked, InReview, AwaitingApproval, Done, Cancelled}

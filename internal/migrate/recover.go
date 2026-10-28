@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 // Resume is §20's "--resume continues from the last completed step". The step that

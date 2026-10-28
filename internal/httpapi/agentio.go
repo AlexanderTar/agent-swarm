@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/mcpserver"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 func (s *Server) agentIORoutes() []route {

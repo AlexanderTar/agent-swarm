@@ -14,8 +14,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // Preservation policy (spec §3): shared by Pause and Handoff (Pause

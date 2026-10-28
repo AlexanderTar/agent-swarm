@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/hook"
+	"github.com/AlexanderTar/swarmrun/internal/hook"
 )
 
 // Scenario 15: a hook running outside a Swarm-spawned pane (no SWARM_SESSION)

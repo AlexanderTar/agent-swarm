@@ -15,9 +15,9 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/AlexanderTar/agent-swarm/internal/catalog"
-	"github.com/AlexanderTar/agent-swarm/internal/install"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/catalog"
+	"github.com/AlexanderTar/swarmrun/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 type Codex struct{ base }

@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/advisor"
-	"github.com/AlexanderTar/agent-swarm/internal/catalog"
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/install"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/advisor"
+	"github.com/AlexanderTar/swarmrun/internal/catalog"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 // The parity tables below are test-only on purpose: each row restates what a

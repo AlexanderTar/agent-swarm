@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
 )
 
 var bg = context.Background()

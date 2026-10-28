@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 const busyCapture = "✽ Beboppin'… (48s · ↓ 114 tokens)\n─────\n❯ \n─────\n"

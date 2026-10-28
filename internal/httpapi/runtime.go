@@ -11,13 +11,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
-	"github.com/AlexanderTar/agent-swarm/internal/notify"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
-	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/notify"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 // ---- response wire types (contracts §3.2-3.4) ----

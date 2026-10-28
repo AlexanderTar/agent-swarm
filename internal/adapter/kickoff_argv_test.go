@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 // TASK-1206 (BUG-105): spawn.Spawner moves a long argv element into a launch

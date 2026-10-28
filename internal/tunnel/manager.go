@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
-	"github.com/AlexanderTar/agent-swarm/internal/relay"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/httpapi"
+	"github.com/AlexanderTar/swarmrun/internal/relay"
 )
 
 // The switch lives in its own settings-table rows, not in settings.Settings,

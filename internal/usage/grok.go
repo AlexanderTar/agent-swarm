@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
 )
 
 // GrokUsage is one grok session's token and cost totals, from `grok usage

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 func TestWriteIfChangedCreatesParentsThenSkipsIdenticalBytes(t *testing.T) {

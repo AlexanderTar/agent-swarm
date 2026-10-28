@@ -1,4 +1,4 @@
-module github.com/AlexanderTar/agent-swarm
+module github.com/AlexanderTar/swarmrun
 
 go 1.27
 

@@ -11,7 +11,7 @@ while read -r line; do
   pkg=$(awk '{print $2}' <<<"$line")
   pct=$(grep -oE 'coverage: [0-9.]+%' <<<"$line" | grep -oE '[0-9.]+' || true)
   [ -z "$pct" ] && continue
-  name=${pkg#github.com/AlexanderTar/agent-swarm/internal/}
+  name=${pkg#github.com/AlexanderTar/swarmrun/internal/}
   top=${name%%/*}
   min=75
   [[ "$strict" == *" $top "* ]] && min=85

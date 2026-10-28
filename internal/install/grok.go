@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
 	"github.com/pelletier/go-toml/v2"
 )
 

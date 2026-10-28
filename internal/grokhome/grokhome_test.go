@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
 )
 
 func TestDirIsUnderTheSwarmHome(t *testing.T) {

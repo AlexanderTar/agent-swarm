@@ -13,8 +13,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 func grokSpec(t *testing.T) Spec {

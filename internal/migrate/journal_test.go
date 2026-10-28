@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/migrate"
+	"github.com/AlexanderTar/swarmrun/internal/migrate"
 )
 
 func TestLoadJournalReportsAbsenceWithoutAnError(t *testing.T) {

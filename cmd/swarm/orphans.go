@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 
-	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/install"
 )
 
 // sessionLookup answers doctor's "which agent and state is session id?" from

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 // contextTailBytes bounds how much of a transcript's end ReadContext scans.

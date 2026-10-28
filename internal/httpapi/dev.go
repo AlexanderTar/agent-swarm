@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
 )
 
 // devRoutes registers POST /api/dev/seed only when the daemon was started

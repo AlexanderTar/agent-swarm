@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"sort"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 const (

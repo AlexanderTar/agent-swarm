@@ -11,14 +11,14 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/kb"
-	"github.com/AlexanderTar/agent-swarm/internal/repos"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
-	"github.com/AlexanderTar/agent-swarm/web"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/kb"
+	"github.com/AlexanderTar/swarmrun/internal/repos"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
+	"github.com/AlexanderTar/swarmrun/web"
 )
 
 func samplePath(pattern string) string {

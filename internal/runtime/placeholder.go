@@ -3,7 +3,7 @@ package runtime
 import (
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
 )
 
 // placeholderTitle is spec Locked Decision 2's item title for a spike

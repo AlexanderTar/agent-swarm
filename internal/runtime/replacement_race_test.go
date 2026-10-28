@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 // Two concurrent drivers of one operation (a request's own synchronous walk

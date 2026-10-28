@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	usagesvc "github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 func meterAt(id string, at time.Time) usagesvc.Meter {

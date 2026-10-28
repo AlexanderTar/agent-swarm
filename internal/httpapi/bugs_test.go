@@ -74,7 +74,7 @@ func TestBugReportRouteReturnsFullReport(t *testing.T) {
 func TestBugIssueURLRoundTripsAndRefusesSecondSet(t *testing.T) {
 	e, _ := newRuntimeServer(t)
 	seedFullBug(t, e)
-	const url = "https://github.com/AlexanderTar/agent-swarm/issues/7"
+	const url = "https://github.com/AlexanderTar/swarmrun/issues/7"
 	if rec := e.post(t, "/api/bugs/bug_full/issue", `{"issue_url":"`+url+`"}`); rec.Code != 200 {
 		t.Fatalf("set status = %d: %s", rec.Code, rec.Body.String())
 	}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/relay"
+	"github.com/AlexanderTar/swarmrun/internal/relay"
 )
 
 func runTunnel(t *testing.T, srvURL, home string, args ...string) (int, string, string) {

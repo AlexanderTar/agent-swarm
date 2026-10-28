@@ -3,7 +3,7 @@ package install
 import (
 	"context"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
 )
 
 // Claude's own MCP config, hooks and --settings for a SPAWNED session are still

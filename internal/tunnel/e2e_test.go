@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/relay"
-	"github.com/AlexanderTar/agent-swarm/internal/tunnel"
-	"github.com/AlexanderTar/agent-swarm/internal/webauth"
+	"github.com/AlexanderTar/swarmrun/internal/db/dbtest"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/httpapi"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/relay"
+	"github.com/AlexanderTar/swarmrun/internal/tunnel"
+	"github.com/AlexanderTar/swarmrun/internal/webauth"
 )
 
 const (

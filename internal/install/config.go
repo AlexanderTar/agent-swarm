@@ -3,8 +3,8 @@ package install
 import (
 	"path/filepath"
 
-	"github.com/AlexanderTar/agent-swarm/internal/grokhome"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/grokhome"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 // Kind is the set of agents swarm install writes configuration for (L2). The

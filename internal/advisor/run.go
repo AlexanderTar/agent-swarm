@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // Prompt is §11.6 step 3, aligned to the swarm-advisor skill's decision rules

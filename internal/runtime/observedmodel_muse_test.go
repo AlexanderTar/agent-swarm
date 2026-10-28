@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/adapter"
-	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
 
 // museObserverFake is a Muse-kind adapter whose ObserveModel returns canned

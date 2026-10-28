@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/repos"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/repos"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
 )
 
 // repoWire is Repo on the wire (contracts §3.6): unknown git facts and last_used_at are null.

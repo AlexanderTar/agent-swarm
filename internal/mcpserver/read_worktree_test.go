@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
 )
 
 // TestReadFilterListsWorktrees: filter {kind:"worktree"} lists active and

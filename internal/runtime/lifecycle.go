@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // Worker-lifecycle contract (spec §6, F3/F4/F5/F14 remainders). These are

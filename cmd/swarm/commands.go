@@ -16,11 +16,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/install"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/kb"
-	"github.com/AlexanderTar/agent-swarm/internal/repos"
+	"github.com/AlexanderTar/swarmrun/internal/execx"
+	"github.com/AlexanderTar/swarmrun/internal/install"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/kb"
+	"github.com/AlexanderTar/swarmrun/internal/repos"
 )
 
 // The test seams for the P5 commands. Production values are the real functions.

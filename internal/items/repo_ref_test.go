@@ -5,8 +5,8 @@ import (
 
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 // TestResolveRepoRefTx (BUG-68): a repo ref is a catalog id, a unique name or

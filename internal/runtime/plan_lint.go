@@ -6,8 +6,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 // capType uppercases a node type's first rune for error messages. strings.Title

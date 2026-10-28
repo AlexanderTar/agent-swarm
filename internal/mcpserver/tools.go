@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
-	"github.com/AlexanderTar/agent-swarm/internal/kb"
-	"github.com/AlexanderTar/agent-swarm/internal/repos"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/events"
+	"github.com/AlexanderTar/swarmrun/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/kb"
+	"github.com/AlexanderTar/swarmrun/internal/repos"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 // roleOverridesOut normalizes an Agent's RoleOverrides for the wire: a nil

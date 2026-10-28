@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/repos"
-	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/swarmrun/internal/repos"
+	"github.com/AlexanderTar/swarmrun/internal/settings"
 )
 
 // contract_test.go checks the menubar's JSON fixtures against the Go wire

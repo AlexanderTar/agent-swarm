@@ -3,7 +3,7 @@ package httpapi
 import (
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func TestDevSeedRouteAbsentWithoutDev(t *testing.T) {

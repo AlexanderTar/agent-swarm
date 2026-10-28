@@ -19,7 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
 
-	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
+	"github.com/AlexanderTar/swarmrun/internal/httpapi"
 )
 
 // Status is what `swarm tunnel status` reports.

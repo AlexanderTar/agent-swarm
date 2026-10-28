@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/AlexanderTar/agent-swarm/internal/webauth"
+	"github.com/AlexanderTar/swarmrun/internal/webauth"
 )
 
 const authUsage = "usage: swarm auth set|status|logout-all\n"
