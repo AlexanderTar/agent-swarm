@@ -4,7 +4,9 @@
 # (including /install.sh and /social-preview.png), the tracked sources of the
 # served images exist (site/assets/social-preview.png, board-kanban png/webp),
 # no raw colours in site/*.css (hex or colour functions), no "Agent Swarm"
-# text, and every Screens string present in dist/index.html.
+# text, every external link opens in a new tab with rel noopener, no hero logo
+# lockup (hero starts with the h1), and every Screens string present in
+# dist/index.html.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -64,6 +66,31 @@ grep -oE 'srcset="[^"]+"' "$PAGE" | sed -E 's/^srcset="//; s/"$//' | tr ',' '\n'
   esac
   [ -e "$DIST/$url" ] || fail "missing srcset asset: $url"
 done
+
+# Every external link must open in a new tab with noopener.
+tmp_tags="$(mktemp)"
+grep -oE '<a[^>]*>' "$PAGE" > "$tmp_tags" || true
+while IFS= read -r tag; do
+  case "$tag" in
+    *'href="http'*) ;;
+    *) continue ;;
+  esac
+  case "$tag" in
+    *'target="_blank"'*) ;;
+    *) fail "external link without target=\"_blank\": $tag" ;;
+  esac
+  case "$tag" in
+    *'rel="'*noopener*) ;;
+    *) fail "external link without rel noopener: $tag" ;;
+  esac
+done < "$tmp_tags"
+rm -f "$tmp_tags"
+
+# The hero starts with the headline: no logo lockup (nav already has it).
+if grep -qE 'hero-icon|hero-name' "$PAGE"; then
+  grep -oE '.{0,40}hero-(icon|name).{0,40}' "$PAGE" >&2
+  fail "hero logo lockup present in dist/index.html (hero starts with the h1)"
+fi
 
 # Every Screens string, word for word.
 while IFS= read -r line; do
