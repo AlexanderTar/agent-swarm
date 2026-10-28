@@ -125,6 +125,20 @@ final class DialogChromeTests: XCTestCase {
                       "content must extend under the title bar so one material covers the whole window, not just below it")
     }
 
+    /// Spins the main run loop until the window is centered (or a bounded
+    /// timeout expires) instead of sleeping a fixed interval: the recenter
+    /// lands via DispatchQueue.main.async and a resize notification, so a
+    /// fixed wait flakes under load while polling the actual condition does
+    /// not. On timeout the caller's assert fails with the real position.
+    @MainActor
+    private func waitForCenter(_ window: NSWindow, on screen: NSRect, timeout: TimeInterval = 5.0) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if abs(window.frame.midX - screen.midX) <= 1, abs(window.frame.midY - screen.midY) <= 1 { return }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+    }
+
     /// Orchestrate task opens as a small spinner, then grows to the form; the window
     /// must stay centered through that resize, not keep the spinner's origin.
     @MainActor
@@ -137,11 +151,11 @@ final class DialogChromeTests: XCTestCase {
         window.contentView = host
         window.setFrameOrigin(NSPoint(x: 3, y: 5))
         window.orderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        waitForCenter(window, on: screen)
         XCTAssertEqual(window.frame.midX, screen.midX, accuracy: 1)
         XCTAssertEqual(window.frame.midY, screen.midY, accuracy: 1)
         window.setContentSize(NSSize(width: 820, height: 300))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        waitForCenter(window, on: screen)
         XCTAssertEqual(window.frame.midX, screen.midX, accuracy: 1)
         XCTAssertEqual(window.frame.midY, screen.midY, accuracy: 1)
         window.close()
