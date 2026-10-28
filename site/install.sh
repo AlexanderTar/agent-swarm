@@ -102,8 +102,34 @@ main() {
       fail "Source update" "git pull --ff-only in $swarm_src failed." "git -C $swarm_src pull --ff-only"
     fi
   fi
-  # Unit 2 stops here; unit 3 continues with the build and setup.
-  exit 0
+  step "Building Swarm..."
+  if ! make -C "$swarm_src" install <"$tty_in"; then
+    fail "Build" "make install in $swarm_src failed." "make -C $swarm_src install"
+  fi
+
+  step "Setting up Swarm..."
+  PATH="$HOME/.swarm/bin:$PATH"
+  export PATH
+  if ! swarm install --yes <"$tty_in"; then
+    fail "Setup" "swarm install --yes failed." "swarm install --yes"
+  fi
+
+  step "Checking Swarm..."
+  if ! swarm doctor <"$tty_in"; then
+    fail "Doctor check" "swarm doctor failed." "swarm doctor"
+  fi
+
+  found_agent=""
+  for agent_bin in claude codex agy cursor-agent muse grok; do
+    if command -v "$agent_bin" >/dev/null 2>&1; then
+      found_agent="$agent_bin"
+      break
+    fi
+  done
+  if [ -z "$found_agent" ]; then
+    printf 'Warning: no agent CLI found. Install one of claude, codex, agy, cursor-agent, muse or grok and sign in; Swarm needs an agent to work with.\n'
+  fi
+  printf 'Swarm is installed. Next step: open the Swarm menu bar app and the board.\n'
 }
 
 main "$@"

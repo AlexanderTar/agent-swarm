@@ -165,6 +165,9 @@ std_stubs() {
   cat >"$STUB_BIN/brew" <<'STUB_EOF'
 #!/bin/sh
 echo "brew $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-brew"
+fi
 if [ "${1:-}" = "list" ]; then
   kind="${2:-}"
   name="${4:-}"
@@ -184,6 +187,9 @@ STUB_EOF
   cat >"$STUB_BIN/git" <<'STUB_EOF'
 #!/bin/sh
 echo "git $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-git"
+fi
 if [ "${1:-}" = "clone" ]; then
   mkdir -p "$3/.git"
   exit 0
@@ -202,21 +208,43 @@ STUB_EOF
   cat >"$STUB_BIN/make" <<'STUB_EOF'
 #!/bin/sh
 echo "make $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-make"
+fi
+if [ "${STUB_MAKE_FAIL:-}" = "1" ]; then
+  exit 1
+fi
 exit 0
 STUB_EOF
   chmod +x "$STUB_BIN/make"
   cat >"$STUB_BIN/swarm" <<'STUB_EOF'
 #!/bin/sh
 echo "swarm $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-swarm"
+fi
 exit 0
 STUB_EOF
   chmod +x "$STUB_BIN/swarm"
   cat >"$STUB_BIN/ollama" <<'STUB_EOF'
 #!/bin/sh
 echo "ollama $*" >>"$CALL_LOG"
+if [ "${STUB_CAPTURE_STDIN:-}" = "1" ]; then
+  cat >"$CALL_LOG.stdin-ollama"
+fi
 exit 0
 STUB_EOF
   chmod +x "$STUB_BIN/ollama"
+}
+
+run_install_piped() {
+  # run_install with SENTINEL-DATA on stdin: proves prompt-capable commands
+  # read from the tty, not from the piped script stream.
+  if RUN_OUT="$(printf 'SENTINEL-DATA\n' | SWARM_TTY=/dev/null HOME="$TEST_HOME" SWARM_SRC="$TEST_HOME/.swarm/src/swarmrun" PATH="$STUB_BIN:/usr/bin:/bin" sh "$INSTALL_SH" 2>&1)"; then
+    RUN_STATUS=0
+  else
+    RUN_STATUS=$?
+  fi
 }
 
 t_installs_only_missing_tools() {
@@ -356,6 +384,160 @@ t_dirty_checkout_stops() {
   cleanup_tmp
 }
 
+t_build_steps_run_in_order() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  run_install
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "build steps exit zero on the success path"
+  else
+    not_ok "build steps exit zero on the success path" "$RUN_OUT"
+  fi
+  i_make="$(grep -n '^make ' "$CALL_LOG" | cut -d: -f1 | head -1)"
+  i_setup="$(grep -n '^swarm install --yes$' "$CALL_LOG" | cut -d: -f1 | head -1)"
+  i_doctor="$(grep -n '^swarm doctor$' "$CALL_LOG" | cut -d: -f1 | head -1)"
+  if [ -n "$i_make" ] && [ -n "$i_setup" ] && [ -n "$i_doctor" ] \
+    && [ "$i_make" -lt "$i_setup" ] && [ "$i_setup" -lt "$i_doctor" ]; then
+    ok "make install, swarm install and swarm doctor run in order"
+  else
+    not_ok "make install, swarm install and swarm doctor run in order" "$(cat "$CALL_LOG")"
+  fi
+  case "$RUN_OUT" in
+    *"menu bar"*)
+      ok "closing message names the next step"
+      ;;
+    *)
+      not_ok "closing message names the next step" "$RUN_OUT"
+      ;;
+  esac
+  cleanup_tmp
+}
+
+t_commands_ignore_script_stream() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  STUB_CAPTURE_STDIN="1"
+  export STUB_GIT_DIRTY STUB_CAPTURE_STDIN
+  std_stubs
+  run_install_piped
+  unset STUB_CAPTURE_STDIN
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "piped run exits zero"
+  else
+    not_ok "piped run exits zero" "$RUN_OUT"
+  fi
+  for cmd_name in brew git make swarm ollama; do
+    cap="$CALL_LOG.stdin-$cmd_name"
+    if [ ! -f "$cap" ]; then
+      not_ok "$cmd_name does not read the script stream" "missing $cap"
+    elif grep -q 'SENTINEL' "$cap"; then
+      not_ok "$cmd_name does not read the script stream" "$(cat "$cap")"
+    else
+      ok "$cmd_name does not read the script stream"
+    fi
+  done
+  cleanup_tmp
+}
+
+t_failing_step_names_itself() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  STUB_MAKE_FAIL="1"
+  export STUB_GIT_DIRTY STUB_MAKE_FAIL
+  std_stubs
+  run_install
+  unset STUB_MAKE_FAIL
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    ok "failing build exits non-zero"
+  else
+    not_ok "failing build exits non-zero" "exit was 0"
+  fi
+  case "$RUN_OUT" in
+    *"Build failed"* | *"Build: "*)
+      ok "failing step names itself"
+      ;;
+    *)
+      not_ok "failing step names itself" "$RUN_OUT"
+      ;;
+  esac
+  case "$RUN_OUT" in
+    *"Retry with: "*make*)
+      ok "failing step tells how to retry"
+      ;;
+    *)
+      not_ok "failing step tells how to retry" "$RUN_OUT"
+      ;;
+  esac
+  case "$(cat "$CALL_LOG")" in
+    *"swarm install"*)
+      not_ok "failed build stops before setup" "$(cat "$CALL_LOG")"
+      ;;
+    *)
+      ok "failed build stops before setup"
+      ;;
+  esac
+  cleanup_tmp
+}
+
+t_no_agent_cli_warns() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  # No agent CLI on PATH: only stubs plus /usr/bin:/bin.
+  run_install
+  case "$RUN_OUT" in
+    *"no agent CLI found"*)
+      ok "missing agent CLI prints a warning"
+      ;;
+    *)
+      not_ok "missing agent CLI prints a warning" "$RUN_OUT"
+      ;;
+  esac
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    ok "missing agent CLI still exits zero"
+  else
+    not_ok "missing agent CLI still exits zero" "$RUN_OUT"
+  fi
+  cleanup_tmp
+}
+
+t_agent_cli_present_ok() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  write_stub claude '#!/bin/sh
+exit 0'
+  run_install
+  case "$RUN_OUT" in
+    *"no agent CLI found"*)
+      not_ok "present agent CLI prints no warning" "$RUN_OUT"
+      ;;
+    *)
+      ok "present agent CLI prints no warning"
+      ;;
+  esac
+  cleanup_tmp
+}
+
 t_unsupported_os
 t_old_macos
 t_no_homebrew
@@ -365,6 +547,11 @@ t_pulls_model_once
 t_fresh_clone
 t_fast_forward_update
 t_dirty_checkout_stops
+t_build_steps_run_in_order
+t_commands_ignore_script_stream
+t_failing_step_names_itself
+t_no_agent_cli_warns
+t_agent_cli_present_ok
 
 printf 'install-test: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
