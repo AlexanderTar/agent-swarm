@@ -1398,3 +1398,21 @@ func TestNoticeSeenPrunedWhenSessionEnds(t *testing.T) {
 		t.Fatal("noticeSeen entry survived the session's end")
 	}
 }
+
+// mcpSeen is pruned like noticeSeen: an ended session's entry is dropped.
+func TestMCPSeenPrunedWhenSessionEnds(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "MCPPrune", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.MCPSeen(ses.ID, "tools/list")
+	if err := s.SetSessionState(ctx, ses.ID, Completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.MCPSeenMethod(ses.ID, "tools/list") {
+		t.Fatal("mcpSeen entry survived the session's end")
+	}
+}

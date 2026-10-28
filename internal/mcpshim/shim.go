@@ -88,6 +88,14 @@ func (s *Shim) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
+// streamClient is the client for the long-lived wake stream: the request
+// client minus its total Timeout, which would cut the stream mid-body.
+func (s *Shim) streamClient() *http.Client {
+	c := *s.httpClient()
+	c.Timeout = 0
+	return &c
+}
+
 func (s *Shim) writeLine(body []byte) {
 	s.outMu.Lock()
 	defer s.outMu.Unlock()
@@ -211,16 +219,22 @@ func addChannelCapability(body []byte) []byte {
 // bridgeWake subscribes to the daemon's wake stream and turns each event into
 // one notifications/claude/channel line, reconnecting with backoff (starting
 // at Backoff, default 1 s, doubling to a 30 s ceiling) after the daemon
-// restarts or the stream otherwise ends.
+// restarts or the stream otherwise ends. A stream that connected resets the
+// delay to Backoff.
 func (s *Shim) bridgeWake(ctx context.Context) {
 	backoff := s.Backoff
 	if backoff <= 0 {
 		backoff = time.Second
 	}
 	const maxBackoff = 30 * time.Second
+	base := backoff
 	for ctx.Err() == nil {
-		if err := s.streamWake(ctx); err != nil && ctx.Err() == nil {
+		connected, err := s.streamWake(ctx)
+		if err != nil && ctx.Err() == nil {
 			s.logf("mcpshim: wake stream: %v", err)
+		}
+		if connected {
+			backoff = base
 		}
 		select {
 		case <-ctx.Done():
@@ -234,18 +248,21 @@ func (s *Shim) bridgeWake(ctx context.Context) {
 	}
 }
 
-func (s *Shim) streamWake(ctx context.Context) error {
+// streamWake reads one wake stream to its end. connected reports whether the
+// daemon accepted it (a 200 response), so the caller can reset its backoff.
+func (s *Shim) streamWake(ctx context.Context) (connected bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		strings.TrimRight(s.URL, "/")+"/api/sessions/self/wake", nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.Token)
-	resp, err := s.httpClient().Do(req)
+	resp, err := s.streamClient().Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
+	connected = resp.StatusCode == http.StatusOK
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	var event string
@@ -261,7 +278,7 @@ func (s *Shim) streamWake(ctx context.Context) error {
 			event = ""
 		}
 	}
-	return sc.Err()
+	return connected, sc.Err()
 }
 
 // emitWake turns one wake payload {"content":...,"msg_id":...} into exactly

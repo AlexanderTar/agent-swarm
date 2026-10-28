@@ -315,8 +315,11 @@ func adoptPreExistingSkills(root string) error {
 // TaskUpdate/TaskList only to older models (through Opus 4.7 / Sonnet 4.6) by
 // default; newer ones need this opt-in, and the orchestrator's native progress
 // list (swarm-orchestrator skill, "Progress list") uses them.
+// MCP_TIMEOUT=600000: Claude Code's 30 s MCP connect limit fails a healthy
+// shim when Claude itself freezes for 30-500 s at startup (several sessions
+// launching together, TASK-1458). 10 min covers every observed freeze.
 func claudeEnv() map[string]string {
-	return map[string]string{"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
+	return map[string]string{"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1", "MCP_TIMEOUT": "600000"}
 }
 
 func (c *Claude) Launch(s Spec) (Launch, error) {

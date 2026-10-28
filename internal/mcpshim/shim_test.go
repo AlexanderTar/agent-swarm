@@ -234,6 +234,82 @@ func TestWakeStreamReconnects(t *testing.T) {
 	close(release)
 }
 
+// The wake stream is long-lived: the request timeout that bounds a POST must
+// not cut it (TASK-1458, the stream was killed every 60 s).
+func TestWakeStreamOutlivesTheRequestTimeout(t *testing.T) {
+	var gets int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sessions/self/wake" {
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		atomic.AddInt32(&gets, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		io.WriteString(w, "event: wake\ndata: {\"content\":\"first\",\"msg_id\":\"m1\"}\n\n")
+		fl.Flush()
+		start := time.Now()
+		for r.Context().Err() == nil {
+			time.Sleep(10 * time.Millisecond)
+			io.WriteString(w, ": keepalive\n\n")
+			fl.Flush()
+			if time.Since(start) > 400*time.Millisecond {
+				io.WriteString(w, "event: wake\ndata: {\"content\":\"late\",\"msg_id\":\"m2\"}\n\n")
+				fl.Flush()
+				<-r.Context().Done()
+			}
+		}
+	}))
+	defer srv.Close()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	var out safeBuffer
+	hc := &http.Client{Timeout: 150 * time.Millisecond}
+	s := &Shim{In: pr, Out: &out, Err: io.Discard, URL: srv.URL, Token: "t",
+		AgentKind: "claude", HTTP: hc, Backoff: time.Millisecond, Log: func(string, ...any) {}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	waitUntil(t, func() bool { return strings.Contains(out.String(), `"late"`) })
+	if n := atomic.LoadInt32(&gets); n != 1 {
+		t.Fatalf("wake stream was opened %d times, want 1 (request timeout must not cut it)", n)
+	}
+}
+
+// After a stream that worked ends, the next reconnect waits the base backoff,
+// not an ever-doubling one.
+func TestWakeBackoffResetsAfterAStreamThatWorked(t *testing.T) {
+	var mu sync.Mutex
+	var times []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sessions/self/wake" {
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		mu.Lock()
+		times = append(times, time.Now())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, ": hello\n\n") // connected, then the stream simply ends
+	}))
+	defer srv.Close()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	var out safeBuffer
+	s := &Shim{In: pr, Out: &out, Err: io.Discard, URL: srv.URL, Token: "t",
+		AgentKind: "claude", HTTP: srv.Client(), Backoff: 100 * time.Millisecond,
+		Log: func(string, ...any) {}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	waitUntil(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(times) >= 4 })
+	mu.Lock()
+	defer mu.Unlock()
+	if gap := times[3].Sub(times[2]); gap > 160*time.Millisecond {
+		t.Fatalf("reconnect after a working stream waited %v, want ~100ms (backoff must reset)", gap)
+	}
+}
+
 // A daemon that is down gives an MCP error, not a hang.
 func TestToolCallWithTheDaemonDownReturnsAnError(t *testing.T) {
 	pr, pw := io.Pipe()

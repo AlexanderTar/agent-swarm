@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1352,6 +1353,29 @@ func TestClaudeLaunchAndResumeEnableTodoTools(t *testing.T) {
 	}
 	if r.Env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "1" {
 		t.Fatalf("resume env = %v, want CLAUDE_CODE_ENABLE_TODO_TOOLS=1", r.Env)
+	}
+}
+
+// Claude Code freezes for 30-500 s at startup when several sessions launch
+// together (TASK-1458); its 30 s MCP connect limit then fails a healthy shim.
+func TestClaudeLaunchAndResumeRaiseTheMCPConnectTimeout(t *testing.T) {
+	d := testDeps(t)
+	a := newClaude(d)
+	l, err := a.Launch(claudeSpec(t, d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := claudeSpec(t, d)
+	s.ProviderSessionID = "00000000-0000-4000-8000-000000000000"
+	r, err := a.Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, env := range map[string]map[string]string{"launch": l.Env, "resume": r.Env} {
+		ms, err := strconv.Atoi(env["MCP_TIMEOUT"])
+		if err != nil || ms < 600000 {
+			t.Errorf("%s env MCP_TIMEOUT = %q, want an integer >= 600000 (ms)", name, env["MCP_TIMEOUT"])
+		}
 	}
 }
 

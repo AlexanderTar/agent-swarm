@@ -1286,6 +1286,11 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 	}
+	if !escalated {
+		if err := s.checkMCPDown(ctx, r); err != nil {
+			return err
+		}
+	}
 	if waiting || escalated {
 		if err := s.checkProgressDeadlock(ctx, r); err != nil {
 			return err
