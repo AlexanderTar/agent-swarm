@@ -53,7 +53,56 @@ main() {
     exit 1
   fi
   step "System check passed."
-  # Unit 1 stops here; units 2 and 3 continue with tools, checkout and build.
+
+  step "Installing tools..."
+  missing=""
+  for pkg in go tmux pnpm uv; do
+    if ! brew list --formula --versions "$pkg" >/dev/null 2>&1; then
+      missing="$missing $pkg"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    # shellcheck disable=SC2086
+    if ! brew install $missing <"$tty_in"; then
+      fail "Tool install" "brew install$missing failed." "brew install$missing"
+    fi
+  fi
+  missing_casks=""
+  for cask in ghostty ollama; do
+    if ! brew list --cask --versions "$cask" >/dev/null 2>&1; then
+      missing_casks="$missing_casks $cask"
+    fi
+  done
+  if [ -n "$missing_casks" ]; then
+    # shellcheck disable=SC2086
+    if ! brew install --cask $missing_casks <"$tty_in"; then
+      fail "Tool install" "brew install --cask$missing_casks failed." "brew install --cask$missing_casks"
+    fi
+  fi
+
+  step "Downloading embedding model..."
+  if ! ollama pull qwen3-embedding:0.6b <"$tty_in"; then
+    fail "Model download" "ollama pull qwen3-embedding:0.6b failed." "ollama pull qwen3-embedding:0.6b"
+  fi
+
+  step "Checking out Swarm..."
+  repo_url="https://github.com/AlexanderTar/swarmrun.git"
+  swarm_src="${SWARM_SRC:-$HOME/.swarm/src/swarmrun}"
+  if [ ! -d "$swarm_src/.git" ]; then
+    if ! git clone "$repo_url" "$swarm_src" <"$tty_in"; then
+      fail "Source checkout" "git clone $repo_url failed." "git clone $repo_url $swarm_src"
+    fi
+  else
+    dirty="$(git -C "$swarm_src" status --porcelain)" || fail "Source checkout" "git status in $swarm_src failed." "git -C $swarm_src status"
+    if [ -n "$dirty" ]; then
+      printf 'Checkout at %s has uncommitted changes. Commit or stash them, then re-run this script.\n' "$swarm_src" >&2
+      exit 1
+    fi
+    if ! git -C "$swarm_src" pull --ff-only <"$tty_in"; then
+      fail "Source update" "git pull --ff-only in $swarm_src failed." "git -C $swarm_src pull --ff-only"
+    fi
+  fi
+  # Unit 2 stops here; unit 3 continues with the build and setup.
   exit 0
 }
 
