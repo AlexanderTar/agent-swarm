@@ -274,7 +274,7 @@ func TestResumeWhenAlreadyMigratedSaysSo(t *testing.T) {
 func TestResumeStartsAtStepTwoWhenNoStepEverFinished(t *testing.T) {
 	env := newMigrateEnv(t)
 	j := &migrate.Journal{Version: 1, StartedAt: 1}
-	j.Begin(2, "stop the Agent Swarm 1.x jobs") // StartedAt set, never DoneAt
+	j.Begin(2, "stop the Swarm 1.x jobs") // StartedAt set, never DoneAt
 	if err := j.Save(env.Cfg.Home); err != nil {
 		t.Fatal(err)
 	}
@@ -650,7 +650,7 @@ func TestRollbackReportsARealLaunchctlFailure(t *testing.T) {
 	env.Fake.Responses["launchctl bootstrap gui/501 "+plist] = execx.Result{
 		Err: errors.New("exit status 5: Input/output error")}
 	j := &migrate.Journal{Version: 1, StartedAt: 1}
-	s := j.Begin(2, "stop the Agent Swarm 1.x jobs")
+	s := j.Begin(2, "stop the Swarm 1.x jobs")
 	s.Add(migrate.Action{Kind: "launchctl", Args: []string{"bootstrap", "gui/501", plist}})
 	if err := j.Save(env.Cfg.Home); err != nil {
 		t.Fatal(err)

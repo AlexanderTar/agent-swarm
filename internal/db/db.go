@@ -19,7 +19,7 @@ import (
 const SchemaVersion = 34
 
 var (
-	ErrLegacy = errors.New("Agent Swarm 1.x data found. Run `swarm migrate` first.")
+	ErrLegacy = errors.New("Swarm 1.x data found. Run `swarm migrate` first.")
 	ErrTooNew = errors.New("database is newer than this build")
 )
 

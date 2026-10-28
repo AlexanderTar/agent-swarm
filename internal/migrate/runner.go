@@ -92,13 +92,13 @@ func (r *Runner) Migrate(ctx context.Context) error {
 			//     own step-6 undo (which moves v2 aside before restoring v1) — a bare
 			//     `mv swarm-v1.db swarm.db` would silently clobber it otherwise;
 			//   - "swarm.db does not exist" is called out as its own case rather than
-			//     folded into "is not Agent Swarm 1.x data", which would misdescribe a
+			//     folded into "is not Swarm 1.x data", which would misdescribe a
 			//     missing file.
 			v2Exists := false
 			if _, err := os.Stat(r.v1Path()); err == nil {
 				v2Exists = true
 			}
-			what := fmt.Sprintf("%s is not Agent Swarm 1.x data", r.v1Path())
+			what := fmt.Sprintf("%s is not Swarm 1.x data", r.v1Path())
 			if !v2Exists {
 				what = fmt.Sprintf("%s does not exist", r.v1Path())
 			}
@@ -109,7 +109,7 @@ func (r *Runner) Migrate(ctx context.Context) error {
 					r.v1Path(), r.v1Path(), r.v1Path()))
 			}
 			steps = append(steps,
-				fmt.Sprintf("Put the Agent Swarm 1.x database back: mv %s %s", r.keptPath(), r.v1Path()),
+				fmt.Sprintf("Put the Swarm 1.x database back: mv %s %s", r.keptPath(), r.v1Path()),
 				"Run `swarm doctor --legacy` to see which agent integrations still point at 1.x")
 			var recovery strings.Builder
 			for i, st := range steps {
@@ -140,13 +140,13 @@ func (r *Runner) runFrom(ctx context.Context, j *Journal, first int) error {
 		Name string
 		Fn   func(ctx context.Context, j *Journal, s *Step) error
 	}{
-		{2, "stop the Agent Swarm 1.x jobs", r.stopV1},
+		{2, "stop the Swarm 1.x jobs", r.stopV1},
 		{3, "back up the database and the configuration", r.backup},
 		{4, "build the new database", r.build},
 		{5, "validate the new database", r.validate},
 		{6, "switch the database files", r.switchFiles},
 		{7, "archive and import the knowledge base", r.knowledgeBase},
-		{8, "remove the Agent Swarm 1.x integrations", r.integrations},
+		{8, "remove the Swarm 1.x integrations", r.integrations},
 		{9, "install the new daemon", r.install},
 	}
 	for _, st := range steps {
@@ -182,7 +182,7 @@ func (r *Runner) runFrom(ctx context.Context, j *Journal, first int) error {
 	if err := j.Save(r.home()); err != nil {
 		return err
 	}
-	r.logf("Migration complete. The Agent Swarm 1.x database is kept at %s.", r.keptPath())
+	r.logf("Migration complete. The Swarm 1.x database is kept at %s.", r.keptPath())
 	return nil
 }
 
@@ -195,7 +195,7 @@ func (r *Runner) preflight(ctx context.Context) error {
 	defer d.Close()
 	v, err := V1Version(ctx, d)
 	if err != nil {
-		return fmt.Errorf("reading the Agent Swarm 1.x schema version: %w", err)
+		return fmt.Errorf("reading the Swarm 1.x schema version: %w", err)
 	}
 	if v != 3 && v != 4 {
 		return fmt.Errorf("%s is at schema version %d; swarm migrate handles versions 3 and 4", r.v1Path(), v)
@@ -479,7 +479,7 @@ func (r *Runner) DryRun(ctx context.Context) error {
 	r.logf("swarm migrate would:")
 	r.logf("  stop %s and %s", install.Label, install.UpdaterLabel)
 	r.logf("  back up %s to %s/backups/", r.v1Path(), r.home())
-	r.logf("  import %d Agent Swarm 1.x tasks into this tree:", len(src))
+	r.logf("  import %d Swarm 1.x tasks into this tree:", len(src))
 	for _, root := range Table {
 		from := "spec-authored"
 		if len(root.From) > 0 {
@@ -496,7 +496,7 @@ func (r *Runner) DryRun(ctx context.Context) error {
 	r.logf("  leave these in %s: %s", r.keptPath(), strings.Join(NotImported, ", "))
 	r.logf("  rename %s to %s", r.v1Path(), r.keptPath())
 	r.logf("  archive kb/inbox and kb/handoffs to %s", filepath.Join(r.home(), "kb-archive"))
-	r.logf("  remove the Agent Swarm 1.x integrations and run swarm install")
+	r.logf("  remove the Swarm 1.x integrations and run swarm install")
 	return nil
 }
 

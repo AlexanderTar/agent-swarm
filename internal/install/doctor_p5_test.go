@@ -50,7 +50,7 @@ func TestChecksFailOnlyOnTheCodexMCPTableFromTheLegacyList(t *testing.T) {
 	if !names["Codex MCP"] {
 		t.Error("Codex MCP must fail while [mcp_servers.swarm] exists (§11.1)")
 	}
-	if names["Agent Swarm 1.x"] {
+	if names["Swarm 1.x"] {
 		t.Error("the release folders must not fail plain doctor; they are --legacy only")
 	}
 }
@@ -60,7 +60,7 @@ func TestLegacyChecksListEveryLeftoverAndPassWhenClean(t *testing.T) {
 	c := fakeHome(t)
 	d := newTestDoctor(t, c)
 	got := d.LegacyChecks(context.Background())
-	if len(got) != 1 || !got[0].OK || got[0].Name != "Agent Swarm 1.x" {
+	if len(got) != 1 || !got[0].OK || got[0].Name != "Swarm 1.x" {
 		t.Fatalf("clean = %+v", got)
 	}
 	if err := os.MkdirAll(filepath.Join(c.Home, "bin"), 0o755); err != nil {

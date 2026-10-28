@@ -300,7 +300,7 @@ func TestLegacyDatabaseIsRefused(t *testing.T) {
 	raw.Exec(`CREATE TABLE schema_meta (version INTEGER)`)
 	raw.Close()
 	_, err := db.Open(ctx, path)
-	if !errors.Is(err, db.ErrLegacy) || err.Error() != "Agent Swarm 1.x data found. Run `swarm migrate` first." {
+	if !errors.Is(err, db.ErrLegacy) || err.Error() != "Swarm 1.x data found. Run `swarm migrate` first." {
 		t.Fatalf("err = %v", err)
 	}
 }

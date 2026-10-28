@@ -355,7 +355,7 @@ func TestTokenIsReusedAndLegacyDataRefused(t *testing.T) {
 	d.Exec(`CREATE TABLE schema_meta (version INTEGER)`)
 	d.Close()
 	err := serve(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: legacy, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
-	if err == nil || err.Error() != "Agent Swarm 1.x data found. Run `swarm migrate` first." {
+	if err == nil || err.Error() != "Swarm 1.x data found. Run `swarm migrate` first." {
 		t.Fatalf("legacy = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(legacy, "run", "daemon.token")); !os.IsNotExist(err) {
@@ -906,7 +906,7 @@ func TestDoctorLegacyPrintsOnlyTheLegacyBlock(t *testing.T) {
 		return nil
 	}
 	doctorLegacyChecks = func(context.Context, install.Doctor) []install.Check {
-		return []install.Check{{Name: "Agent Swarm 1.x", OK: false, Detail: "leftover at /fake/x"}}
+		return []install.Check{{Name: "Swarm 1.x", OK: false, Detail: "leftover at /fake/x"}}
 	}
 	var out bytes.Buffer
 	code := run([]string{"doctor", "--legacy", "--home", t.TempDir()}, &out, io.Discard)
@@ -918,7 +918,7 @@ func TestDoctorLegacyPrintsOnlyTheLegacyBlock(t *testing.T) {
 	}
 }
 
-// seedLegacyDB writes a minimal Agent Swarm 1.x database at path (C5).
+// seedLegacyDB writes a minimal Swarm 1.x database at path (C5).
 func seedLegacyDB(t *testing.T, path string) {
 	t.Helper()
 	d, err := sql.Open("sqlite", "file:"+path)
@@ -970,7 +970,7 @@ func TestInstallRefusesWithLegacyData(t *testing.T) {
 	if code == 0 {
 		t.Fatal("want a non-zero exit")
 	}
-	if want := "Agent Swarm 1.x data found. Run `swarm migrate` first."; !strings.Contains(errOut.String(), want) {
+	if want := "Swarm 1.x data found. Run `swarm migrate` first."; !strings.Contains(errOut.String(), want) {
 		t.Errorf("stderr = %q, want %q", errOut.String(), want)
 	}
 }

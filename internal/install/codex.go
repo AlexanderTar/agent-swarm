@@ -428,13 +428,13 @@ func codexHookCheck(c Config) Check {
 func codexMCPCheck(c Config) Check {
 	body, err := os.ReadFile(c.Codex("config.toml"))
 	if err != nil {
-		return Check{"Codex MCP", true, "No Agent Swarm 1.x MCP table."}
+		return Check{"Codex MCP", true, "No Swarm 1.x MCP table."}
 	}
 	if hasLegacyCodexMCP(string(body), c.Bin) {
 		return Check{"Codex MCP", false,
-			"Agent Swarm 1.x [mcp_servers.swarm] is still in " + c.Codex("config.toml") + ". Run swarm install."}
+			"Swarm 1.x [mcp_servers.swarm] is still in " + c.Codex("config.toml") + ". Run swarm install."}
 	}
-	return Check{"Codex MCP", true, "No Agent Swarm 1.x MCP table."}
+	return Check{"Codex MCP", true, "No Swarm 1.x MCP table."}
 }
 
 // codexAttributionCheck reads the newest rollout and warns when the account has

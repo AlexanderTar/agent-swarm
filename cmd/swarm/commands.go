@@ -175,7 +175,7 @@ var doctorChecks = func(ctx context.Context, d install.Doctor) []install.Check {
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs, home, base := flags("doctor", stderr, true)
 	asJSON := fs.Bool("json", false, "print JSON")
-	legacy := fs.Bool("legacy", false, "report Agent Swarm 1.x state left on this Mac")
+	legacy := fs.Bool("legacy", false, "report Swarm 1.x state left on this Mac")
 	if code, done := parse(fs, args); done {
 		return code
 	}
@@ -212,7 +212,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	fs, home, base := flags("install", stderr, true) // --url: D3's prune asks the daemon
 	dry := fs.Bool("dry-run", false, "print what would change")
 	plugins := fs.Bool("plugins", false, "only install or update the superpowers plugins and graphify")
-	yes := fs.Bool("yes", false, "answer the Agent Swarm 1.x removal prompt with yes")
+	yes := fs.Bool("yes", false, "answer the Swarm 1.x removal prompt with yes")
 	live := fs.Bool("live", false, liveUsage)
 	if code, done := parse(fs, args); done {
 		return code
@@ -237,7 +237,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		// A dry run reports the plist and stops before touching agent configuration.
 		// An isolated install never touches either, so it doesn't claim to.
 		if !cfg.Isolated {
-			fmt.Fprintln(stdout, "Would remove the Agent Swarm 1.x integrations and write the agent configuration.")
+			fmt.Fprintln(stdout, "Would remove the Swarm 1.x integrations and write the agent configuration.")
 		}
 		return 0
 	}

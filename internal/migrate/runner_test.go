@@ -432,7 +432,7 @@ func TestDefaultStatfsReportsFreeBytesOnATempDir(t *testing.T) {
 	}
 }
 
-// C1(d): swarm-v1.db existing alongside a swarm.db that is NOT Agent Swarm 1.x
+// C1(d): swarm-v1.db existing alongside a swarm.db that is NOT Swarm 1.x
 // data, with no journal at all, means an earlier migration or rollback did not
 // finish cleanly (a broken --rollback deleted the journal without ever actually
 // restoring v1 — see the Ctrl-C-mid-step-6 scenario). "Already migrated" would be
@@ -490,7 +490,7 @@ func TestMigrateRefusesWhenSwarmV1DBExistsButSwarmDBIsNotLegacyAndNoJournalExist
 // O3 round 3, item 4: swarm.db can be MISSING entirely in this same broken state
 // (HasLegacyData is false for a missing file too), which is a different case from
 // "swarm.db exists but isn't v1 data" — there is nothing to move aside, and the
-// message must not claim the (nonexistent) file "is not Agent Swarm 1.x data".
+// message must not claim the (nonexistent) file "is not Swarm 1.x data".
 func TestMigrateRefusalMessageOmitsMoveAsideWhenSwarmDBIsMissing(t *testing.T) {
 	env := newMigrateEnv(t)
 	if err := env.Runner.Migrate(context.Background()); err != nil {
@@ -511,8 +511,8 @@ func TestMigrateRefusalMessageOmitsMoveAsideWhenSwarmDBIsMissing(t *testing.T) {
 	if strings.Contains(err.Error(), "aside") || strings.Contains(err.Error(), "overwrite") {
 		t.Errorf("err = %v, want no move-aside step: there is nothing to overwrite", err)
 	}
-	if strings.Contains(err.Error(), "is not Agent Swarm 1.x data") {
-		t.Errorf("err = %v, must not describe a missing file as \"is not Agent Swarm 1.x data\"", err)
+	if strings.Contains(err.Error(), "is not Swarm 1.x data") {
+		t.Errorf("err = %v, must not describe a missing file as \"is not Swarm 1.x data\"", err)
 	}
 	if !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("err = %v, want it to say swarm.db does not exist", err)

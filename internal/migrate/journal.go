@@ -1,4 +1,4 @@
-// Package migrate imports an Agent Swarm 1.x database into the new schema and
+// Package migrate imports a Swarm 1.x database into the new schema and
 // rewrites the v1 integrations (§20). Every destructive step is journaled before it
 // runs, so --resume and --rollback always have something to work from (S-7).
 package migrate

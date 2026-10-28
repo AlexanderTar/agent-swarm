@@ -164,7 +164,7 @@ func TestInstallRefusesLegacyData(t *testing.T) {
 	}
 	for _, dry := range []bool{true, false} {
 		err := Install(bg, c, (&execx.Fake{}).Runner(), dry, io.Discard)
-		if err == nil || err.Error() != "Agent Swarm 1.x data found. Run `swarm migrate` first." {
+		if err == nil || err.Error() != "Swarm 1.x data found. Run `swarm migrate` first." {
 			t.Fatalf("dry=%v: %v", dry, err)
 		}
 	}

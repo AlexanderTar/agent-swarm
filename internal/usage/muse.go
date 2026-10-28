@@ -384,7 +384,7 @@ func (m *Muse) probe(ctx context.Context) (museSubscriptionUsage, error) {
 		// MSP requires ^[a-z0-9_]+$ here. A hyphen does NOT fail loudly: the
 		// initialize response still arrives, the initialized notification is
 		// dropped (FR-008), and every later call answers notInitialized.
-		"clientInfo": map[string]any{"name": "swarm", "title": "agent-swarm", "version": "0.0.0"},
+		"clientInfo": map[string]any{"name": "swarm", "title": "swarm", "version": "0.0.0"},
 	}); err != nil {
 		return zero, fmt.Errorf("muse: initialize: %w", err)
 	}

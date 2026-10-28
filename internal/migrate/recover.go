@@ -94,7 +94,7 @@ func (r *Runner) Rollback(ctx context.Context) error {
 		}
 	}
 	if unrestorable {
-		r.logf("The Agent Swarm 1.x symlinks and release folders were not re-created; "+
+		r.logf("The Swarm 1.x symlinks and release folders were not re-created; "+
 			"they pointed into %s, which is gone. Everything else was restored.", r.home()+"/app")
 	}
 	if err := os.Remove(JournalPath(r.home())); err != nil && !os.IsNotExist(err) {
@@ -117,12 +117,12 @@ func (r *Runner) Rollback(ctx context.Context) error {
 				msg.WriteString("\n")
 			}
 			fmt.Fprintf(&msg, "step(s) %v were interrupted mid-step (a hard crash or Ctrl-C) "+
-				"and may have done more than was journaled; verify Agent Swarm 1.x by hand before trusting it",
+				"and may have done more than was journaled; verify Swarm 1.x by hand before trusting it",
 				incomplete)
 		}
 		return errors.New(msg.String())
 	}
-	r.logf("Rolled back. Agent Swarm 1.x is running again.")
+	r.logf("Rolled back. Swarm 1.x is running again.")
 	return nil
 }
 
