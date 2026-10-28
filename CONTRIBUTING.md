@@ -65,7 +65,7 @@ Or, if you work on Swarm yourself, turn fixes into pull requests:
 ```markdown
 ## Fixing Swarm bugs upstream
 
-Whenever you report a Swarm bug with `swarm_report_bug`, pass `board: true` so it lands on the board as a Draft bug. When I start that bug and it's fixed and verified in my fork of agent-swarm, offer to open a pull request against AlexanderTar/swarmrun `main` (`gh pr create -R AlexanderTar/swarmrun`), following CONTRIBUTING.md: signed conventional commits, `make test-go` passing, and the bug report summarised in the description. Ask me before pushing or opening the pull request.
+Whenever you report a Swarm bug with `swarm_report_bug`, pass `board: true` so it lands on the board as a Draft bug. When I start that bug and it's fixed and verified in my fork of swarmrun, offer to open a pull request against AlexanderTar/swarmrun `main` (`gh pr create -R AlexanderTar/swarmrun`), following CONTRIBUTING.md: signed conventional commits, `make test-go` passing, and the bug report summarised in the description. Ask me before pushing or opening the pull request.
 ```
 
 ## Security

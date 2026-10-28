@@ -25,7 +25,7 @@ var swarmRepoRemoteFragments = []string{"AlexanderTar/swarmrun", "AlexanderTar/a
 
 // ---------- swarm_report_bug ----------
 
-// reportBugTool lets any bound agent file a bug against agent-swarm itself.
+// reportBugTool lets any bound agent file a bug against swarmrun itself.
 // swarm_items create without a parent can't serve that: it is refused to
 // children, and items.CreateTx refuses a chore's orchestrator, so this tool
 // creates the Draft root bug as the daemon and sets the origin itself.
