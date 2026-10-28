@@ -116,3 +116,34 @@ func TestReclaimChromeClonesMissingRootIsNoop(t *testing.T) {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 }
+
+// lsof reports real paths (/private/var/...) while DARWIN_USER_DIR is spelled
+// through the /var symlink, so a held clone must match across both spellings.
+func TestReclaimChromeClonesHeldOpenMatchesAcrossSymlinkedRoot(t *testing.T) {
+	s, _ := cloneStore(t)
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "X")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	s.CloneRoot = link
+	heldFile := mkClone(t, s, real, "com.google.Chrome", "FFF", 2*time.Hour)
+	heldProc := mkClone(t, s, real, "com.google.Chrome", "GGG", 2*time.Hour)
+	s.OpenPaths = func() ([]string, error) {
+		return []string{filepath.Join(heldFile, "Chrome.app/Contents/MacOS/Chrome")}, nil
+	}
+	linkProc := filepath.Join(link, "com.google.Chrome.code_sign_clone", "code_sign_clone.GGG", "Chrome.app/Contents/MacOS/Chrome")
+	(&fakeProcs{procs: []OSProc{{PID: 9, Args: linkProc + " --headless"}}}).install(s)
+
+	if _, err := s.ReclaimChromeClones(context.Background(), CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{heldFile, heldProc} {
+		if !exists(p) {
+			t.Fatalf("%s is held open and must be kept", p)
+		}
+	}
+}

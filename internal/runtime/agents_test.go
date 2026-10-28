@@ -196,7 +196,11 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 			return map[string]string{"USER": getenv("USER"), "HOME": getenv("HOME"), "PATH": getenv("PATH")}
 		},
 		After: clk.After,
-		Go:    func(f func()) { f() }, // D28: inline, so the assertions are deterministic
+		// Never the developer's real code_sign_clone root or real lsof/ps.
+		CloneRoot: t.TempDir(),
+		OpenPaths: func() ([]string, error) { return nil, nil },
+		Procs:     func() ([]OSProc, error) { return nil, nil },
+		Go:        func(f func()) { f() }, // D28: inline, so the assertions are deterministic
 	}
 	it.StoryReadyForReview = s.OnStoryReadyForReview
 	it.CheckWorkflowBriefs = s.CheckLiveWorkflowBriefs

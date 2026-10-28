@@ -52,6 +52,13 @@ func (s *Store) ReclaimChromeClones(ctx context.Context, opt CleanupOptions) ([]
 	if root == "" {
 		return nil, nil
 	}
+	// lsof reports real paths (/private/var/...) while the root is spelled
+	// through the /var symlink, so clones are found under the resolved root
+	// and held-open checks try both spellings.
+	linkRoot := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	apps, err := filepath.Glob(filepath.Join(root, "*.code_sign_clone"))
 	if err != nil || len(apps) == 0 {
 		return nil, err
@@ -91,15 +98,19 @@ func (s *Store) ReclaimChromeClones(ctx context.Context, opt CleanupOptions) ([]
 	if err != nil {
 		return nil, err
 	}
+	shown := func(clone string) string { return linkRoot + strings.TrimPrefix(clone, root) }
 	heldBy := func(clone string) bool {
-		for _, p := range held {
-			if p == clone || strings.HasPrefix(p, clone+"/") {
-				return true
+		spellings := []string{clone, shown(clone)}
+		for _, sp := range spellings {
+			for _, p := range held {
+				if p == sp || strings.HasPrefix(p, sp+"/") {
+					return true
+				}
 			}
-		}
-		for _, p := range procs {
-			if strings.Contains(p.Args, clone+"/") {
-				return true
+			for _, p := range procs {
+				if strings.Contains(p.Args, sp+"/") {
+					return true
+				}
 			}
 		}
 		return false
@@ -114,7 +125,7 @@ func (s *Store) ReclaimChromeClones(ctx context.Context, opt CleanupOptions) ([]
 			return results, ctx.Err()
 		}
 		keep := func(reason string) {
-			results = append(results, CleanupResult{Path: c, Action: "kept", Reason: reason})
+			results = append(results, CleanupResult{Path: shown(c), Action: "kept", Reason: reason})
 		}
 		fi, err := os.Lstat(c)
 		if err != nil || !fi.IsDir() {
@@ -130,7 +141,7 @@ func (s *Store) ReclaimChromeClones(ctx context.Context, opt CleanupOptions) ([]
 			continue
 		}
 		if opt.DryRun {
-			results = append(results, CleanupResult{Path: c, Action: "would_remove"})
+			results = append(results, CleanupResult{Path: shown(c), Action: "would_remove"})
 			continue
 		}
 		if err := os.RemoveAll(c); err != nil {
@@ -139,7 +150,7 @@ func (s *Store) ReclaimChromeClones(ctx context.Context, opt CleanupOptions) ([]
 			continue
 		}
 		s.logf("chrome clone: removed %s", c)
-		results = append(results, CleanupResult{Path: c, Action: "removed"})
+		results = append(results, CleanupResult{Path: shown(c), Action: "removed"})
 	}
 	return results, nil
 }
