@@ -145,3 +145,32 @@ func TestRemoveRetainsANonGitFolderWithOtherFilesAsNotAWorktree(t *testing.T) {
 		t.Fatalf("WouldRemove = %v, %q, want false, not_a_worktree", ok, reason)
 	}
 }
+
+func TestDiscardRemovesANotAWorktreeFolder(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/discard-stray",
+		OwnerAgentID: "agt_2", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	strand(t, wt.Path, "notes.txt")
+	if _, err := s.Remove(ctx, wt.ID, "agt_2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = 1 WHERE id = 'agt_2'`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := s.Discard(ctx, wt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", got)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+}

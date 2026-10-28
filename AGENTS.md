@@ -1,6 +1,6 @@
 # Worktree reclaim
 
-A squash already on the remote default branch counts as merged; a conflicting or differing merge-tree does not. Retained trees are re-checked by the reclaim pass, and build churn is discarded only after the root is done or cancelled. Rules and commands: docs/worktree-cleanup.md.
+A squash already on the remote default branch counts as merged; a conflicting or differing merge-tree does not. Retained trees are re-checked by the reclaim pass, and build churn is discarded only after the root is done or cancelled. Rules and commands: docs/worktree-cleanup.md. A worktree folder with no `.git` is `not_a_worktree` (watchman-cookie-only ones are deleted); never read a git failure there as dirty (same doc).
 
 # Testing and coverage (strict)
 

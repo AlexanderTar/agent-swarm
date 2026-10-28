@@ -1057,7 +1057,13 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	if out, cerr := s.git(ctx, repoPath, "rev-list", "--count", wt.BaseRef+".."+head); cerr == nil {
 		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
 	}
-	if fileExists(wt.Path) {
+	if isStray, _ := stray(wt.Path); isStray && s.underWorktrees(wt.Path) {
+		// Not a worktree any more, so git has nothing to remove.
+		if err := os.RemoveAll(wt.Path); err != nil {
+			return Worktree{}, 0, err
+		}
+		_, _ = s.git(ctx, repoPath, "worktree", "prune")
+	} else if fileExists(wt.Path) {
 		if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", wt.Path); rerr != nil {
 			return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", wt.Path, rerr, strings.TrimSpace(string(out)))
 		}

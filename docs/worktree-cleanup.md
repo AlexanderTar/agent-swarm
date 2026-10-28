@@ -43,7 +43,7 @@ Keep it retained when the root is still in progress, when porcelain has an untra
 swarm cleanup --dry-run
 ```
 
-A kept worktree is a line `worktree kept <path> (<reason>)`. `--dry-run` deletes nothing and writes no worktree rows. It can still run `git merge-tree --write-tree`, which stores a tree object in the repo, so the pass is not strictly free of git writes. `dirty` is uncommitted work that is not build churn. `unmerged` is commits that none of the evidence above covers. Run it with `--home` pointing at a scratch directory when you are not inspecting the live home (docs/isolated-runs.md). Never pass `--live`.
+A kept worktree is a line `worktree kept <path> (<reason>)`. `--dry-run` deletes nothing and writes no worktree rows. It can still run `git merge-tree --write-tree`, which stores a tree object in the repo, so the pass is not strictly free of git writes. `dirty` is uncommitted work that is not build churn. `not_a_worktree` is a folder that lost its `.git` and holds files other than watchman cookies. `unmerged` is commits that none of the evidence above covers. Run it with `--home` pointing at a scratch directory when you are not inspecting the live home (docs/isolated-runs.md). Never pass `--live`.
 
 ## Discard by hand
 
@@ -54,6 +54,23 @@ swarm cleanup --discard <path-or-id>
 Removes that worktree when its owner is not live and no live agent holds a reservation. The root item can still be in progress. An owner is live when `agents.state` is `queued` or `active`, or when that agent has a session in `spawning`, `running`, `pause_requested`, `quiescing`, or `stopping` — the same session list as `reclaimGateWhere`. A finished agent whose session is still quiescing is refused. The branch is kept.
 
 The path is `filepath.Clean`'d before the row lookup, so a trailing slash, `//`, or `/./` still hits the row and its gates. A spelling `Clean` does not fold onto the stored path, such as a symlink, is refused when any non-removed row resolves to the same directory: pass the recorded path or the id. A directory under the home's `worktrees/` with no swarm row is removed with `git worktree remove --force` in the repo whose `git worktree list --porcelain` names it.
+
+## Watchman cookies and half-deleted trees
+
+Cause (BUG-132): watchman, when it watches a worktree, keeps writing `.watchman-cookie-<host>-<pid>-<n>` files into it. `git worktree remove` deletes `.git` and the tracked files, then fails with `failed to delete ...: Directory not empty` when a cookie lands mid-delete. The folder is left with no `.git`, so every later pass ran `git status` in a non-git folder, read the error as dirty, and kept the row as `dirty` forever.
+
+What `remove` does now (`internal/worktree/worktree.go`):
+
+- Before `git worktree remove` it runs `watchman watch-del <path>` (errors and a missing watchman are ignored) and deletes `.watchman-cookie-*` in the folder. Cookies are never dirt: `DirtyStrict` ignores `??` lines for them.
+- On `Directory not empty` it clears cookies and retries once.
+- A folder with no `.git` is a stray, not a worktree. Cookies only (or empty): `os.RemoveAll`, `git worktree prune`, row `removed`. Anything else: row `retained` with reason `not_a_worktree`, folder untouched. The retained row and `swarm cleanup` show the reason (`worktree kept <path> (not_a_worktree)`).
+- The reclaim pass re-judges retained rows, so an old stuck `dirty` row with a cookie-only folder is cleared on the next pass without manual steps.
+
+What to do with a `not_a_worktree` row: look at the folder, then `swarm cleanup --discard <path-or-id>`, which deletes the folder and prunes the repo (no `git worktree remove` on a non-git folder).
+
+Never `rm -rf` a worktree by hand while watchman runs: it can recreate the folder with cookies. Never read a `git status` failure in a folder with no `.git` as work to keep; check `.git` first.
+
+Reproduce: `go test ./internal/worktree -run 'WatchmanCookies|NonGit|NotAWorktree'` and `go test ./internal/runtime -run StuckDirtyRow`.
 
 ## Tests
 
