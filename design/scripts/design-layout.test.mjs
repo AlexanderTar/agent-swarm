@@ -27,6 +27,8 @@ test("design-system.json has the artifact index shape", () => {
     assert.equal(typeof entry.type, "string");
   }
   assert.ok(index.lastChange?.by && index.lastChange?.at, "missing lastChange");
+  assert.match(index.lastChange.at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "lastChange.at must be a full ISO timestamp (the page shows it)");
+  assert.ok(!/(TASK-|-coder)/.test(`${index.lastChange.by} ${index.lastChange.via}`), "lastChange must not name an agent or task code (the page shows it)");
 });
 
 test("every preview starts with an @dsCard marker (Cover included)", () => {
@@ -35,7 +37,24 @@ test("every preview starts with an @dsCard marker (Cover included)", () => {
   assert.ok(names.includes("Cover"), "missing components/Cover");
   for (const name of names) {
     const html = readFileSync(join(dir, name, "preview.html"), "utf8");
-    assert.match(html, /^<!-- @dsCard( group="[^"]+")?( height=\d+)? -->\n/, `${name}/preview.html must start with an @dsCard marker`);
+    assert.match(html, /^<!-- @dsCard( group="[^"]+")?( width=\d+)?( height=\d+)? -->\n/, `${name}/preview.html must start with an @dsCard marker`);
+  }
+});
+
+test("Cover carries its layout width and renders against the repo tokens", () => {
+  const html = readFileSync(join(DESIGN_DIR, "components", "Cover", "preview.html"), "utf8");
+  assert.match(html, /^<!-- @dsCard width=960 height=288 -->\n/, "Cover marker must carry width=960 (its .cover layout px)");
+  assert.ok(html.includes('<link rel="stylesheet" href="../../tokens.css">'), "Cover must link tokens.css like the other previews");
+  assert.ok(html.includes('<link rel="stylesheet" href="../../fonts/fonts.css">'), "Cover must link fonts.css like the other previews");
+});
+
+test("every preview renders against the repo tokens and fonts", () => {
+  const dir = join(DESIGN_DIR, "components");
+  const names = readdirSync(dir).filter((n) => statSync(join(dir, n)).isDirectory());
+  for (const name of names) {
+    const html = readFileSync(join(dir, name, "preview.html"), "utf8");
+    assert.ok(html.includes('<link rel="stylesheet" href="../../tokens.css">'), `${name}/preview.html must link tokens.css`);
+    assert.ok(html.includes('<link rel="stylesheet" href="../../fonts/fonts.css">'), `${name}/preview.html must link fonts.css`);
   }
 });
 

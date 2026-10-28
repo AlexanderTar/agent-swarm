@@ -95,19 +95,41 @@ const lines = [
   "",
 ];
 
-const emit = (group, name, value, usage) => {
-  const css = resolveValue(group, value);
-  const note = usage ? ` /* ${usage} */` : "";
-  css.split("\n").forEach((part, i, all) => {
+// Split a resolved value into layers at top-level commas (commas inside
+// functions like linear-gradient(...) stay put). Data keeps real comma
+// separators; the generator only wraps them one layer per line.
+const splitLayers = (css) => {
+  const layers = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of css) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      layers.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  layers.push(cur);
+  return layers.map((s) => s.trim()).filter((s) => s.length > 0);
+};
+
+// Usage strings stay in tokens.json (the artifact page shows them); the
+// generated CSS omits them so multi-line values stay readable.
+const emit = (group, name, value) => {
+  const layers = splitLayers(resolveValue(group, value));
+  layers.forEach((layer, i) => {
     const first = i === 0 ? `  --${name}: ` : "    ";
-    const last = i === all.length - 1 ? `;${note}` : ",";
-    lines.push(`${first}${part.trimEnd()}${last}`);
+    const last = i === layers.length - 1 ? ";" : ",";
+    lines.push(`${first}${layer}${last}`);
   });
 };
 
 lines.push("  /* color */");
 for (const token of doc.color.tokens) {
-  emit("color", token.name, token.value, token.usage);
+  emit("color", token.name, token.value);
 }
 lines.push("");
 
@@ -125,7 +147,7 @@ for (const [key, group] of FAMILIES) {
   if (family === undefined) continue;
   lines.push(`  /* ${group} */`);
   for (const token of family.tokens) {
-    emit(key, token.name, token.value, token.usage);
+    emit(key, token.name, token.value);
   }
   lines.push("");
 }

@@ -41,9 +41,9 @@
     "sections": []
   },
   "lastChange": {
-    "by": "design-folder-in-the-coder",
-    "at": "2026-10-28",
-    "via": "TASK-1478",
+    "by": "Alexander Taraymovich",
+    "at": "2026-10-28T15:17:18Z",
+    "via": "Claude Code",
     "note": "Converted design/ to the Design System artifact file layout."
   }
 }

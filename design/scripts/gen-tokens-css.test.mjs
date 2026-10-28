@@ -80,7 +80,7 @@ const LIST_VALID = {
   },
   shadow: {
     tokens: [
-      { name: "shadow-frame", value: { dark: "0 0 0 1px {border}\n0 1px 2px black" }, usage: "elevation" },
+      { name: "shadow-frame", value: { dark: "0 0 0 1px {border},\n0 1px 2px black" }, usage: "elevation" },
     ],
   },
 };
@@ -108,9 +108,15 @@ test("rejects a list-format token without a dark value", () => {
 });
 
 // Differences the repo keeps on purpose, documented in design/README.md.
-// Empty today: the generated CSS is identical to the committed file.
 const ALLOW_LIST = new Map([
-  // e.g. ["--renamed-token", "renamed on <date>: old value -> new value"],
+  [
+    "--gradient-brand",
+    "artifact page-readable fix: {brand-*} aliases resolved to literal hex; renders identically to var(--brand-*)",
+  ],
+  [
+    "--gradient-night",
+    "artifact page-readable fix: {night-*} aliases resolved to literal hex; renders identically to var(--night-*)",
+  ],
 ]);
 
 function parseVars(css) {
@@ -155,6 +161,51 @@ test("tokens.json stays in the page-readable artifact grammar (no raw var())", (
   assert.ok(shadow["shadow-frame"]?.includes("{border}"), "repo keeps the var()-bearing frame shadow as an alias");
   const gradient = Object.fromEntries(doc.gradient.tokens.map((t) => [t.name, t.value]));
   assert.ok(gradient["gradient-hero"]?.includes("\n"), "repo keeps the multi-line hero glow");
+});
+
+test("multi-layer token values keep real comma separators (a bare newline is invalid CSS as data)", () => {
+  const doc = JSON.parse(readFileSync(TOKENS_JSON, "utf8"));
+  const bad = [];
+  const scan = (where, value) => {
+    const raw = typeof value === "string" ? value : value?.dark;
+    if (typeof raw === "string" && /[^,]\n/.test(raw)) bad.push(where);
+  };
+  for (const token of doc.color.tokens) scan(`color:${token.name}`, token.value);
+  for (const [key, family] of Object.entries(doc)) {
+    if (!family || typeof family !== "object" || !Array.isArray(family.tokens)) continue;
+    for (const token of family.tokens) scan(`${key}:${token.name}`, token.value);
+  }
+  assert.deepEqual(bad, [], `values join layers with a newline but no comma: ${bad.join(", ")}`);
+});
+
+// Tokens the artifact page drops or clamps, matched against the named set in
+// design/README.md. Rules from the reference conversion: the page reads
+// {alias} only in color tokens, drops drop-shadow() shadows, and clamps
+// gradients over 200 chars.
+const EXPECTED_PAGE_DROPPED = new Map([
+  ["shadow-frame", "repo-only: {alias} outside color; the page drops it, the CSS keeps var(--border)"],
+  ["focus-ring", "repo-only: {alias} outside color; the page drops it, the CSS keeps var(--background) and var(--ring)"],
+  ["shadow-icon", "repo-only: drop-shadow() form; the page drops it, the site uses it with filter:"],
+  ["gradient-hero", "repo-only: exceeds the page gradient length cap"],
+]);
+
+test("page-dropped tokens match the named expected set", () => {
+  const doc = JSON.parse(readFileSync(TOKENS_JSON, "utf8"));
+  const dropped = [];
+  for (const [key, family] of Object.entries(doc)) {
+    if (key === "color" || !family || typeof family !== "object" || !Array.isArray(family.tokens)) continue;
+    for (const token of family.tokens) {
+      const raw = typeof token.value === "string" ? token.value : token.value?.dark ?? "";
+      if (key === "shadow" && raw.startsWith("drop-shadow(")) dropped.push(token.name);
+      else if (/[{}]/.test(raw)) dropped.push(token.name);
+      else if (key === "gradient" && raw.length > 200) dropped.push(token.name);
+    }
+  }
+  assert.deepEqual(
+    dropped.sort(),
+    [...EXPECTED_PAGE_DROPPED.keys()].sort(),
+    `page-dropped set changed; update EXPECTED_PAGE_DROPPED and design/README.md together: ${dropped.join(", ")}`,
+  );
 });
 
 test("--check passes on fresh output and exits 1 when stale", () => {

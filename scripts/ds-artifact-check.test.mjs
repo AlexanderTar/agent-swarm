@@ -104,6 +104,21 @@ test("compares assets against the downloaded uploads", () => {
   assert.match(r.out, /assets\/Logos\/app-icon\.svg/);
 });
 
+test("compares SVGs after canonical serialization (the upload store rewrites empty-element tags)", () => {
+  const { design, project } = setup();
+  // Same vector, once as self-closing tags and once as explicit close tags
+  // with different inter-tag whitespace: the upload store rewrites one form
+  // into the other on publish.
+  plant(design, "assets/Logos/glyph.svg", '<svg><circle cx="12" cy="5" r="3"/><path d="M0 0h1"/></svg>\n');
+  plant(project, "assets/Logos/glyph.svg", '<svg>\n  <circle cx="12" cy="5" r="3"></circle>\n  <path d="M0 0h1" ></path>\n</svg>\n');
+  const r = run(design, project);
+  assert.equal(r.code, 0, `re-serialized SVG must compare equal: ${r.out}`);
+  plant(project, "assets/Logos/glyph.svg", '<svg><circle cx="12" cy="6" r="3"/><path d="M0 0h1"/></svg>\n');
+  const changed = run(design, project);
+  assert.notEqual(changed.code, 0, "a real SVG change must still fail");
+  assert.match(changed.out, /assets\/Logos\/glyph\.svg/);
+});
+
 test("exits 2 when the project dir is missing", () => {
   const { design } = setup();
   let code = 0;

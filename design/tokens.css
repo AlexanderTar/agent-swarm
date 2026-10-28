@@ -5,147 +5,156 @@
   color-scheme: dark;
 
   /* color */
-  --violet-600: #5f4fd8; /* primary pressed */
-  --violet-500: #6e5ce6; /* THE brand colour: solid fills, primary buttons */
-  --violet-400: #7b5cf0; /* primary hover; same value as --brand-mid */
-  --violet-300: #a298ff; /* brand ink: links, focus ring, accents on dark */
-  --violet-100: #d8d0f7; /* text on night surfaces */
-  --brand-from: #5b7cfa; /* icon gradient start; art only, never behind text */
-  --brand-mid: #7b5cf0; /* icon gradient mid (55%) */
-  --brand-to: #9b4fe0; /* icon gradient end */
-  --night-900: #14102e; /* night colour */
-  --night-800: #1d1646; /* night colour */
-  --night-700: #2a1660; /* night colour */
-  --night-shadow: #180b4a; /* icon glyph shadow colour */
-  --neutral-950: #0b0b0e; /* neutral colour */
-  --neutral-900: #121217; /* neutral colour */
-  --neutral-850: #17171d; /* neutral colour */
-  --neutral-800: #1c1c23; /* neutral colour */
-  --neutral-750: #26262f; /* neutral colour */
-  --neutral-700: #2f2f3a; /* neutral colour */
-  --neutral-500: #8a8a99; /* neutral colour */
-  --neutral-300: #b4b4c2; /* new: long-form body copy on the site */
-  --neutral-50: #ededf2; /* neutral colour */
-  --white: #ffffff; /* neutral colour */
-  --green-500: #3fb97a; /* status colour */
-  --amber-500: #e5a13a; /* status colour */
-  --blue-500: #4c9aff; /* status colour */
-  --red-500: #f0616d; /* status colour */
-  --site-primary-glow: rgb(110 92 230 / 0.6); /* primary button outer glow */
-  --site-highlight: rgb(255 255 255 / 0.18); /* inset top highlight on primary surfaces */
-  --site-ico-bg: rgb(110 92 230 / 0.14); /* feature icon tile fill */
-  --site-ico-ring: rgb(162 152 255 / 0.18); /* feature icon tile inset ring */
-  --site-nav-bg: rgb(11 11 14 / 0.72); /* sticky nav glass fill */
-  --site-nav-border: rgb(38 38 47 / 0.7); /* sticky nav bottom border */
-  --site-dot: rgb(162 152 255 / 0.16); /* hero dot field */
-  --background: var(--neutral-950); /* semantic colour */
-  --foreground: var(--neutral-50); /* semantic colour */
-  --foreground-soft: var(--neutral-300); /* semantic colour */
-  --card: var(--neutral-900); /* semantic colour */
-  --card-foreground: var(--neutral-50); /* semantic colour */
-  --popover: var(--neutral-850); /* semantic colour */
-  --popover-foreground: var(--neutral-50); /* semantic colour */
-  --primary: var(--violet-500); /* semantic colour */
-  --primary-hover: var(--violet-400); /* semantic colour */
-  --primary-active: var(--violet-600); /* semantic colour */
-  --primary-foreground: var(--white); /* semantic colour */
-  --secondary: var(--neutral-800); /* semantic colour */
-  --secondary-foreground: var(--neutral-50); /* semantic colour */
-  --muted: var(--neutral-800); /* semantic colour */
-  --muted-foreground: var(--neutral-500); /* semantic colour */
-  --accent: var(--neutral-800); /* semantic colour */
-  --accent-foreground: var(--neutral-50); /* semantic colour */
-  --destructive: var(--red-500); /* semantic colour */
-  --border: var(--neutral-750); /* semantic colour */
-  --input: var(--neutral-700); /* semantic colour */
-  --ring: var(--violet-300); /* semantic colour */
-  --link: var(--violet-300); /* semantic colour */
-  --success: var(--green-500); /* semantic colour */
-  --warning: var(--amber-500); /* semantic colour */
-  --info: var(--blue-500); /* semantic colour */
+  --violet-600: #5f4fd8;
+  --violet-500: #6e5ce6;
+  --violet-400: #7b5cf0;
+  --violet-300: #a298ff;
+  --violet-100: #d8d0f7;
+  --brand-from: #5b7cfa;
+  --brand-mid: #7b5cf0;
+  --brand-to: #9b4fe0;
+  --night-900: #14102e;
+  --night-800: #1d1646;
+  --night-700: #2a1660;
+  --night-shadow: #180b4a;
+  --neutral-950: #0b0b0e;
+  --neutral-900: #121217;
+  --neutral-850: #17171d;
+  --neutral-800: #1c1c23;
+  --neutral-750: #26262f;
+  --neutral-700: #2f2f3a;
+  --neutral-500: #8a8a99;
+  --neutral-300: #b4b4c2;
+  --neutral-50: #ededf2;
+  --white: #ffffff;
+  --green-500: #3fb97a;
+  --amber-500: #e5a13a;
+  --blue-500: #4c9aff;
+  --red-500: #f0616d;
+  --site-primary-glow: rgb(110 92 230 / 0.6);
+  --site-highlight: rgb(255 255 255 / 0.18);
+  --site-ico-bg: rgb(110 92 230 / 0.14);
+  --site-ico-ring: rgb(162 152 255 / 0.18);
+  --site-nav-bg: rgb(11 11 14 / 0.72);
+  --site-nav-border: rgb(38 38 47 / 0.7);
+  --site-dot: rgb(162 152 255 / 0.16);
+  --background: var(--neutral-950);
+  --foreground: var(--neutral-50);
+  --foreground-soft: var(--neutral-300);
+  --card: var(--neutral-900);
+  --card-foreground: var(--neutral-50);
+  --popover: var(--neutral-850);
+  --popover-foreground: var(--neutral-50);
+  --primary: var(--violet-500);
+  --primary-hover: var(--violet-400);
+  --primary-active: var(--violet-600);
+  --primary-foreground: var(--white);
+  --secondary: var(--neutral-800);
+  --secondary-foreground: var(--neutral-50);
+  --muted: var(--neutral-800);
+  --muted-foreground: var(--neutral-500);
+  --accent: var(--neutral-800);
+  --accent-foreground: var(--neutral-50);
+  --destructive: var(--red-500);
+  --border: var(--neutral-750);
+  --input: var(--neutral-700);
+  --ring: var(--violet-300);
+  --link: var(--violet-300);
+  --success: var(--green-500);
+  --warning: var(--amber-500);
+  --info: var(--blue-500);
 
   /* font */
-  --font-sans: "Onest Variable", "Onest", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Fragment Mono", ui-monospace, "SF Mono", monospace;
+  --font-sans: "Onest Variable",
+    "Onest",
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  --font-mono: "Fragment Mono",
+    ui-monospace,
+    "SF Mono",
+    monospace;
 
   /* text */
-  --text-display: clamp(2rem, 1.2rem + 3.4vw, 3.5rem); /* 32 → 56 */
-  --text-title: clamp(1.75rem, 1.35rem + 1.6vw, 2.5rem); /* 28 → 40 */
-  --text-wordmark: clamp(1.75rem, 1.45rem + 1.2vw, 2.25rem); /* 28 → 36, hero wordmark */
-  --text-heading: 1.25rem; /* 20 */
-  --text-lead: clamp(1.125rem, 1.05rem + 0.3vw, 1.25rem); /* 18 → 20 */
-  --text-body: 1rem; /* 16 */
-  --text-small: 0.875rem; /* 14 */
-  --text-caption: 0.75rem; /* 12 */
-  --text-code: 0.875rem; /* 14, mono */
-  --text-ui: 0.8125rem; /* 13, board body */
-  --text-key: 0.75rem; /* 12, board .key (mono) */
+  --text-display: clamp(2rem, 1.2rem + 3.4vw, 3.5rem);
+  --text-title: clamp(1.75rem, 1.35rem + 1.6vw, 2.5rem);
+  --text-wordmark: clamp(1.75rem, 1.45rem + 1.2vw, 2.25rem);
+  --text-heading: 1.25rem;
+  --text-lead: clamp(1.125rem, 1.05rem + 0.3vw, 1.25rem);
+  --text-body: 1rem;
+  --text-small: 0.875rem;
+  --text-caption: 0.75rem;
+  --text-code: 0.875rem;
+  --text-ui: 0.8125rem;
+  --text-key: 0.75rem;
 
   /* leading */
-  --leading-display: 1.08; /* leading */
-  --leading-title: 1.15; /* leading */
-  --leading-heading: 1.3; /* leading */
-  --leading-body: 1.6; /* leading */
-  --leading-code: 1.7; /* leading */
+  --leading-display: 1.08;
+  --leading-title: 1.15;
+  --leading-heading: 1.3;
+  --leading-body: 1.6;
+  --leading-code: 1.7;
 
   /* weight */
-  --weight-regular: 400; /* weight */
-  --weight-medium: 500; /* weight */
-  --weight-semibold: 600; /* weight */
-  --weight-display: 650; /* weight */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-display: 650;
 
   /* tracking */
-  --tracking-display: -0.03em; /* tracking */
-  --tracking-title: -0.02em; /* tracking */
-  --tracking-heading: -0.01em; /* tracking */
-  --tracking-eyebrow: 0.08em; /* tracking */
+  --tracking-display: -0.03em;
+  --tracking-title: -0.02em;
+  --tracking-heading: -0.01em;
+  --tracking-eyebrow: 0.08em;
 
   /* space */
-  --space-1: 0.25rem; /* 4 */
-  --space-2: 0.5rem; /* 8 */
-  --space-3: 0.75rem; /* 12 */
-  --space-4: 1rem; /* 16 */
-  --space-5: 1.25rem; /* 20 */
-  --space-6: 1.5rem; /* 24 */
-  --space-8: 2rem; /* 32 */
-  --space-10: 2.5rem; /* 40 */
-  --space-12: 3rem; /* 48 */
-  --space-16: 4rem; /* 64 */
-  --space-20: 5rem; /* 80 */
-  --space-24: 6rem; /* 96 */
-  --space-28: 7rem; /* 112 */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+  --space-28: 7rem;
 
   /* layout */
-  --container: 72rem; /* 1152 content width */
-  --gutter: 1rem; /* 16; 24 ≥ 640px, 32 ≥ 1024px */
-  --section-y: clamp(4rem, 2.6rem + 5.6vw, 7rem); /* 64 → 112 */
+  --container: 72rem;
+  --gutter: 1rem;
+  --section-y: clamp(4rem, 2.6rem + 5.6vw, 7rem);
 
   /* radius */
-  --radius-sm: 0.25rem; /* 4 */
-  --radius: 0.375rem; /* 6, board default */
-  --radius-lg: 0.5rem; /* 8 */
-  --radius-xl: 0.75rem; /* 12, screenshot frame */
-  --radius-full: 999px; /* radius */
-  --radius-icon: 22.36%; /* app icon squircle: rx 229 on 1024 */
+  --radius-sm: 0.25rem;
+  --radius: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 999px;
+  --radius-icon: 22.36%;
 
   /* shadow */
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4); /* elevation */
-  --shadow-md: 0 12px 32px -12px rgb(0 0 0 / 0.6); /* elevation */
-  --shadow-frame: 0 0 0 1px var(--border), 0 40px 120px -24px rgb(110 92 230 / 0.35),
-    0 24px 48px -24px rgb(0 0 0 / 0.7); /* elevation */
-  --shadow-icon: drop-shadow(0 28px 40px rgb(10 4 40 / 0.55)); /* use with filter: */
-  --focus-ring: 0 0 0 2px var(--background), 0 0 0 4px var(--ring); /* elevation */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 12px 32px -12px rgb(0 0 0 / 0.6);
+  --shadow-frame: 0 0 0 1px var(--border),
+    0 40px 120px -24px rgb(110 92 230 / 0.35),
+    0 24px 48px -24px rgb(0 0 0 / 0.7);
+  --shadow-icon: drop-shadow(0 28px 40px rgb(10 4 40 / 0.55));
+  --focus-ring: 0 0 0 2px var(--background),
+    0 0 0 4px var(--ring);
 
   /* gradient */
-  --gradient-brand: linear-gradient(135deg, var(--brand-from) 0%, var(--brand-mid) 55%, var(--brand-to) 100%); /* gradient */
-  --gradient-night: linear-gradient(135deg, var(--night-900) 0%, var(--night-800) 55%, var(--night-700) 100%); /* gradient */
-  --glow-brand: radial-gradient(closest-side, rgb(123 92 240 / 0.45), transparent); /* gradient */
+  --gradient-brand: linear-gradient(135deg, #5b7cfa 0%, #7b5cf0 55%, #9b4fe0 100%);
+  --gradient-night: linear-gradient(135deg, #14102e 0%, #1d1646 55%, #2a1660 100%);
+  --glow-brand: radial-gradient(closest-side, rgb(123 92 240 / 0.45), transparent);
   --gradient-hero: radial-gradient(60% 55% at 50% 0%, rgb(110 92 230 / 0.24), transparent 70%),
     radial-gradient(35% 35% at 82% 8%, rgb(155 79 224 / 0.12), transparent 70%),
-    radial-gradient(35% 35% at 18% 12%, rgb(91 124 250 / 0.1), transparent 70%); /* hero glow (repo-only: exceeds the page gradient length cap; see design/README.md) */
+    radial-gradient(35% 35% at 18% 12%, rgb(91 124 250 / 0.1), transparent 70%);
 
   /* motion */
-  --duration-fast: 120ms; /* motion */
-  --duration: 200ms; /* motion */
-  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1); /* motion */
+  --duration-fast: 120ms;
+  --duration: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 }

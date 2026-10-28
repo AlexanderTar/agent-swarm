@@ -11,19 +11,32 @@ node design/scripts/gen-tokens-css.mjs --check # fail when stale (CI)
 
 `node scripts/ds-artifact-check.mjs <downloaded-project-dir>` diffs `design/`
 against the published artifact copy. Download the artifact's `project/` folder
-first (Claude's artifact download), then point the check at it: asset uploads
-land at `project/assets/<Group>/<file>`, compared byte for byte against
-`design/assets/<Group>/<file>`. `design/design-system.json` is compared with
-the page-owned keys (`sections`, `blobs`, `docs`, `lastChange`) masked out.
-Repo-only files (`scripts/`, `tokens.css`) are skipped; artifact-only extras
-(`archived/`, `uploads/`) are ignored.
+first (Claude's artifact download), then fetch each upload: read
+`design/design-system.json` `assetGroups.<Group>.files[<file>].blob` for the
+blob id, download the blob, and save it as `project/assets/<Group>/<file>`
+before running the check (the file listing only carries
+`project/assets/<Group>/README.md`; uploads arrive by blob id).
+`design/design-system.json` is compared with the page-owned keys (`sections`,
+`blobs`, `docs`, `lastChange`) masked out. Repo-only files (`design/scripts/`,
+`design/tokens.css`) are skipped; artifact-only extras (`archived/`,
+`uploads/`) are ignored. `design/tokens.schema.json` ships with the artifact
+(the republish includes it), so the check expects it in `project/`.
+
+SVGs compare after canonical serialization (empty-element tags, comments and
+inter-tag whitespace are normalized): the upload store rewrites SVG markup on
+publish while the vector stays the same. The `size` values in
+`design-system.json` describe the uploaded bytes.
 
 Repo-only token extras: the artifact page drops or clamps `gradient-hero`
-(over the page gradient length cap), the `{alias}` shadow forms (the page
-resolves them to literals) and the `drop-shadow()` icon shadow, so the repo's
-`tokens.json` keeps them and the generated `tokens.css` keeps the matching
-`var(--…)` variables. Aliases always use the `{name}` form in `tokens.json`;
-raw `var(--…)` never appears there (a test enforces this).
+(over the page gradient length cap), the `{alias}` shadow forms and the
+`drop-shadow()` icon shadow, so the repo's `tokens.json` keeps them and the
+generated `tokens.css` keeps the matching `var(--…)` variables. A test lists
+every token the page would drop against this named set. Aliases always use the
+`{name}` form in `tokens.json`; raw `var(--…)` never appears there (a test
+enforces this). Multi-layer values keep real comma separators with one layer
+per line; the generator wraps them, and a bare newline without a comma is
+invalid as data (a test enforces this). Token `usage` strings are documented
+in `tokens.json`; the generated CSS omits them.
 
 ## Brand
 

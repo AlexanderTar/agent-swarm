@@ -2,7 +2,8 @@
 // Diffs design/ against a downloaded Design System artifact project/ folder.
 // Usage: node scripts/ds-artifact-check.mjs [--design DIR] <project-dir>
 // design/<path> maps to project/<path>; repo-only files are skipped, and
-// artifact-only extras (archived/, uploads/) are ignored. Exits 1 on mismatch.
+// artifact-only extras (archived/, uploads/) are ignored. SVGs compare after
+// canonical serialization (see design/README.md). Exits 1 on mismatch.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
@@ -14,6 +15,17 @@ const isRepoOnly = (rel) => rel === "tokens.css" || rel === "scripts" || rel.sta
 // Page-owned index keys: the artifact page controls them, so they are masked
 // out when design/design-system.json is compared.
 const PAGE_OWNED_INDEX_KEYS = new Set(["sections", "blobs", "docs", "lastChange"]);
+
+// SVGs are compared after canonical serialization: the upload store rewrites
+// SVG markup on publish (empty-element tags change form, comments and
+// inter-tag whitespace change), while the vector stays the same.
+const canonicalSvg = (text) =>
+  text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<([A-Za-z][\w:.-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>\s*<\/\1\s*>/g, "<$1$2/>")
+    .replace(/>\s+</g, "><")
+    .replace(/\s+\/>/g, "/>")
+    .trim();
 
 const sorted = (value) => {
   if (Array.isArray(value)) return value.map(sorted);
@@ -80,6 +92,12 @@ for (const rel of walk(designDir)) {
     if (mineMasked.problem) problems.push(mineMasked.problem);
     else if (theirsMasked.problem) problems.push(theirsMasked.problem);
     else if (mineMasked.canonical !== theirsMasked.canonical) problems.push(`differing: ${rel}`);
+    continue;
+  }
+  if (rel.endsWith(".svg")) {
+    if (canonicalSvg(mine.toString("utf8")) !== canonicalSvg(theirs.toString("utf8"))) {
+      problems.push(`differing: ${rel}`);
+    }
     continue;
   }
   if (!mine.equals(theirs)) problems.push(`differing: ${rel}`);
