@@ -2,37 +2,126 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://swarmrun.dev/design/tokens.schema.json",
   "title": "Swarm design tokens",
-  "description": "Single token source for design/tokens.css. Groups preserve output order; token names are CSS custom properties.",
+  "description": "Single token source for design/tokens.css, in the Design System artifact list format. Color tokens carry per-theme values ({dark}); every other family carries plain strings; {name} aliases resolve to var(--name) in the CSS output.",
   "type": "object",
-  "required": ["groups"],
-  "additionalProperties": false,
+  "required": ["color"],
+  "additionalProperties": true,
   "properties": {
     "$schema": { "type": "string" },
-    "groups": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["name", "tokens"],
-        "additionalProperties": false,
-        "properties": {
-          "name": { "type": "string", "minLength": 1 },
-          "tokens": {
+    "name": { "type": "string" },
+    "version": { "type": "integer" },
+    "color": {
+      "type": "object",
+      "required": ["themes", "tokens"],
+      "additionalProperties": false,
+      "properties": {
+        "themes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
             "type": "object",
-            "minProperties": 1,
-            "patternProperties": {
-              "^--[a-z0-9-]+$": {
-                "type": "object",
-                "required": ["value"],
-                "additionalProperties": false,
-                "properties": {
-                  "value": { "type": "string", "minLength": 1 },
-                  "comment": { "type": "string" }
-                }
-              }
-            },
-            "additionalProperties": false
+            "required": ["id", "name"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" }
+            }
           }
+        },
+        "tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/themedToken" }
+        }
+      }
+    },
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fonts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["family", "file"],
+            "additionalProperties": true,
+            "properties": {
+              "family": { "type": "string" },
+              "file": { "type": "string" },
+              "weight": { "type": "string" }
+            }
+          }
+        },
+        "families": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "groups": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+    "spacing": { "$ref": "#/$defs/family" },
+    "radius": { "$ref": "#/$defs/family" },
+    "shadow": { "$ref": "#/$defs/family" },
+    "text": { "$ref": "#/$defs/family" },
+    "leading": { "$ref": "#/$defs/family" },
+    "weight": { "$ref": "#/$defs/family" },
+    "tracking": { "$ref": "#/$defs/family" },
+    "layout": { "$ref": "#/$defs/family" },
+    "timing": { "$ref": "#/$defs/family" },
+    "gradient": { "$ref": "#/$defs/family" }
+  },
+  "$defs": {
+    "themedToken": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "value": {
+          "type": "object",
+          "required": ["dark"],
+          "additionalProperties": true,
+          "properties": {
+            "dark": { "type": "string", "minLength": 1 }
+          }
+        },
+        "usage": { "type": "string" }
+      }
+    },
+    "plainToken": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "value": {
+          "anyOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "object",
+              "required": ["dark"],
+              "additionalProperties": true,
+              "properties": {
+                "dark": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        },
+        "usage": { "type": "string" }
+      }
+    },
+    "family": {
+      "type": "object",
+      "required": ["tokens"],
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/plainToken" }
         }
       }
     }
