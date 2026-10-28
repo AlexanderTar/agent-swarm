@@ -1189,6 +1189,19 @@ func TestMCPDownStaysQuietWhenToolsWereListedOrTheEvidenceIsMissing(t *testing.T
 			t.Fatalf("relays = %d for a session with no hook activity", n)
 		}
 	})
+	t.Run("only the SessionStart hook fired", func(t *testing.T) {
+		// A Claude frozen at startup fires SessionStart and then nothing until
+		// its connect ends; that is not evidence the MCP is down, and a retry
+		// would relaunch it into the same freeze.
+		s, orch, _, wSes := mcpDownSetup(t)
+		s.DB.Exec(`UPDATE sessions SET last_seen_at = started_at + 1000 WHERE id = ?`, wSes.ID)
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := mcpDownRelays(s, orch.ID); n != 0 {
+			t.Fatalf("relays = %d for a session whose last hook came 1 s after start", n)
+		}
+	})
 	t.Run("under 3 minutes", func(t *testing.T) {
 		s, orch, _, wSes := mcpDownSetup(t)
 		s.DB.Exec(`UPDATE sessions SET started_at = ? WHERE id = ?`, db.Millis(s.Now().Add(-2*time.Minute)), wSes.ID)

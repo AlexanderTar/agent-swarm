@@ -37,14 +37,16 @@ func (s *Store) MCPSeenMethod(sessionID, method string) bool {
 }
 
 // checkMCPDown relays "mcp_down" once per session to the parent of a Claude
-// session that started at least mcpDownAfter ago, has fired hooks since, and
-// whose shim never sent tools/list (Claude lists tools right after it
+// session that started at least mcpDownAfter ago, has fired hooks at least
+// ackTimeout after starting (SessionStart alone is the frozen-Claude signature:
+// its MCP connect may still succeed, and a retry would relaunch it into the same
+// freeze), and whose shim never sent tools/list (Claude lists tools right after it
 // connects). Other kinds are left out until their clients are checked. Unlike
 // no_ack, which fires on every slow start and gets dismissed, this means the
 // agent cannot reach Swarm at all.
 func (s *Store) checkMCPDown(ctx context.Context, r liveRow) error {
 	if r.Kind != Claude || r.ParentAgentID == "" || s.Now().Sub(r.StartedAt) < mcpDownAfter ||
-		r.LastSeenAt == nil || !r.LastSeenAt.After(r.StartedAt) ||
+		r.LastSeenAt == nil || r.LastSeenAt.Before(r.StartedAt.Add(ackTimeout)) ||
 		r.StartedAt.Before(s.BootedAt) || s.MCPSeenMethod(r.SessionID, "tools/list") {
 		return nil
 	}
