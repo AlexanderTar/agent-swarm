@@ -170,6 +170,16 @@ std_stubs() {
   : >"$CALL_LOG"
   export CALL_LOG
   export STUB_BIN STUB_TMP="$TMP_ROOT"
+  # Host-independent stubs: install.sh checks uname, sw_vers and
+  # xcode-select before anything else, so the success path must never see
+  # the real host commands (on Linux uname says Linux and the system check
+  # stops every test). Same stubs as the preflight tests above.
+  write_stub uname '#!/bin/sh
+echo Darwin'
+  write_stub sw_vers '#!/bin/sh
+echo 14.5'
+  write_stub xcode-select '#!/bin/sh
+exit 0'
   cat >"$TMP_ROOT/ollama-stub-template" <<'STUB_EOF'
 #!/bin/sh
 echo "ollama $*" >>"$CALL_LOG"

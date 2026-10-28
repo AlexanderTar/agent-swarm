@@ -43,6 +43,13 @@ Lint must pass before you commit, and CI fails a pull request or a push to `main
 
 These passed on a developer Mac and failed on GitHub until their cause was found. Each is a test that assumed something a Mac gives for free, not a product bug. If one comes back, check the cause below before touching the test or loosening a tolerance.
 
+### Installer tests on Linux (site job, `scripts/install-test.sh`)
+
+- **Symptom:** `scripts/install-test.sh` passes on a Mac and fails on the ubuntu runner with most success-path tests reporting `Unsupported system: Linux`.
+- **Cause:** `std_stubs()` in `scripts/install-test.sh` did not stub every host-specific command `site/install.sh` calls (`uname`, `sw_vers`, `xcode-select`), so the success-path tests ran the system check against the real host. macOS reports a supported Mac and passes; Linux stops at the check.
+- **Fix:** `std_stubs()` writes `uname` (Darwin), `sw_vers` (a 14.x version) and `xcode-select` stubs, the same way the preflight tests already do. When `site/install.sh` gains a call to a new host-specific command, add its stub in the same place. Never change `site/install.sh` behaviour to satisfy the tests.
+- **Reproduce:** from the repo root (Docker must be running): `docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 sh -c 'apt-get update -qq >/dev/null && apt-get install -y -qq git shellcheck >/dev/null && sh scripts/install-test.sh'`. It must report all passed, the same as `sh scripts/install-test.sh` on a Mac.
+
 ### Menu bar OCR tests (macOS runner, `NewOrchestratorRenderTests`, `PopoverRenderTests`)
 
 - **Symptom:** `testAgentAndAdvisorSelectorsShareAlignedSixColumnRows` (`Effort label midY 329 vs picker 358`, `minX 232 vs 222`) and `testEmptyChooserExplainsHowToAddRepositories` (OCR does not find "No repositories found"); sometimes another OCR test (`testDefaultsTabShowsLowTokenCheckboxAndCaption`) instead, because it is a coin flip.
