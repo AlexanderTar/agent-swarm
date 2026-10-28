@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swarm: run your coding agents as a team</title>
 <meta name="description" content="Swarm plans the work with you, hands it to Claude Code, Codex and other agents, and has every change reviewed before it reaches you.">
-<meta property="og:title" content="Swarm">
+<meta property="og:title" content="Swarm: run your coding agents as a team">
 <meta property="og:description" content="Swarm plans the work with you, hands it to Claude Code, Codex and other agents, and has every change reviewed before it reaches you.">
 <meta property="og:image" content="https://swarmrun.dev/social-preview.png">
 <meta property="og:url" content="https://swarmrun.dev">
 <meta name="twitter:card" content="summary_large_image">
+<!-- meta theme-color takes a literal: this is --neutral-950. -->
 <meta name="theme-color" content="#0b0b0e">
 <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
@@ -48,7 +49,7 @@
         <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i></div>
         <picture>
           <source srcset="assets/board-kanban.webp" type="image/webp">
-          <img src="assets/board-kanban.png" width="1440" height="520" loading="eager" decoding="async" alt="The Swarm board in kanban view, with tasks in Ready, In progress, In review and Done columns.">
+          <img src="assets/board-kanban.png" width="1440" height="900" loading="eager" decoding="async" alt="The Swarm board in kanban view, with tasks in Ready, In progress, In review and Done columns.">
         </picture>
       </figure>
     </div>
@@ -115,7 +116,7 @@
       </div>
       <div class="narrow">
         <p>Paste this into a terminal:</p>
-        <div class="code" style="margin-top: var(--space-4)">
+        <div class="code">
           <pre><code><span class="p">$ </span>curl -fsSL https://swarmrun.dev/install.sh | sh</code></pre>
         </div>
         <p class="more">The script installs anything missing, builds Swarm and runs its setup. Rather do it by hand? <a href="https://github.com/AlexanderTar/swarmrun#install">Read the setup guide.</a></p>

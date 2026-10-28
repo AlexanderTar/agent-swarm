@@ -11,7 +11,7 @@ node design/scripts/gen-tokens-css.mjs --check # fail when stale (CI)
 
 `node scripts/ds-artifact-check.mjs <downloaded-project-dir>` diffs `design/`
 against the published artifact copy. Repo-only files (`scripts/gen-tokens-css.mjs`,
-`tokens.css`) are skipped; artifact-only extras are ignored.
+`scripts/gen-tokens-css.test.mjs`, `tokens.css`) are skipped; artifact-only extras are ignored.
 
 ## Brand
 

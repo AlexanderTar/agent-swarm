@@ -7,7 +7,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
 // Repo-only: never published to the artifact (spec, Design system section).
-const REPO_ONLY = new Set(["scripts/gen-tokens-css.mjs", "tokens.css"]);
+const REPO_ONLY = new Set(["scripts/gen-tokens-css.mjs", "scripts/gen-tokens-css.test.mjs", "tokens.css"]);
 
 const args = process.argv.slice(2);
 const opt = (flag, fallback) => {
@@ -15,12 +15,13 @@ const opt = (flag, fallback) => {
   return i === -1 ? fallback : args[i + 1];
 };
 const designDir = resolve(opt("--design", join(import.meta.dirname ?? ".", "..", "design")));
-const projectDir = resolve(args.find((a) => !a.startsWith("--") && a !== opt("--design", null)) ?? "");
+const projectArg = args.find((a) => !a.startsWith("--") && a !== opt("--design", null));
 
-if (!projectDir) {
+if (!projectArg) {
   process.stderr.write("ds-artifact-check: missing <project-dir>\n");
   process.exit(2);
 }
+const projectDir = resolve(projectArg);
 
 const walk = (dir) => {
   const out = [];

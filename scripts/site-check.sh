@@ -1,8 +1,9 @@
 #!/bin/sh
 # site-check.sh: fail when the swarmrun.dev site is stale or broken.
 # Checks: tokens fresh, the build runs, every local link and asset exists
-# (including /install.sh), no raw hex colours in site/*.css, no
-# "Agent Swarm" text, and every Screens string present in dist/index.html.
+# (including /install.sh and /social-preview.png), no raw colours in
+# site/*.css (hex or colour functions), no "Agent Swarm" text, and every
+# Screens string present in dist/index.html.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,10 +19,16 @@ node "$ROOT/design/scripts/gen-tokens-css.mjs" --check || fail "design/tokens.cs
 sh "$ROOT/site/build.sh" || fail "site/build.sh failed"
 [ -f "$PAGE" ] || fail "dist/index.html missing after build"
 [ -f "$DIST/install.sh" ] || fail "dist/install.sh missing (build must copy site/install.sh)"
+[ -f "$DIST/social-preview.png" ] || fail "dist/social-preview.png missing (build must copy assets/social-preview.png for og:image)"
 
 if grep -rEi '#[0-9a-f]{3,8}\b' "$ROOT"/site/*.css >/dev/null 2>&1; then
   grep -rEi '#[0-9a-f]{3,8}\b' "$ROOT"/site/*.css >&2
   fail "raw hex colour in site/*.css (use tokens)"
+fi
+
+if grep -rEi '(rgb|hsl)a?\(' "$ROOT"/site/*.css >/dev/null 2>&1; then
+  grep -rEi '(rgb|hsl)a?\(' "$ROOT"/site/*.css >&2
+  fail "raw colour function in site/*.css (use tokens)"
 fi
 
 if grep -r "Agent Swarm" "$DIST" >/dev/null 2>&1; then
@@ -29,9 +36,10 @@ if grep -r "Agent Swarm" "$DIST" >/dev/null 2>&1; then
   fail "Agent Swarm text in site/dist"
 fi
 
-# Local links and assets: relative href/src must resolve inside dist,
-# and every #fragment must match an id in the page.
-grep -oE '(href|src)="[^"#]+(#?[^"]*)"' "$PAGE" | sed -E 's/^(href|src)="([^"]*)"$/\2/' | while IFS= read -r link; do
+# Local links and assets: relative href/src must resolve inside dist
+# (fragment-only links skip the file check), every #fragment must match
+# an id in the page, and every srcset candidate must resolve inside dist.
+grep -oE '(href|src)="[^"]+"' "$PAGE" | sed -E 's/^(href|src)="([^"]*)"$/\2/' | while IFS= read -r link; do
   case "$link" in
     http*|mailto:*|data:*) continue ;;
   esac
@@ -44,6 +52,13 @@ grep -oE '(href|src)="[^"#]+(#?[^"]*)"' "$PAGE" | sed -E 's/^(href|src)="([^"]*)
   if [ -n "$frag" ]; then
     grep -q "id=\"$frag\"" "$PAGE" || fail "missing #$frag target"
   fi
+done
+grep -oE 'srcset="[^"]+"' "$PAGE" | sed -E 's/^srcset="//; s/"$//' | tr ',' '\n' | while IFS= read -r cand; do
+  url=$(printf '%s' "$cand" | awk '{print $1}')
+  case "$url" in
+    ""|http*|data:*) continue ;;
+  esac
+  [ -e "$DIST/$url" ] || fail "missing srcset asset: $url"
 done
 
 # Every Screens string, word for word.

@@ -34,6 +34,15 @@
   --neutral-50: #ededf2;
   --white: #ffffff;
 
+  /* color.site */
+  --site-primary-glow: rgb(110 92 230 / 0.6); /* primary button outer glow */
+  --site-highlight: rgb(255 255 255 / 0.18); /* inset top highlight on primary surfaces */
+  --site-ico-bg: rgb(110 92 230 / 0.14); /* feature icon tile fill */
+  --site-ico-ring: rgb(162 152 255 / 0.18); /* feature icon tile inset ring */
+  --site-nav-bg: rgb(11 11 14 / 0.72); /* sticky nav glass fill */
+  --site-nav-border: rgb(38 38 47 / 0.7); /* sticky nav bottom border */
+  --site-dot: rgb(162 152 255 / 0.16); /* hero dot field */
+
   /* color.status */
   --green-500: #3fb97a;
   --amber-500: #e5a13a;

@@ -1,0 +1,14 @@
+/* Swarm @font-face for the vendored WOFF2s. Linked by every component
+   preview; design/tokens.css stays a pure generated token file. */
+@font-face {
+  font-family: "Onest";
+  src: url("onest-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fragment Mono";
+  src: url("fragment-mono-latin-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}

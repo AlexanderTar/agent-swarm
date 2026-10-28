@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build the swarmrun.dev site into site/dist/.
 # Copies site/ plus the generated tokens, fonts and logo; the page uses
-# tokens only. dist/install.sh is the one-line installer served at /install.sh.
+# tokens only. dist/install.sh is the one-line installer served at /install.sh,
+# dist/social-preview.png the social card served at /social-preview.png (og:image).
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,5 +17,6 @@ cp "$ROOT/design/fonts/"*.woff2 "$DIST/fonts/"
 cp "$ROOT/site/assets/"* "$DIST/assets/"
 cp "$ROOT/design/assets/logo/app-icon.svg" "$DIST/assets/app-icon.svg"
 cp "$ROOT/site/install.sh" "$DIST/install.sh"
+cp "$ROOT/assets/social-preview.png" "$DIST/social-preview.png"
 
 printf 'site/dist built\n'

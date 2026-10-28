@@ -52,9 +52,24 @@ test("reports a missing file", () => {
 test("ignores repo-only files", () => {
   const { design, project } = setup();
   plant(design, "scripts/gen-tokens-css.mjs", "// repo only\n");
+  plant(design, "scripts/gen-tokens-css.test.mjs", "// repo only\n");
   plant(design, "tokens.css", ":root {}\n");
   const r = run(design, project);
   assert.equal(r.code, 0, `repo-only files must be ignored: ${r.out}`);
+});
+
+test("exits 2 when the project dir is missing", () => {
+  const { design } = setup();
+  let code = 0;
+  let out = "";
+  try {
+    out = execFileSync("node", [CHECK, "--design", design], { encoding: "utf8" });
+  } catch (err) {
+    code = err.status ?? 1;
+    out = (err.stdout ?? "") + (err.stderr ?? "");
+  }
+  assert.equal(code, 2, `missing project dir must exit 2: ${out}`);
+  assert.match(out, /missing <project-dir>/);
 });
 
 test("passes when the project copy matches", () => {
