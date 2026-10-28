@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarm DS · Colors</title>
+<link rel="stylesheet" href="../../tokens.css">
+<style>
+  body { margin: 0; background: var(--background); color: var(--foreground); font: var(--weight-regular) var(--text-body)/var(--leading-body) var(--font-sans); padding: var(--space-8); }
+  h1 { font-size: var(--text-title); font-weight: var(--weight-display); }
+  .row { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: var(--space-4) 0 var(--space-8); }
+  .sw { width: 7rem; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+  .sw i { display: block; height: 3rem; }
+  .sw span { display: block; padding: var(--space-2); font: var(--text-key)/1.5 var(--font-mono); color: var(--muted-foreground); }
+</style>
+</head>
+<body>
+<h1>Colors</h1>
+<div class="row" id="brand"></div>
+<div class="row" id="neutral"></div>
+<div class="row" id="status"></div>
+<script>
+  const groups = {
+    brand: ["--violet-600", "--violet-500", "--violet-400", "--violet-300", "--violet-100", "--night-900", "--night-800", "--night-700"],
+    neutral: ["--neutral-950", "--neutral-900", "--neutral-850", "--neutral-800", "--neutral-750", "--neutral-700", "--neutral-500", "--neutral-300", "--neutral-50", "--white"],
+    status: ["--green-500", "--amber-500", "--blue-500", "--red-500", "--primary", "--background", "--card", "--border", "--link"],
+  };
+  const css = getComputedStyle(document.body);
+  for (const [id, tokens] of Object.entries(groups)) {
+    const row = document.getElementById(id);
+    for (const t of tokens) {
+      const d = document.createElement("div");
+      d.className = "sw";
+      d.innerHTML = `<i style="background: var(${t})"></i><span>${t}</span>`;
+      row.append(d);
+    }
+  }
+</script>
+</body>
+</html>

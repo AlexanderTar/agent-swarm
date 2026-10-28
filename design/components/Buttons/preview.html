@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarm DS · Buttons</title>
+<link rel="stylesheet" href="../../tokens.css">
+<style>
+  body { margin: 0; background: var(--background); color: var(--foreground); font: var(--weight-regular) var(--text-body)/var(--leading-body) var(--font-sans); padding: var(--space-8); }
+  h1 { font-size: var(--text-title); font-weight: var(--weight-display); }
+  .row { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; margin: var(--space-6) 0; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); height: 44px; padding: 0 var(--space-5); border-radius: var(--radius); border: 1px solid transparent; font: var(--weight-semibold) var(--text-body)/1 var(--font-sans); }
+  .btn-primary { background: var(--primary); color: var(--primary-foreground); }
+  .btn-secondary { background: var(--secondary); color: var(--secondary-foreground); border-color: var(--border); }
+  .btn-sm { height: 36px; padding: 0 var(--space-3); font-size: var(--text-small); }
+</style>
+</head>
+<body>
+<h1>Buttons</h1>
+<div class="row">
+  <a class="btn btn-primary">Install Swarm</a>
+  <a class="btn btn-secondary">View on GitHub</a>
+  <a class="btn btn-secondary btn-sm">GitHub</a>
+</div>
+</body>
+</html>

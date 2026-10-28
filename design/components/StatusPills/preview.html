@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarm DS · Status pills</title>
+<link rel="stylesheet" href="../../tokens.css">
+<style>
+  body { margin: 0; background: var(--background); color: var(--foreground); font: var(--weight-regular) var(--text-body)/var(--leading-body) var(--font-sans); padding: var(--space-8); }
+  h1 { font-size: var(--text-title); font-weight: var(--weight-display); }
+  ul { list-style: none; padding: 0; display: grid; gap: var(--space-3); margin-top: var(--space-6); }
+  li { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-small); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+</style>
+</head>
+<body>
+<h1>Status pills</h1>
+<ul>
+  <li><span class="dot" style="background: var(--muted-foreground)"></span>Ready</li>
+  <li><span class="dot" style="background: var(--info)"></span>In progress</li>
+  <li><span class="dot" style="background: var(--warning)"></span>In review</li>
+  <li><span class="dot" style="background: var(--success)"></span>Done</li>
+  <li><span class="dot" style="background: var(--destructive)"></span>Failed</li>
+</ul>
+</body>
+</html>

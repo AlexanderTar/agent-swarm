@@ -1,0 +1,10 @@
+{
+  "name": "Swarm Design System",
+  "description": "Brand, tokens, type and components for Swarm and swarmrun.dev. Source of truth for the published Design System artifact.",
+  "lastChange": {
+    "by": "build-the-design-system-coder",
+    "at": "2026-10-28",
+    "via": "TASK-1472",
+    "note": "Initial Swarm design system ported from the approved TASK-1468 design."
+  }
+}
