@@ -41,6 +41,12 @@ ollama pull qwen3-embedding:0.6b
 
 ## Install
 
+```sh
+curl -fsSL https://swarmrun.dev/install.sh | sh
+```
+
+Or build it by hand:
+
 ```bash
 git clone https://github.com/AlexanderTar/swarmrun.git
 cd swarmrun
