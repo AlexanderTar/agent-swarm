@@ -77,7 +77,7 @@ func TestDoctorAllGood(t *testing.T) {
 		"Commit signing": "commit.gpgsign is true.",
 		"Launch agent":   PlistPath(Config{LaunchAgentsDir: e.d.LaunchAgentsDir}),
 		"Daemon":         "Running (version dev, schema 1).",
-		"Data":           "No Agent Swarm 1.x data.",
+		"Data":           "No Swarm 1.x data.",
 		// python3 warns rather than fails (A1): "all good" still reports its
 		// absence, since newDoctorEnv's LookPath only knows claude and codex.
 		"python3": "python3 isn't installed. ui-ux-pro-max's search script needs it: install it if you use that skill.",
@@ -157,9 +157,9 @@ func TestDoctorFailures(t *testing.T) {
 		{"Launch agent", func(e *doctorEnv) { os.Remove(filepath.Join(e.d.LaunchAgentsDir, "dev.swarm.daemon.plist")) }, "Not installed. Run swarm install."},
 		{"Launch agent", func(e *doctorEnv) {
 			os.WriteFile(filepath.Join(e.d.LaunchAgentsDir, "dev.swarm.daemon.plist"), []byte("<plist><string>/x/swarmd-start.sh</string></plist>"), 0o644)
-		}, "The launch agent is from Agent Swarm 1.x. Run swarm install."},
+		}, "The launch agent is from Swarm 1.x. Run swarm install."},
 		{"Daemon", func(e *doctorEnv) { e.healthy = false }, "The daemon isn't running. Run swarm install."},
-		{"Data", func(e *doctorEnv) { legacyDB(t, e.d.Home) }, "Agent Swarm 1.x data found. Run `swarm migrate` first."},
+		{"Data", func(e *doctorEnv) { legacyDB(t, e.d.Home) }, "Swarm 1.x data found. Run `swarm migrate` first."},
 	}
 	for _, c := range cases {
 		e := newDoctorEnv(t)

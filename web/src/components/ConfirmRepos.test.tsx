@@ -53,7 +53,7 @@ describe("ConfirmRepos (§16.11)", () => {
       ),
     );
     const picker = screen.getByRole("group", { name: "Add another" });
-    await user.click(await within(picker).findByRole("option", { name: /agent-swarm/ }));
+    await user.click(await within(picker).findByRole("option", { name: /swarmrun/ }));
     await user.type(screen.getByRole("textbox", { name: "Comment (optional)" }), "Landing too");
     await user.click(screen.getByRole("button", { name: "Confirm repositories" }));
     await waitFor(() =>

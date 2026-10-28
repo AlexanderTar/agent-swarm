@@ -785,7 +785,7 @@ function repos(): ReposResponse {
     dirty: true,
   });
   const landing = r("repo_landing", "endurio-landing", { groups: ["endurio", "AlexanderTar"] });
-  const swarm = r("repo_swarm", "agent-swarm", { groups: ["AlexanderTar"] });
+  const swarm = r("repo_swarm", "swarmrun", { groups: ["AlexanderTar"] });
   const gone = r("repo_gone", "old-api", { missing: true });
   return {
     recent: [chat],

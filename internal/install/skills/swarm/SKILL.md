@@ -1,6 +1,6 @@
 ---
 name: swarm
-description: Rules for any agent spawned by Agent Swarm (SWARM_SESSION is set). Use at session start and whenever a daemon notice appears. Covers inbox sync, checkpoints, pausing, asking the user, the advisor, commits, and the workflow-step contract.
+description: Rules for any agent spawned by Swarm (SWARM_SESSION is set). Use at session start and whenever a daemon notice appears. Covers inbox sync, checkpoints, pausing, asking the user, the advisor, commits, and the workflow-step contract.
 ---
 
 # Working as a Swarm agent

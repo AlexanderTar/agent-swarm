@@ -1,8 +1,8 @@
-# Agent Swarm
+# Swarm
 
 Plan and deliver software with a team of coding agents you supervise from your Mac.
 
-Agent Swarm is a local tool with three parts:
+Swarm is a local tool with three parts:
 
 - **A daemon** (`swarm`) that keeps a board of epics, stories, tasks, bugs and spikes, spawns coding agents in detached tmux sessions, and relays messages and checkpoints between them.
 - **A web board** at http://127.0.0.1:7777 with hierarchy, kanban and dependency-graph views.
@@ -57,7 +57,7 @@ open /Applications/Swarm.app
 - for each installed agent, installs the superpowers plugins it supports, and adds the `swarm` MCP server, the Swarm hooks (inactive outside Swarm sessions) and the Swarm role skills (`swarm`, `swarm-orchestrator`, `swarm-spike`, `swarm-workflows`, `swarm-batching` and worker/reviewer skills)
 - installs graphify 0.9.71 with uv and gives every agent the graphify skill
 - scans your home folder for git repositories (hidden folders, `~/Library`, `~/Music`, `~/Pictures`, `~/Movies`, and `~/Downloads` are skipped by default; change exclusions in Settings)
-- removes hooks and config left by Agent Swarm 1.x
+- removes hooks and config left by Swarm 1.x
 - links `swarm` into `~/.local/bin`
 
 The first time the menu bar app opens a terminal, macOS asks for permission to control Ghostty. Allow it. The app also asks to send notifications.
@@ -115,7 +115,7 @@ Claude's and Cursor's items are created with the default `apple-tool:` keychain 
 
 Muse's own login item (`ai.meta.dev.credentials`) is different: `muse login` locks it to Muse's own code-signing team (`partition_id: teamid:V9WTTPBFK9`), which excludes `security` regardless of how many times you click **Always Allow** — that dialog only grants the app-list ACL, a separate check that isn't the one blocking. Worse, `security set-generic-password-partition-list` to widen it is **not durable**: every time Muse's own client refreshes its token, it rewrites the item and resets the partition list back to team-only, silently undoing the widen and bringing the prompt back on Muse's own refresh cadence. So swarm doesn't touch this item at all — Muse usage is read by spawning a short-lived `muse serve` session and asking its MSP `usage/read` method directly (`internal/usage/muse.go`), which costs one cheap, zero-effort model turn on the normal poll cadence instead. No keychain access, no prompts, ever.
 
-### Upgrading from Agent Swarm 1.x
+### Upgrading from Swarm 1.x
 
 ```bash
 swarm migrate --dry-run   # shows what will be imported and archived
@@ -146,8 +146,8 @@ Open http://127.0.0.1:7777 (or Open board in the menu bar).
 ## CLI
 
 ```text
-swarm install [--plugins] [--yes]  set up launchd, tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking)
-swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, skills, Ollama, signing (--legacy: report Agent Swarm 1.x state still on this Mac)
+swarm install [--plugins] [--yes]  set up launchd, tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Swarm 1.x release folders without asking)
+swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, skills, Ollama, signing (--legacy: report Swarm 1.x state still on this Mac)
 swarm status                       daemon, active agents, open requests
 swarm new --name N --intent feature|debug|chore [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
 swarm start KEY [--agent A --model M --effort E] [--repo PATH...]

@@ -28,7 +28,6 @@ func fixturesDir(t *testing.T) string {
 	}
 	for _, dir := range []string{
 		filepath.Join("..", "..", "apps", "menubar", "Tests", "Fixtures"),
-		filepath.Join("..", "..", "..", "agent-swarm--p4-menubar", "apps", "menubar", "Tests", "Fixtures"),
 	} {
 		if _, err := os.Stat(filepath.Join(dir, "contract.json")); err == nil {
 			return dir

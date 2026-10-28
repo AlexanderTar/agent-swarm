@@ -18,11 +18,11 @@ const UpdaterLabel = "dev.swarm.updater"
 
 // ConfirmReleaseRemoval is the prompt §21.3's "after confirmation" requires. §17
 // gives no copy for it; it is listed in T21's copy audit.
-const ConfirmReleaseRemoval = "Remove Agent Swarm 1.x release folders (~/.swarm/app, ~/.swarm/bin/*.sh)? [y/N] "
+const ConfirmReleaseRemoval = "Remove Swarm 1.x release folders (~/.swarm/app, ~/.swarm/bin/*.sh)? [y/N] "
 
 // DeclinedReleaseRemoval is printed when the user says no or the run is not
 // interactive. Declining is not an error.
-const DeclinedReleaseRemoval = "Left the Agent Swarm 1.x release folders in place. Run swarm install --yes to remove them."
+const DeclinedReleaseRemoval = "Left the Swarm 1.x release folders in place. Run swarm install --yes to remove them."
 
 // legacyShellScripts are the v1 launcher scripts (§21.3). ~/.swarm/bin/swarm is
 // deliberately not here: ~/.local/bin/swarm may still point at it until LinkBinary
@@ -133,39 +133,39 @@ func Leftovers(c Config) []Leftover {
 				}
 			}
 		}
-		add(link, "Agent Swarm 1.x symlink")
+		add(link, "Swarm 1.x symlink")
 	}
 	if body, err := os.ReadFile(c.Codex("config.toml")); err == nil {
 		if hasLegacyCodexMCP(string(body), c.Bin) {
-			add(c.Codex("config.toml"), "Agent Swarm 1.x [mcp_servers.swarm] table")
+			add(c.Codex("config.toml"), "Swarm 1.x [mcp_servers.swarm] table")
 		}
 	}
 	if body, err := os.ReadFile(c.Gemini("GEMINI.md")); err == nil {
 		if _, removed := RemoveMarkedSpan(string(body), "<!-- swarm:start -->", "<!-- swarm:end -->"); removed {
-			add(c.Gemini("GEMINI.md"), "Agent Swarm 1.x instruction block")
+			add(c.Gemini("GEMINI.md"), "Swarm 1.x instruction block")
 		}
 	}
 	for _, p := range []string{c.Gemini("antigravity", "mcp_config.json"), c.Cursor("mcp.json")} {
 		if hasLegacyMCPEntry(p, c.Bin) {
-			add(p, "Agent Swarm 1.x swarm MCP entry")
+			add(p, "Swarm 1.x swarm MCP entry")
 		}
 	}
 	for _, p := range []string{c.Codex("hooks.json"), c.Cursor("hooks.json")} {
 		if hasLegacyHook(p) {
-			add(p, "Agent Swarm 1.x hook entry")
+			add(p, "Swarm 1.x hook entry")
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(c.Home, "app")); err == nil {
-		add(filepath.Join(c.Home, "app"), "Agent Swarm 1.x release folders")
+		add(filepath.Join(c.Home, "app"), "Swarm 1.x release folders")
 	}
 	for _, name := range legacyShellScripts {
 		p := filepath.Join(c.Home, "bin", name)
 		if _, err := os.Lstat(p); err == nil {
-			add(p, "Agent Swarm 1.x launcher script")
+			add(p, "Swarm 1.x launcher script")
 		}
 	}
 	if _, err := os.Stat(filepath.Join(c.Home, "swarm.db")); err == nil && HasLegacyData(filepath.Join(c.Home, "swarm.db")) {
-		add(filepath.Join(c.Home, "swarm.db"), "Agent Swarm 1.x database")
+		add(filepath.Join(c.Home, "swarm.db"), "Swarm 1.x database")
 	}
 	// D-15/decision 15: config.json's fields have no v2 equivalent (port/host are
 	// now spec-locked, claimLeaseSeconds/janitor* are removed concepts, the
@@ -173,7 +173,7 @@ func Leftovers(c Config) []Leftover {
 	// Ollama URL/model are hardcoded with no exposed setting). Nothing to import —
 	// this only reports that the file exists, so the silence is a stated choice.
 	if _, err := os.Stat(filepath.Join(c.Home, "config.json")); err == nil {
-		add(filepath.Join(c.Home, "config.json"), "Agent Swarm 1.x settings file (not migrated — its settings have no v2 equivalent)")
+		add(filepath.Join(c.Home, "config.json"), "Swarm 1.x settings file (not migrated — its settings have no v2 equivalent)")
 	}
 	return out
 }

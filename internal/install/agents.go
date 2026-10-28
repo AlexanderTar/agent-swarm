@@ -95,7 +95,7 @@ func Agents(ctx context.Context, o AgentsOpts) error {
 	} {
 		changed, err := step.run()
 		if err != nil {
-			return fmt.Errorf("removing the Agent Swarm 1.x %s integration: %w", step.name, err)
+			return fmt.Errorf("removing the Swarm 1.x %s integration: %w", step.name, err)
 		}
 		o.report("removed", changed)
 	}

@@ -145,7 +145,7 @@ func (c *Codex) fetchViaAppServer(ctx context.Context) (Snapshot, error) {
 	}()
 
 	if _, err := c.callAppServer(proc, msgs, readErrs, deadline, 1, "initialize",
-		map[string]any{"clientInfo": map[string]any{"name": "agent-swarm", "title": "agent-swarm", "version": "0.0.0"}},
+		map[string]any{"clientInfo": map[string]any{"name": "swarm", "title": "swarm", "version": "0.0.0"}},
 	); err != nil {
 		return Snapshot{}, fmt.Errorf("codex: initialize: %w", err)
 	}

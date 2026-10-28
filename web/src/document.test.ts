@@ -17,7 +17,7 @@ describe("document theme", () => {
 describe("app icon", () => {
   const document = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
 
-  it("serves the Agent Swarm app icon as the favicon", () => {
+  it("serves the Swarm app icon as the favicon", () => {
     expect(document.querySelector('link[rel="icon"]')?.getAttribute("href")).toBe("/favicon.svg");
     expect(readFileSync("public/favicon.svg", "utf8")).toBe(
       readFileSync("../apps/menubar/Resources/AppIcon.svg", "utf8"),

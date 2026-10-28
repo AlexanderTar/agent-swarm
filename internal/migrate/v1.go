@@ -15,7 +15,7 @@ import (
 //go:embed schema/v1_schema.sql
 var v1Schema string
 
-// V1SchemaSQL is the Agent Swarm 1.x schema at version 4, verified against the live
+// V1SchemaSQL is the Swarm 1.x schema at version 4, verified against the live
 // database on 2026-09-18. Tests build fixtures from it; Task 20 deletes the
 // TypeScript that used to be its only record.
 func V1SchemaSQL() string { return v1Schema }
@@ -115,7 +115,7 @@ func MapStatus(v1 string) (string, error) {
 	if s, ok := statusMap[v1]; ok {
 		return s, nil
 	}
-	return "", fmt.Errorf("Agent Swarm 1.x status %q has no mapping in the migration table; "+
+	return "", fmt.Errorf("Swarm 1.x status %q has no mapping in the migration table; "+
 		"move the item to ready, blocked, backlog or done and run swarm migrate again", v1)
 }
 

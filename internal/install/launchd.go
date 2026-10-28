@@ -121,7 +121,7 @@ func Plist(c Config) []byte {
 		esc(filepath.Join(logs, "daemon.err.log")), esc(c.Path), esc(c.Home), env))
 }
 
-// HasLegacyData reports whether dbPath is an Agent Swarm 1.x database (C5).
+// HasLegacyData reports whether dbPath is a Swarm 1.x database (C5).
 func HasLegacyData(dbPath string) bool {
 	if _, err := os.Stat(dbPath); err != nil {
 		return false

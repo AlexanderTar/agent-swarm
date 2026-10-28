@@ -34,7 +34,7 @@ func (r *Runner) integrations(ctx context.Context, j *Journal, s *Step) error {
 		// not happened yet, never one that already has (C1).
 		changed, err := st.run()
 		if err != nil {
-			return fmt.Errorf("removing the Agent Swarm 1.x %s integration: %w", st.name, err)
+			return fmt.Errorf("removing the Swarm 1.x %s integration: %w", st.name, err)
 		}
 		for _, p := range changed {
 			// A file with a step-3 backup can be restored. A removed symlink or folder

@@ -144,13 +144,13 @@ func bothSuperpowersVariants(c Config, k Kind) bool {
 func (d Doctor) LegacyChecks(ctx context.Context) []Check {
 	left := Leftovers(d.Cfg)
 	if len(left) == 0 {
-		return []Check{{"Agent Swarm 1.x", true, "No Agent Swarm 1.x state left."}}
+		return []Check{{"Swarm 1.x", true, "No Swarm 1.x state left."}}
 	}
 	var lines []string
 	for _, l := range left {
 		lines = append(lines, l.What+" at "+l.Path)
 	}
-	return []Check{{"Agent Swarm 1.x", false, strings.Join(lines, "; ")}}
+	return []Check{{"Swarm 1.x", false, strings.Join(lines, "; ")}}
 }
 
 func (d Doctor) tmux(ctx context.Context) Check {
@@ -312,7 +312,7 @@ func (d Doctor) launchAgent() Check {
 	}
 	s := string(body)
 	if !strings.Contains(s, "<string>daemon</string>") || !strings.Contains(s, "<key>PATH</key>") {
-		return Check{"Launch agent", false, "The launch agent is from Agent Swarm 1.x. Run swarm install."}
+		return Check{"Launch agent", false, "The launch agent is from Swarm 1.x. Run swarm install."}
 	}
 	return Check{"Launch agent", true, path}
 }
@@ -382,5 +382,5 @@ func (d Doctor) data() Check {
 	if HasLegacyData(filepath.Join(d.Home, "swarm.db")) {
 		return Check{"Data", false, db.ErrLegacy.Error()}
 	}
-	return Check{"Data", true, "No Agent Swarm 1.x data."}
+	return Check{"Data", true, "No Swarm 1.x data."}
 }

@@ -123,7 +123,7 @@ describe("Header filters below sm", () => {
   it("keeps the app title for screen readers", () => {
     narrow(true);
     setup();
-    expect(screen.getByRole("heading", { name: "Agent Swarm" })).toHaveClass("sr-only");
+    expect(screen.getByRole("heading", { name: "Swarm" })).toHaveClass("sr-only");
   });
 
   it("keeps the view tabs outside the popover", () => {

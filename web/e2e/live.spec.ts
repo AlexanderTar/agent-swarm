@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("the embedded board loads and shows seeded work", async ({ page }) => {
   await page.goto("/#/hierarchy");
-  await expect(page.getByRole("heading", { name: "Agent Swarm" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Swarm" })).toBeVisible();
   await expect(page.getByRole("treeitem", { name: /^EPIC-12 / })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Needs you \d+$/ })).toBeVisible();
 });
