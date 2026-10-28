@@ -130,3 +130,21 @@ jobs:
       - name: Run scripts/e2e.sh
         # e2e.sh pins PATH on purpose (no real agent CLI may be found); keep the Go toolchain on it.
         run: SWARM_E2E_PATH="$(dirname "$(command -v go)"):/opt/homebrew/bin:/usr/bin:/bin" scripts/e2e.sh
+
+  site:
+    name: Site landing page
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck site/install.sh scripts/install-test.sh scripts/move-checkout.sh scripts/move-checkout-test.sh
+      - run: scripts/install-test.sh
+      - run: scripts/move-checkout-test.sh
+      - run: node --test 'design/scripts/*.test.mjs' 'scripts/*.test.mjs'
+      - run: scripts/rename-check.sh
+      - run: scripts/site-check.sh

@@ -18,3 +18,6 @@ __pycache__/
 
 # Watchman cookie files (created by Metro/Expo file watching)
 .watchman-cookie-*
+
+# Vercel CLI state
+.vercel/
