@@ -15,10 +15,10 @@ relay, from the LAN through `swarm.local`, or locally as today.
   overwrote it with the real client IP; Railway's docs likewise list
   `X-Real-IP` (and not `X-Forwarded-For`) as the client-remote-IP
   header. The relay's first branch handles it.
-- Icons: the `relay` service carries the Agent Swarm icon
+- Icons: the `relay` service carries the Swarm icon
   (`apps/menubar/Resources/AppIconLayers/Composed-1024.png`); Railway's
   GraphQL has no project icon field, so the project has none. The
-  project description is "Agent Swarm remote access relay".
+  project description is "Swarm remote access relay".
 
 ## Prereqs
 
@@ -38,8 +38,8 @@ scripts/relay-bootstrap.sh   # idempotent: project, service, secret, config, dom
 make relay-deploy            # runs the bootstrap, then uploads and deploys
 ```
 
-The project is named `Agent Swarm` (workspace **My Projects**) with a
-service named `relay` carrying the Agent Swarm icon. The bootstrap finds
+The project is named `Swarm` (workspace **My Projects**) with a
+service named `relay` carrying the Swarm icon. The bootstrap finds
 the project by name, so re-runs stay idempotent after the rename.
 
 The bootstrap prints the `wss://…/_tunnel` URL at the end. Record the

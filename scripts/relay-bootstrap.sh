@@ -8,7 +8,7 @@
 #   - Reads RAILWAY_API_TOKEN from ~/.config/railway-personal/token.
 #   - Uses workspace "My Projects" only; refuses to touch any other
 #     workspace (in particular never Endurio).
-#   - Finds or creates project `Agent Swarm` (CLI first, GraphQL fallback).
+#   - Finds or creates project `Swarm` (CLI first, GraphQL fallback).
 #   - Finds or creates service `relay` in the production environment.
 #   - Generates ~/.swarm/run/tunnel.secret (0600) when missing and sets it
 #     as the service's RELAY_SECRET (via stdin, never on argv).
@@ -29,8 +29,8 @@
 # Never prints secrets: logs (stderr) carry names and ids only.
 set -euo pipefail
 
-PROJECT_NAME="${RELAY_PROJECT_NAME:-Agent Swarm}"
-PROJECT_DESCRIPTION="${RELAY_PROJECT_DESCRIPTION:-Agent Swarm remote access relay}"
+PROJECT_NAME="${RELAY_PROJECT_NAME:-Swarm}"
+PROJECT_DESCRIPTION="${RELAY_PROJECT_DESCRIPTION:-Swarm remote access relay}"
 SERVICE_NAME="${RELAY_SERVICE_NAME:-relay}"
 ICON_URL="${RELAY_ICON_URL:-https://raw.githubusercontent.com/AlexanderTar/swarmrun/main/apps/menubar/Resources/AppIconLayers/Composed-1024.png}"
 WORKSPACE_NAME="${RAILWAY_WORKSPACE:-My Projects}"

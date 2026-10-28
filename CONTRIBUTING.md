@@ -1,10 +1,10 @@
-# Contributing to Agent Swarm
+# Contributing to Swarm
 
 Thanks for helping. Bug reports, fixes, new agent kinds and docs are all welcome. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Licence
 
-Agent Swarm is licensed under the [Apache License 2.0](LICENSE). By opening a pull request you agree that your contribution is licensed under the same terms (Apache-2.0 section 5). There is no CLA.
+Swarm is licensed under the [Apache License 2.0](LICENSE). By opening a pull request you agree that your contribution is licensed under the same terms (Apache-2.0 section 5). There is no CLA.
 
 Third-party material keeps its own licence. If you vendor anything, add its upstream licence file and record the source and every change, as `internal/install/skills/vendor/README.md` and `assets/icons/LICENSES.md` already do.
 

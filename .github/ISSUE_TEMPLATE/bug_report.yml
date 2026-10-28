@@ -44,7 +44,7 @@ body:
     id: version
     attributes:
       label: Swarm version
-      description: "`git rev-parse --short HEAD` in your agent-swarm checkout"
+      description: "`git rev-parse --short HEAD` in your swarmrun checkout"
   - type: input
     id: agents
     attributes:
