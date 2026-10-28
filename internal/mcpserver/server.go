@@ -4,9 +4,11 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
@@ -181,6 +183,26 @@ func (s *Server) Handler(resolve func(*http.Request) (Caller, bool)) http.Handle
 			writeUnauthorized(w)
 			return
 		}
+		s.recordMethod(r, c)
 		inner.ServeHTTP(w, r.WithContext(withCaller(r.Context(), c)))
 	})
+}
+
+// recordMethod tells the runtime which JSON-RPC method a bound session's shim
+// just sent (mcp_down detection). It reads the body and puts it back.
+func (s *Server) recordMethod(r *http.Request, c Caller) {
+	if s.RT == nil || c.Unbound || c.SessionID == "" || r.Body == nil {
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	var head struct {
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(body, &head) == nil && head.Method != "" {
+		s.RT.MCPSeen(c.SessionID, head.Method)
+	}
 }

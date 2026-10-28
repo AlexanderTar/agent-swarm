@@ -1110,6 +1110,119 @@ func TestNoAckAfterTwoMinutesWithNoCheckpointNotifiesAndRelaysOnce(t *testing.T)
 	}
 }
 
+// mcpDownSetup is a live Claude child with a parent, 4 minutes old, whose hooks
+// fired 10 s ago (TASK-1458: Claude froze at startup, its Swarm MCP never
+// connected, and the session stayed Running).
+func mcpDownSetup(t *testing.T) (s *Store, orch, w Agent, wSes Session) {
+	t.Helper()
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes = worker(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[w.Name] = []string{"starting up…\n"}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	at.Advance(4 * time.Minute)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
+		db.Millis(s.Now().Add(-10*time.Second)), wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	return s, orch, w, wSes
+}
+
+func mcpDownRelays(s *Store, orchID string) int {
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"mcp_down"%' AND wake_class = 'immediate'`, orchID).Scan(&n)
+	return n
+}
+
+// A Claude session whose hooks fire but whose MCP shim never listed tools
+// within 3 minutes is relayed to its parent once as mcp_down, so the
+// orchestrator can tell "cannot reach Swarm" from the routine slow-start no_ack.
+func TestMCPDownRelaysOnceForAClaudeSessionThatNeverListedTools(t *testing.T) {
+	s, orch, w, _ := mcpDownSetup(t)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := mcpDownRelays(s, orch.ID); n != 1 {
+		t.Fatalf("mcp_down relays = %d, want exactly one immediate relay", n)
+	}
+	if n := notified(t, s, "agent.mcp_down"); n.AgentName != w.Name || n.ItemKey != "TASK-1" {
+		t.Fatalf("notification = %+v", n)
+	}
+	var payload string
+	s.DB.QueryRow(`SELECT payload_json FROM messages WHERE to_agent_id = ? AND payload_json LIKE '%"event":"mcp_down"%'`, orch.ID).Scan(&payload)
+	if !strings.Contains(payload, "swarm_control") || !strings.Contains(payload, "retry") {
+		t.Fatalf("relay payload %s must tell the orchestrator to retry the agent", payload)
+	}
+}
+
+func TestMCPDownStaysQuietWhenToolsWereListedOrTheEvidenceIsMissing(t *testing.T) {
+	ctx := context.Background()
+	t.Run("listed tools", func(t *testing.T) {
+		s, orch, _, wSes := mcpDownSetup(t)
+		s.MCPSeen(wSes.ID, "initialize")
+		s.MCPSeen(wSes.ID, "tools/list")
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := mcpDownRelays(s, orch.ID); n != 0 {
+			t.Fatalf("relays = %d for a session that listed tools", n)
+		}
+	})
+	t.Run("no hook after start", func(t *testing.T) {
+		s, orch, _, wSes := mcpDownSetup(t)
+		s.DB.Exec(`UPDATE sessions SET last_seen_at = NULL WHERE id = ?`, wSes.ID)
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := mcpDownRelays(s, orch.ID); n != 0 {
+			t.Fatalf("relays = %d for a session with no hook activity", n)
+		}
+	})
+	t.Run("under 3 minutes", func(t *testing.T) {
+		s, orch, _, wSes := mcpDownSetup(t)
+		s.DB.Exec(`UPDATE sessions SET started_at = ? WHERE id = ?`, db.Millis(s.Now().Add(-2*time.Minute)), wSes.ID)
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := mcpDownRelays(s, orch.ID); n != 0 {
+			t.Fatalf("relays = %d for a 2-minute-old session", n)
+		}
+	})
+	t.Run("started before the daemon booted", func(t *testing.T) {
+		// MCP traffic is remembered in memory only: a daemon restart must not
+		// flag every long-running session as having no MCP.
+		s, orch, _, _ := mcpDownSetup(t)
+		s.BootedAt = s.Now()
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := mcpDownRelays(s, orch.ID); n != 0 {
+			t.Fatalf("relays = %d for a session that predates the daemon", n)
+		}
+	})
+	t.Run("not a claude session", func(t *testing.T) {
+		s, orch, w, _ := mcpDownSetup(t)
+		s.DB.Exec(`UPDATE agents SET kind = 'fake' WHERE id = ?`, w.ID)
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := mcpDownRelays(s, orch.ID); n != 0 {
+			t.Fatalf("relays = %d for a non-Claude session", n)
+		}
+	})
+}
+
 // An escalated dialog blocks on the user, not the agent: the child must not
 // also raise a no-ack relay to the parent while its Needs-you row is open.
 func TestEscalatedPromptSuppressesNoAckForAChild(t *testing.T) {

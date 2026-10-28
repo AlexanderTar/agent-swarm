@@ -399,6 +399,7 @@ type Store struct {
 	Bin       string                                      // absolute path to the swarm binary
 	DaemonURL string                                      // http://127.0.0.1:<cfg.Port>; never :7777 in a fixture
 	OSEnv     func(string) string                         // nil means os.Getenv
+	BootedAt  time.Time                                   // when the daemon started; MCP traffic is remembered in memory, so mcp_down skips sessions that predate it (zero: none skipped)
 	BaseEnv   func(func(string) string) map[string]string // always supplied by cmd/swarm; never defaulted here
 	After     func(time.Duration) <-chan time.Time        // nil means time.After
 	Go        func(func())                                // nil means `go f()`; tests run it inline
@@ -433,6 +434,7 @@ type Store struct {
 	batchPastes        map[string]int          // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)
 	busy               map[string]*busyState   // open tool calls and grok leader "working" per session (busy.go)
 	wakeSubs           map[string][]chan string
+	mcpSeen            map[string]map[string]bool // session -> JSON-RPC methods its shim has sent to /mcp (mcpdown.go)
 	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw
 	// each live session's pane present and correctly owned (§10.6's resolveDead
 	// doc comment has the incident). Same D57 reasoning as the rest of this

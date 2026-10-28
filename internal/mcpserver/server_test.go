@@ -246,6 +246,33 @@ func TestHandlerRoundTripWithAValidToken(t *testing.T) {
 	}
 }
 
+// The /mcp wrapper records which JSON-RPC methods each bound session's shim
+// sends, so the daemon can tell an agent whose MCP never connected (TASK-1458).
+func TestHandlerRecordsTheMethodsABoundSessionSends(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	srv := httptest.NewServer(s.Handler(seed.Resolve))
+	defer srv.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	req.Header.Set("Authorization", "Bearer "+seed.Caller.SessionID)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "swarm_sync") {
+		t.Fatalf("the request body must still reach the SDK handler: %s", body)
+	}
+	if !s.RT.MCPSeenMethod(seed.Caller.SessionID, "tools/list") {
+		t.Fatal("tools/list was not recorded for the session")
+	}
+	if s.RT.MCPSeenMethod(seed.Caller.SessionID, "tools/call") {
+		t.Fatal("tools/call was never sent")
+	}
+}
+
 // dispatch refuses a session id that resolves to no live session.
 func TestDispatchRefusesAnUnknownSession(t *testing.T) {
 	s := newTestServer(t)
