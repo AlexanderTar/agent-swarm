@@ -19,9 +19,9 @@ import (
 	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
-// agentSwarmRepoName is the catalog name swarm_report_bug suggests as the
-// bug's repository.
-const agentSwarmRepoName = "agent-swarm"
+// swarmRepoRemoteFragments matches the catalog repos swarm_report_bug
+// suggests as the bug's repository, before and after the move to swarmrun.
+var swarmRepoRemoteFragments = []string{"AlexanderTar/swarmrun", "AlexanderTar/agent-swarm"}
 
 // ---------- swarm_report_bug ----------
 
@@ -132,11 +132,20 @@ func reportBugTool(s *Server) ToolDef {
 // as the daemon and notifies the reporter's root's orchestrator.
 func (s *Server) createBoardBug(ctx context.Context, tx *sql.Tx, a runtime.Agent, rootKey, title, brief string) (string, error) {
 	var suggested []string
-	var repoID string
-	switch err := tx.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = ? LIMIT 1`, agentSwarmRepoName).Scan(&repoID); {
-	case err == nil:
-		suggested = []string{repoID}
-	case !errors.Is(err, sql.ErrNoRows):
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM repos WHERE remote_url LIKE ? OR remote_url LIKE ?`,
+		"%"+swarmRepoRemoteFragments[0]+"%", "%"+swarmRepoRemoteFragments[1]+"%")
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var repoID string
+		if err := rows.Scan(&repoID); err != nil {
+			return "", err
+		}
+		suggested = append(suggested, repoID)
+	}
+	if err := rows.Err(); err != nil {
 		return "", err
 	}
 	it, err := s.RT.Items.CreateTx(ctx, tx, items.CreateInput{

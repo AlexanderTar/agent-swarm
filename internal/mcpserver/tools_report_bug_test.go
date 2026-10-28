@@ -16,8 +16,8 @@ import (
 	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
-// reportBugSeed is a coder worker under a chore root, plus the agent-swarm
-// catalog repo row the tool resolves by name.
+// reportBugSeed is a coder worker under a chore root, plus the swarm
+// catalog repo row the tool resolves by remote URL.
 type reportBugSeed struct {
 	Caller    Caller
 	ChoreKey  string
@@ -41,8 +41,8 @@ func newReportBugServer(t *testing.T) (*Server, reportBugSeed) {
 		t.Fatal(err)
 	}
 	if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO repos
-		(id, path, name, default_branch, source, created_at, updated_at)
-		VALUES ('rep_swarm', ?, 'agent-swarm', 'main', 'manual', ?, ?)`, gitRepoWithCommit(t), now, now); err != nil {
+		(id, path, name, remote_url, default_branch, source, created_at, updated_at)
+		VALUES ('rep_swarm', ?, 'agent-swarm', 'https://github.com/AlexanderTar/swarmrun.git', 'main', 'manual', ?, ?)`, gitRepoWithCommit(t), now, now); err != nil {
 		t.Fatal(err)
 	}
 	return s, reportBugSeed{
@@ -371,6 +371,64 @@ func TestReportBugResultNamesTheIssueCommand(t *testing.T) {
 	json.Unmarshal(mustJSON(out), &got)
 	if want := "swarm bugs --issue " + got.ID; got.ID == "" || !strings.Contains(got.Hint, want) {
 		t.Fatalf("hint = %q, want it to contain %q", got.Hint, want)
+	}
+}
+
+// TASK-1470 unit 1: board:true suggests every catalog repo whose remote URL
+// points at AlexanderTar/swarmrun or AlexanderTar/agent-swarm, in any URL form.
+func TestReportBugBoardTrueSuggestsRepoByRemoteURL(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	now := db.Millis(s.RT.Now())
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE repos SET remote_url = ? WHERE id = ?`,
+		"https://github.com/AlexanderTar/swarmrun.git", seed.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	remotes := []string{
+		"ssh://git@github.com/AlexanderTar/swarmrun.git",
+		"https://github.com/AlexanderTar/agent-swarm.git",
+	}
+	var want []string
+	want = append(want, seed.RepoID)
+	for i, remote := range remotes {
+		id := "rep_remote_" + strconv.Itoa(i)
+		if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO repos
+			(id, path, name, remote_url, default_branch, source, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'main', 'manual', ?, ?)`,
+			id, gitRepoWithCommit(t), "other-"+strconv.Itoa(i), remote, now, now); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, id)
+	}
+	// A repo with an unrelated remote must never be suggested.
+	if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO repos
+		(id, path, name, remote_url, default_branch, source, created_at, updated_at)
+		VALUES ('rep_other', ?, 'other', 'https://github.com/example/other.git', 'main', 'manual', ?, ?)`,
+		gitRepoWithCommit(t), now, now); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug",
+		`{"title":"Remote match","what_happened":"x","board":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	it, err := s.RT.Items.Get(ctx, got.ItemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(it.SuggestedRepos) != len(want) {
+		t.Fatalf("suggested = %v, want %v", it.SuggestedRepos, want)
+	}
+	seen := map[string]bool{}
+	for _, id := range it.SuggestedRepos {
+		seen[id] = true
+	}
+	for _, id := range want {
+		if !seen[id] {
+			t.Fatalf("suggested = %v, want %v", it.SuggestedRepos, want)
+		}
 	}
 }
 
