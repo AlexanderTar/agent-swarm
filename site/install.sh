@@ -16,7 +16,7 @@ main() {
     exit 1
   }
 
-  guide_url="https://github.com/AlexanderTar/swarmrun#setup"
+  guide_url="https://github.com/AlexanderTar/swarmrun#requirements"
 
   tty_in="${SWARM_TTY:-/dev/tty}"
   if [ "$tty_in" != "/dev/null" ]; then
@@ -136,8 +136,8 @@ main() {
     fi
   fi
   step "Building Swarm..."
-  if ! make -C "$swarm_src" install <"$tty_in"; then
-    fail "Build" "make install in $swarm_src failed." "make -C $swarm_src install"
+  if ! make -C "$swarm_src" GO=go install <"$tty_in"; then
+    fail "Build" "make install in $swarm_src failed." "make -C $swarm_src GO=go install"
   fi
 
   step "Setting up Swarm..."

@@ -64,7 +64,7 @@ exit 0'
 exit 0'
   run_install
   case "$RUN_OUT" in
-    *"Unsupported system: Linux. Swarm needs macOS 14 or later. Setup guide: https://github.com/AlexanderTar/swarmrun#setup"*)
+    *"Unsupported system: Linux. Swarm needs macOS 14 or later. Setup guide: https://github.com/AlexanderTar/swarmrun#requirements"*)
       ok "unsupported OS stops with the exact message"
       ;;
     *)
@@ -91,7 +91,7 @@ exit 0'
 exit 0'
   run_install
   case "$RUN_OUT" in
-    *"macOS 14 or later is required (found 13.6.0). Setup guide: https://github.com/AlexanderTar/swarmrun#setup"*)
+    *"macOS 14 or later is required (found 13.6.0). Setup guide: https://github.com/AlexanderTar/swarmrun#requirements"*)
       ok "old macOS stops with the exact message"
       ;;
     *)
@@ -362,6 +362,50 @@ t_node_present_is_skipped() {
     not_ok "present node is not reinstalled" "$(grep '^brew install' "$CALL_LOG")"
   else
     ok "present node is not reinstalled"
+  fi
+  cleanup_tmp
+}
+
+t_make_receives_go_path() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  run_install
+  if grep -q 'GO=go' "$CALL_LOG"; then
+    ok "make runs with GO=go for Intel Homebrew"
+  else
+    not_ok "make runs with GO=go for Intel Homebrew" "$(grep '^make ' "$CALL_LOG" || true)"
+  fi
+  cleanup_tmp
+}
+
+t_guide_link_points_at_requirements() {
+  new_tmp
+  write_stub uname '#!/bin/sh
+echo Linux'
+  write_stub sw_vers '#!/bin/sh
+echo 14.5'
+  write_stub brew '#!/bin/sh
+exit 0'
+  write_stub xcode-select '#!/bin/sh
+exit 0'
+  run_install
+  case "$RUN_OUT" in
+    *"Setup guide: https://github.com/AlexanderTar/swarmrun#requirements"*)
+      ok "unsupported OS links to the Requirements guide"
+      ;;
+    *)
+      not_ok "unsupported OS links to the Requirements guide" "$RUN_OUT"
+      ;;
+  esac
+  if grep -q '^## Requirements' "$REPO_ROOT/README.md"; then
+    ok "guide anchor #requirements exists in README"
+  else
+    not_ok "guide anchor #requirements exists in README" "no '## Requirements' heading"
   fi
   cleanup_tmp
 }
@@ -774,6 +818,8 @@ t_no_xcode_tools
 t_installs_only_missing_tools
 t_node_missing_gets_brew_install
 t_node_present_is_skipped
+t_make_receives_go_path
+t_guide_link_points_at_requirements
 t_ghostty_app_counts_as_installed
 t_ollama_cli_counts_as_installed
 t_ollama_server_starts_before_pull
