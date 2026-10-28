@@ -17,7 +17,7 @@ var bg = context.Background()
 func TestParseRemoteOwner(t *testing.T) {
 	cases := map[string]string{
 		"https://github.com/EndurioApp/endurio-chat.git": "EndurioApp",
-		"git@github.com:AlexanderTar/swarmrun.git":    "AlexanderTar",
+		"git@github.com:AlexanderTar/swarmrun.git":       "AlexanderTar",
 		"ssh://git@github.com/Owner/repo.git":            "Owner",
 		"https://gitlab.example.com/group/sub/repo":      "group",
 		"https://user:pw@github.com/Acme/tool":           "Acme",
