@@ -58,7 +58,7 @@ main() {
 
   step "Installing tools..."
   missing=""
-  for pkg in go tmux pnpm uv; do
+  for pkg in go tmux pnpm uv node; do
     if ! brew list --formula --versions "$pkg" >/dev/null 2>&1; then
       missing="$missing $pkg"
     fi

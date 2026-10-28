@@ -310,7 +310,7 @@ t_installs_only_missing_tools() {
   else
     not_ok "tool install exits zero on the success path" "$RUN_OUT"
   fi
-  if grep -qx 'brew install pnpm uv' "$CALL_LOG"; then
+  if grep -qx 'brew install pnpm uv node' "$CALL_LOG"; then
     ok "only missing formulae are installed"
   else
     not_ok "only missing formulae are installed" "$(cat "$CALL_LOG")"
@@ -332,9 +332,43 @@ t_installs_only_missing_tools() {
   cleanup_tmp
 }
 
-t_ghostty_app_counts_as_installed() {
+t_node_missing_gets_brew_install() {
   new_tmp
   STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  run_install
+  if grep '^brew install' "$CALL_LOG" 2>/dev/null | grep -qw 'node'; then
+    ok "missing node is installed with brew"
+  else
+    not_ok "missing node is installed with brew" "$(grep '^brew install' "$CALL_LOG" || true)"
+  fi
+  cleanup_tmp
+}
+
+t_node_present_is_skipped() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
+  STUB_INSTALLED_CASKS="ghostty ollama"
+  export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
+  STUB_GIT_DIRTY=""
+  export STUB_GIT_DIRTY
+  std_stubs
+  run_install
+  if grep '^brew install' "$CALL_LOG" 2>/dev/null | grep -w 'node'; then
+    not_ok "present node is not reinstalled" "$(grep '^brew install' "$CALL_LOG")"
+  else
+    ok "present node is not reinstalled"
+  fi
+  cleanup_tmp
+}
+
+t_ghostty_app_counts_as_installed() {
+  new_tmp
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS=""
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -357,7 +391,7 @@ t_ghostty_app_counts_as_installed() {
 
 t_ollama_cli_counts_as_installed() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -381,7 +415,7 @@ t_ollama_cli_counts_as_installed() {
 
 t_ollama_server_starts_before_pull() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -412,7 +446,7 @@ t_ollama_server_starts_before_pull() {
 
 t_ollama_app_start_awaits_server() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -445,7 +479,7 @@ t_ollama_app_start_awaits_server() {
 
 t_doctor_failure_warns() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -480,7 +514,7 @@ t_doctor_failure_warns() {
 
 t_pulls_model_once() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -498,7 +532,7 @@ t_pulls_model_once() {
 
 t_fresh_clone() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -516,7 +550,7 @@ t_fresh_clone() {
 
 t_fast_forward_update() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -547,7 +581,7 @@ t_fast_forward_update() {
 
 t_dirty_checkout_stops() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=" M dirty-file"
@@ -581,7 +615,7 @@ t_dirty_checkout_stops() {
 
 t_build_steps_run_in_order() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -615,7 +649,7 @@ t_build_steps_run_in_order() {
 
 t_commands_ignore_script_stream() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -644,7 +678,7 @@ t_commands_ignore_script_stream() {
 
 t_failing_step_names_itself() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -687,7 +721,7 @@ t_failing_step_names_itself() {
 
 t_no_agent_cli_warns() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -713,7 +747,7 @@ t_no_agent_cli_warns() {
 
 t_agent_cli_present_ok() {
   new_tmp
-  STUB_INSTALLED_FORMULAE="go tmux pnpm uv"
+  STUB_INSTALLED_FORMULAE="go tmux pnpm uv node"
   STUB_INSTALLED_CASKS="ghostty ollama"
   export STUB_INSTALLED_FORMULAE STUB_INSTALLED_CASKS
   STUB_GIT_DIRTY=""
@@ -738,6 +772,8 @@ t_old_macos
 t_no_homebrew
 t_no_xcode_tools
 t_installs_only_missing_tools
+t_node_missing_gets_brew_install
+t_node_present_is_skipped
 t_ghostty_app_counts_as_installed
 t_ollama_cli_counts_as_installed
 t_ollama_server_starts_before_pull

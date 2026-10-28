@@ -34,7 +34,7 @@ Specs and plans live in `~/.swarm/specs` and `~/.swarm/plans`, not in your repos
 - Git commit signing enabled (`commit.gpgsign=true`) in repositories agents work in
 
 ```bash
-brew install go tmux pnpm uv
+brew install go tmux pnpm uv node
 brew install --cask ghostty ollama
 ollama pull qwen3-embedding:0.6b
 ```
