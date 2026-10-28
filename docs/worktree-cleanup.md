@@ -61,9 +61,9 @@ Cause (BUG-132): watchman, when it watches a worktree, keeps writing `.watchman-
 
 What `remove` does now (`internal/worktree/worktree.go`):
 
-- Before `git worktree remove` it runs `watchman watch-del <path>` (errors and a missing watchman are ignored) and deletes `.watchman-cookie-*` in the folder. Cookies are never dirt: `DirtyStrict` ignores `??` lines for them.
+- Before `git worktree remove` it runs `watchman --no-spawn watch-del <path>` (`--no-spawn` so a remove never starts a watchman server; errors and a missing watchman are ignored) and deletes `.watchman-cookie-*` in the folder. Cookies are never dirt: `DirtyStrict` and the build-churn check ignore `??` lines for them.
 - On `Directory not empty` it clears cookies and retries once.
-- A folder with no `.git` is a stray, not a worktree. Cookies only (or empty): `os.RemoveAll`, `git worktree prune`, row `removed`. Anything else: row `retained` with reason `not_a_worktree`, folder untouched. The retained row and `swarm cleanup` show the reason (`worktree kept <path> (not_a_worktree)`).
+- A folder with no `.git`, or whose `.git` file points at a worktree that `git worktree list --porcelain` no longer names, is a stray, not a worktree. Cookies only (plus a dangling `.git` file, or empty): `os.RemoveAll`, `git worktree prune`, row `removed`. Anything else: row `retained` with reason `not_a_worktree`, folder untouched. The retained row and `swarm cleanup` show the reason (`worktree kept <path> (not_a_worktree)`).
 - The reclaim pass re-judges retained rows, so an old stuck `dirty` row with a cookie-only folder is cleared on the next pass without manual steps.
 
 What to do with a `not_a_worktree` row: look at the folder, then `swarm cleanup --discard <path-or-id>`, which deletes the folder and prunes the repo (no `git worktree remove` on a non-git folder).
