@@ -18,7 +18,7 @@ cp "$ROOT/site/index.html" "$ROOT/site/styles.css" "$DIST/"
 cp "$ROOT/design/tokens.css" "$DIST/tokens.css"
 cp "$ROOT/design/fonts/"*.woff2 "$DIST/fonts/"
 cp "$ROOT/site/assets/"* "$DIST/assets/"
-cp "$ROOT/design/assets/logo/app-icon.svg" "$DIST/assets/app-icon.svg"
+cp "$ROOT/design/assets/Logos/app-icon.svg" "$DIST/assets/app-icon.svg"
 cp "$ROOT/site/install.sh" "$DIST/install.sh"
 cp "$ROOT/site/assets/social-preview.png" "$DIST/social-preview.png"
 

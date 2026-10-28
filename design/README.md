@@ -10,8 +10,20 @@ node design/scripts/gen-tokens-css.mjs --check # fail when stale (CI)
 ```
 
 `node scripts/ds-artifact-check.mjs <downloaded-project-dir>` diffs `design/`
-against the published artifact copy. Repo-only files (`scripts/gen-tokens-css.mjs`,
-`scripts/gen-tokens-css.test.mjs`, `tokens.css`) are skipped; artifact-only extras are ignored.
+against the published artifact copy. Download the artifact's `project/` folder
+first (Claude's artifact download), then point the check at it: asset uploads
+land at `project/assets/<Group>/<file>`, compared byte for byte against
+`design/assets/<Group>/<file>`. `design/design-system.json` is compared with
+the page-owned keys (`sections`, `blobs`, `docs`, `lastChange`) masked out.
+Repo-only files (`scripts/`, `tokens.css`) are skipped; artifact-only extras
+(`archived/`, `uploads/`) are ignored.
+
+Repo-only token extras: the artifact page drops or clamps `gradient-hero`
+(over the page gradient length cap), the `{alias}` shadow forms (the page
+resolves them to literals) and the `drop-shadow()` icon shadow, so the repo's
+`tokens.json` keeps them and the generated `tokens.css` keeps the matching
+`var(--…)` variables. Aliases always use the `{name}` form in `tokens.json`;
+raw `var(--…)` never appears there (a test enforces this).
 
 ## Brand
 
@@ -20,9 +32,9 @@ developer: short sentences, no internals (no tmux, worktrees, ports, daemon),
 no platform names. One violet does the brand work; everything else is night
 and neutral surfaces.
 
-- App icon: `assets/logo/app-icon.svg` (1024). The gradient
+- App icon: `assets/Logos/app-icon.svg` (1024). The gradient
   `#5B7CFA → #7B5CF0 (55%) → #9B4FE0` is art, never behind text.
-- Glyph: `assets/logo/glyph.svg` (24). Single colour, `currentColor`.
+- Glyph: `assets/Logos/glyph.svg` (24). Single colour, `currentColor`.
 - Logo use: monochrome marks at one size, always next to the product name,
   unaltered in shape. Agent logos on the site follow the same rule, with the
   trademark line on the page. Never recolour, stretch or rearrange the marks.
@@ -55,5 +67,7 @@ ease-out. No animation on scroll; `prefers-reduced-motion` disables the rest.
 
 ## Components
 
-Each `components/<Name>/preview.html` renders the component against the
-generated tokens: Colors, Type, Logo, Buttons, StatusPills.
+Each `components/<Name>/preview.html` starts with an `@dsCard` marker and
+renders the component against the generated tokens: Colors, Type, Logo,
+Buttons, StatusPills, Cover. The Logo preview inlines the app icon SVG so the
+same file works in the repo and on the artifact page with no path reference.

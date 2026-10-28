@@ -1,10 +1,49 @@
 {
-  "name": "Swarm Design System",
-  "description": "Brand, tokens, type and components for Swarm and swarmrun.dev. Source of truth for the published Design System artifact.",
+  "v": 3,
+  "layout": "files",
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-28T14:20:00Z"
+  },
+  "title": "Swarm Design System",
+  "namespace": "SwarmDesignSystem",
+  "libraries": [],
+  "sections": {},
+  "groups": [
+    "Logos"
+  ],
+  "assetGroups": {
+    "Logos": {
+      "name": "Logos",
+      "tile": "l",
+      "order": [
+        "app-icon.svg",
+        "glyph.svg"
+      ],
+      "files": {
+        "app-icon.svg": {
+          "name": "app-icon.svg",
+          "blob": "436705b2e858928390a3aa2292ba0aad",
+          "size": 4197,
+          "type": "image/svg+xml"
+        },
+        "glyph.svg": {
+          "name": "glyph.svg",
+          "blob": "fcc9fa0d2870bf5643d4f06576a2c737",
+          "size": 324,
+          "type": "image/svg+xml"
+        }
+      }
+    }
+  },
+  "blobs": {},
+  "docs": {
+    "sections": []
+  },
   "lastChange": {
-    "by": "build-the-design-system-coder",
+    "by": "design-folder-in-the-coder",
     "at": "2026-10-28",
-    "via": "TASK-1472",
-    "note": "Initial Swarm design system ported from the approved TASK-1468 design."
+    "via": "TASK-1478",
+    "note": "Converted design/ to the Design System artifact file layout."
   }
 }
