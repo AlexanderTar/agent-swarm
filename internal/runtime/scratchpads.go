@@ -129,6 +129,7 @@ func (s *Store) ReclaimScratchpads(ctx context.Context, opt CleanupOptions) ([]C
 			results = append(results, CleanupResult{Path: path, Action: "would_remove"})
 			continue
 		}
+		results = append(results, s.terminateChrome(path)...)
 		if err := os.RemoveAll(path); err != nil {
 			s.logf("scratchpad: remove %s failed: %v", path, err)
 			keep("error: " + err.Error())

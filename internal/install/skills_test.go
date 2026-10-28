@@ -1727,3 +1727,23 @@ func TestDebugWorkflowSplitsDiagnosisFromFix(t *testing.T) {
 		}
 	}
 }
+
+// TASK-1457 (BUG-133): Chrome copies its app bundle into a code_sign_clone dir
+// at launch and removes it only on a clean quit, so the agents that start
+// headless Chrome must keep its profile in their own dirs and close it
+// gracefully before they finish.
+func TestBrowserSkillsCarryChromeCloseRule(t *testing.T) {
+	for _, skill := range []string{"swarm-ui-reviewer", "swarm-designer"} {
+		body := string(install.SkillBody(skill))
+		for _, want := range []string{
+			"--user-data-dir",
+			"Browser.close",
+			"never SIGKILL first",
+			"before your `completed` or `handoff` checkpoint",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s SKILL.md lacks %q", skill, want)
+			}
+		}
+	}
+}

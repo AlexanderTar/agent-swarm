@@ -1687,6 +1687,9 @@ func (s *Store) ReclaimWorktreesLoop(ctx context.Context, every time.Duration) {
 		if _, err := s.ReclaimScratchpads(ctx, CleanupOptions{}); err != nil && ctx.Err() == nil {
 			s.logf("reclaim scratchpads: %v", err)
 		}
+		if _, err := s.ReclaimChromeClones(ctx, CleanupOptions{}); err != nil && ctx.Err() == nil {
+			s.logf("reclaim chrome clones: %v", err)
+		}
 	}
 }
 
