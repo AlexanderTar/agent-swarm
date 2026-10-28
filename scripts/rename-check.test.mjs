@@ -46,6 +46,7 @@ test("passes on allow-listed paths", () => {
     plant(root, "internal/install/testdata/x.md", "Agent Swarm\n"),
     plant(root, "internal/install/files_test.go", "Agent Swarm\n"),
     plant(root, "scripts/rename-check-test.md", "Agent Swarm\n"),
+    plant(root, "scripts/site-check.sh", "Agent Swarm\n"),
     plant(root, "internal/hook/testdata/q.json", "AlexanderTar/agent-swarm\n"),
   ];
   const r = run(root, ...paths);

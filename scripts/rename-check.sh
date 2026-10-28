@@ -25,6 +25,7 @@ is_allowed() {
     apps/menubar/Tests/Fixtures/*) return 0 ;;
     internal/mcpserver/tools_report_bug.go|internal/mcpserver/tools_report_bug_test.go) return 0 ;;
     scripts/move-checkout*) return 0 ;;
+    scripts/site-check.sh) return 0 ;; # asserts the string is absent from site/dist
     scripts/rename-check*) return 0 ;;
   esac
   return 1
