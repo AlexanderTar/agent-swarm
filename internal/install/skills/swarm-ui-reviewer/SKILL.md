@@ -20,4 +20,9 @@ Cite the rule source in every UI finding (e.g. "web-design-guidelines: insuffici
 
 Store the screenshots you capture under `~/.swarm/screenshots/<ITEM-KEY>/` (your own item key), never `~/.swarm/attachments`, which is the daemon's swept request-attachment store.
 
+## Headless Chrome: keep it in your dirs, close it before you finish
+Chrome copies its app bundle into `com.google.Chrome.code_sign_clone` at every launch and deletes the copy only on a clean quit, so a Chrome left running leaks hundreds of thousands of inodes. If you start Chrome for screenshots or inspection:
+- Launch it with `--user-data-dir` pointing inside your own scratchpad or work dir, never a shared or system path.
+- Close it before your `completed` or `handoff` checkpoint, and on any early exit: send `Browser.close` over CDP, or SIGTERM it and wait for it to exit (never SIGKILL first).
+
 Your review tree is a fresh checkout. Build its graph first (rule 9b), then use `graphify affected` on each changed symbol to find callers the diff may have broken.

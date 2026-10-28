@@ -29,5 +29,10 @@ Write to `$SWARM_HOME/designs/<ROOT-KEY>/<ITEM-KEY>-<slug>.md`. Sections, in ord
 - **Mobile specifics** — safe areas, gestures, platform conventions, touch targets (when the target includes a mobile surface).
 - **Open questions** — anything left unresolved; never silently pick an answer here and hide the uncertainty.
 
+## Headless Chrome: keep it in your dirs, close it before you finish
+Chrome copies its app bundle into `com.google.Chrome.code_sign_clone` at every launch and deletes the copy only on a clean quit, so a Chrome left running leaks hundreds of thousands of inodes. If you start Chrome for screenshots or inspection:
+- Launch it with `--user-data-dir` pointing inside your own scratchpad or work dir, never a shared or system path.
+- Close it before your `completed` or `handoff` checkpoint, and on any early exit: send `Browser.close` over CDP, or SIGTERM it and wait for it to exit (never SIGKILL first).
+
 ## Completing
 Write `completed` with the artifact's path in `artifacts` (gate `artifact:design` reads it from there; the daemon registers it, not you). Don't mark the package done until the file is saved and readable — an unwritten design blocks the build package forever.
