@@ -111,7 +111,7 @@ export const C = {
     `${n} ${n === 1 ? "waiver" : "waivers"}, ${m} ${m === 1 ? "override" : "overrides"} in this tree`,
   waivedRow: (gate: string, reason: string) => `Waived: ${gate} — ${reason}`,
   overrideRow: (status: string, reason: string) => `Overridden to ${status} — ${reason}`,
-  appTitle: "Agent Swarm",
+  appTitle: "Swarm",
   signInHint: "Sign in to open the board.",
   email: "Email",
   password: "Password",

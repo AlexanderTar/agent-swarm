@@ -44,7 +44,7 @@ describe("App shell (§16.5)", () => {
   });
   it("shows the header and the Needs you count", async () => {
     const { user } = renderWithDaemon(<App />);
-    expect(screen.getByRole("heading", { name: "Agent Swarm" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Swarm" })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Needs you 9" }));
     expect(window.location.hash).toBe("#/inbox");
   });

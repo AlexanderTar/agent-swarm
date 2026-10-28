@@ -4,7 +4,7 @@ import Foundation
 /// literal spec text, never against these constants.
 public enum Copy {
     // §17.1 menubar
-    public static let appTitle = "Agent Swarm"
+    public static let appTitle = "Swarm"
     public static func active(_ n: Int) -> String { "\(n) active" }
     /// The header while the daemon is down, matching the label's "?".
     public static let activeUnknown = "? active"

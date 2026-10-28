@@ -14,7 +14,7 @@ import (
 
 func testFS() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":         {Data: []byte("<!doctype html><title>Agent Swarm</title>")},
+		"index.html":         {Data: []byte("<!doctype html><title>Swarm</title>")},
 		"favicon.svg":        {Data: []byte("<svg/>")},
 		"assets/app-1a2b.js": {Data: []byte("console.log(1)")},
 	}
@@ -32,10 +32,10 @@ func TestHandlerServesFilesAndFallsBackToIndex(t *testing.T) {
 	cases := []struct {
 		path, want, cache string
 	}{
-		{"/", "Agent Swarm", "no-cache"},
-		{"/index.html", "Agent Swarm", "no-cache"},
-		{"/kanban", "Agent Swarm", "no-cache"},
-		{"/some/deep/path", "Agent Swarm", "no-cache"},
+		{"/", "Swarm", "no-cache"},
+		{"/index.html", "Swarm", "no-cache"},
+		{"/kanban", "Swarm", "no-cache"},
+		{"/some/deep/path", "Swarm", "no-cache"},
 		{"/assets/app-1a2b.js", "console.log(1)", "public, max-age=31536000, immutable"},
 		{"/favicon.svg", "<svg/>", ""},
 	}

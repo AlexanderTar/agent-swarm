@@ -51,7 +51,7 @@ describe("SpawnSheet (§16.10)", () => {
       events: false,
     });
     const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
-    await user.click(await within(sheet).findByRole("option", { name: /agent-swarm/ }));
+    await user.click(await within(sheet).findByRole("option", { name: /swarmrun/ }));
     const name = within(sheet).getByRole("textbox", { name: "Name" });
     await user.clear(name);
     await user.type(name, "billing-orchestrator");
@@ -100,7 +100,7 @@ describe("SpawnSheet (§16.10)", () => {
             body: {
               error: {
                 code: "preflight_failed",
-                message: "Commit signing is off for agent-swarm. Enable it in git config.",
+                message: "Commit signing is off for swarmrun. Enable it in git config.",
               },
             },
           }
@@ -119,7 +119,7 @@ describe("SpawnSheet (§16.10)", () => {
       await screen.findByText("Couldn't start orchestrator. Your entries are saved."),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Commit signing is off for agent-swarm. Enable it in git config."),
+      screen.getByText("Commit signing is off for swarmrun. Enable it in git config."),
     ).toBeInTheDocument();
     expect(name).toHaveValue("kept-name");
     await user.click(screen.getByRole("button", { name: "Try again" }));

@@ -895,7 +895,7 @@ for (const view of ["hierarchy", "kanban", "dependencies", "inbox"]) {
   test(`${view} view has no horizontal page overflow`, async ({ page }) => {
     await page.goto(`/#/${view}`);
     await expect(page.getByTestId("view")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Agent Swarm" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Swarm" })).toBeVisible();
     await page.waitForTimeout(500);
     await noHorizontalOverflow(page);
   });
