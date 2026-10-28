@@ -1,0 +1,44 @@
+<!-- @dsCard width=960 height=288 -->
+<link rel="stylesheet" href="../../tokens.css">
+<link rel="stylesheet" href="../../fonts/fonts.css">
+<div class="cover">
+  <svg class="art" viewBox="0 0 480 288" aria-hidden="true">
+    <!-- blocks: violet-500 192x160, night-800 160x96, brand-to 96x64, violet-300 64x64, neutral-800 128x96 (space-16/24/28 multiples) -->
+    <!-- arrangement: one tall violet slab bleeding off the top, satellites stepping down and right, the last bleeding off the right edge -->
+    <!-- pattern: dot grid at space-6 pitch in violet-300; "a swarm": many small agents moving as one team, the site's dot field -->
+    <!-- scales: pitch space-6 (24px), dots r=2, block corners radius-xl, gaps space-4 -->
+    <g class="dots">
+      <circle cx="24" cy="216" r="2"/><circle cx="48" cy="216" r="2"/><circle cx="72" cy="216" r="2"/><circle cx="96" cy="216" r="2"/>
+      <circle cx="24" cy="240" r="2"/><circle cx="48" cy="240" r="2"/><circle cx="72" cy="240" r="2"/><circle cx="96" cy="240" r="2"/>
+      <circle cx="24" cy="264" r="2"/><circle cx="48" cy="264" r="2"/><circle cx="72" cy="264" r="2"/><circle cx="96" cy="264" r="2"/>
+      <circle cx="384" cy="24" r="2"/><circle cx="408" cy="24" r="2"/><circle cx="432" cy="24" r="2"/><circle cx="456" cy="24" r="2"/>
+      <circle cx="384" cy="48" r="2"/><circle cx="408" cy="48" r="2"/><circle cx="432" cy="48" r="2"/><circle cx="456" cy="48" r="2"/>
+      <circle cx="384" cy="72" r="2"/><circle cx="408" cy="72" r="2"/><circle cx="432" cy="72" r="2"/><circle cx="456" cy="72" r="2"/>
+    </g>
+    <rect class="violet tile" x="40" y="-16" width="192" height="176"/>
+    <rect class="night tile" x="248" y="112" width="160" height="96"/>
+    <rect class="grape tile" x="152" y="176" width="80" height="64"/>
+    <rect class="ink tile" x="248" y="32" width="64" height="64"/>
+    <rect class="slate tile" x="424" y="128" width="128" height="96"/>
+  </svg>
+  <div class="text">
+    <div class="name">Swarm</div>
+    <div class="tagline">Run your coding agents as a team.</div>
+  </div>
+</div>
+<style>
+  html, body { margin: 0; background: var(--background); }
+  .cover { position: relative; width: 960px; height: 288px; overflow: hidden; background: var(--background); }
+  .art { position: absolute; left: 480px; top: 0; width: 480px; height: 288px; }
+  .tile { rx: var(--radius-xl); }
+  .violet { fill: var(--violet-500); }
+  .night { fill: var(--night-800); }
+  .grape { fill: var(--brand-to); }
+  .ink { fill: var(--violet-300); }
+  .slate { fill: var(--neutral-800); }
+  .dots circle { fill: var(--violet-300); opacity: .5; }
+  .text { position: absolute; left: 48px; bottom: 40px; max-width: 400px; }
+  .name { font-family: var(--font-sans); font-weight: 650; font-size: 120px; line-height: .92; letter-spacing: -0.03em; color: var(--foreground); }
+  .tagline { margin-top: 16px; font-family: var(--font-sans); font-size: 14px; color: var(--muted-foreground); }
+</style>
+<script>/* static cover */</script>

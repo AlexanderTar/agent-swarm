@@ -2,12 +2,49 @@
 // Diffs design/ against a downloaded Design System artifact project/ folder.
 // Usage: node scripts/ds-artifact-check.mjs [--design DIR] <project-dir>
 // design/<path> maps to project/<path>; repo-only files are skipped, and
-// artifact-only extras (archived/, uploads/) are ignored. Exits 1 on mismatch.
+// artifact-only extras (archived/, uploads/) are ignored. SVGs compare after
+// canonical serialization (see design/README.md). Exits 1 on mismatch.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
 // Repo-only: never published to the artifact (spec, Design system section).
-const REPO_ONLY = new Set(["scripts/gen-tokens-css.mjs", "scripts/gen-tokens-css.test.mjs", "tokens.css"]);
+// Everything under design/scripts/ (generator, tests) plus the generated
+// tokens.css stays in the repo.
+const isRepoOnly = (rel) => rel === "tokens.css" || rel === "scripts" || rel.startsWith("scripts/");
+
+// Page-owned index keys: the artifact page controls them, so they are masked
+// out when design/design-system.json is compared.
+const PAGE_OWNED_INDEX_KEYS = new Set(["sections", "blobs", "docs", "lastChange"]);
+
+// SVGs are compared after canonical serialization: the upload store rewrites
+// SVG markup on publish (empty-element tags change form, comments and
+// inter-tag whitespace change), while the vector stays the same.
+const canonicalSvg = (text) =>
+  text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<([A-Za-z][\w:.-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>\s*<\/\1\s*>/g, "<$1$2/>")
+    .replace(/>\s+</g, "><")
+    .replace(/\s+\/>/g, "/>")
+    .trim();
+
+const sorted = (value) => {
+  if (Array.isArray(value)) return value.map(sorted);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((k) => [k, sorted(value[k])]));
+  }
+  return value;
+};
+
+const maskedIndex = (rel, raw) => {
+  let doc;
+  try {
+    doc = JSON.parse(raw.toString("utf8"));
+  } catch {
+    return { problem: `differing: ${rel} (not valid JSON)` };
+  }
+  for (const key of PAGE_OWNED_INDEX_KEYS) delete doc[key];
+  return { canonical: JSON.stringify(sorted(doc)) };
+};
 
 const args = process.argv.slice(2);
 const opt = (flag, fallback) => {
@@ -35,7 +72,7 @@ const walk = (dir) => {
 
 const problems = [];
 for (const rel of walk(designDir)) {
-  if (REPO_ONLY.has(rel)) continue;
+  if (isRepoOnly(rel)) continue;
   let mine;
   try {
     mine = readFileSync(join(designDir, rel));
@@ -47,6 +84,20 @@ for (const rel of walk(designDir)) {
     theirs = readFileSync(join(projectDir, rel));
   } catch {
     problems.push(`missing: ${rel}`);
+    continue;
+  }
+  if (rel === "design-system.json") {
+    const mineMasked = maskedIndex(rel, mine);
+    const theirsMasked = maskedIndex(rel, theirs);
+    if (mineMasked.problem) problems.push(mineMasked.problem);
+    else if (theirsMasked.problem) problems.push(theirsMasked.problem);
+    else if (mineMasked.canonical !== theirsMasked.canonical) problems.push(`differing: ${rel}`);
+    continue;
+  }
+  if (rel.endsWith(".svg")) {
+    if (canonicalSvg(mine.toString("utf8")) !== canonicalSvg(theirs.toString("utf8"))) {
+      problems.push(`differing: ${rel}`);
+    }
     continue;
   }
   if (!mine.equals(theirs)) problems.push(`differing: ${rel}`);

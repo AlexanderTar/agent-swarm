@@ -53,9 +53,70 @@ test("ignores repo-only files", () => {
   const { design, project } = setup();
   plant(design, "scripts/gen-tokens-css.mjs", "// repo only\n");
   plant(design, "scripts/gen-tokens-css.test.mjs", "// repo only\n");
+  plant(design, "scripts/design-layout.test.mjs", "// repo only\n");
   plant(design, "tokens.css", ":root {}\n");
   const r = run(design, project);
   assert.equal(r.code, 0, `repo-only files must be ignored: ${r.out}`);
+});
+
+test("masks page-owned index keys when comparing design-system.json", () => {
+  const { design, project } = setup();
+  const index = {
+    v: 3,
+    layout: "files",
+    title: "Swarm Design System",
+    namespace: "SwarmDesignSystem",
+    libraries: [],
+    sections: { mine: true },
+    groups: ["Logos"],
+    assetGroups: {},
+    blobs: { mine: true },
+    docs: { sections: [] },
+    lastChange: { by: "me", at: "today", via: "test", note: "repo" },
+  };
+  plant(design, "design-system.json", JSON.stringify(index));
+  plant(
+    project,
+    "design-system.json",
+    JSON.stringify({ ...index, sections: { page: true }, blobs: { page: true }, docs: { sections: ["a"] }, lastChange: { by: "page" } }),
+  );
+  const r = run(design, project);
+  assert.equal(r.code, 0, `page-owned index keys must be masked: ${r.out}`);
+});
+
+test("still fails on a repo-owned index difference", () => {
+  const { design, project } = setup();
+  plant(design, "design-system.json", JSON.stringify({ v: 3, title: "Swarm Design System", sections: {}, blobs: {}, docs: {}, lastChange: {} }));
+  plant(project, "design-system.json", JSON.stringify({ v: 3, title: "Renamed System", sections: {}, blobs: {}, docs: {}, lastChange: {} }));
+  const r = run(design, project);
+  assert.notEqual(r.code, 0, "repo-owned index difference must fail");
+  assert.match(r.out, /design-system\.json/);
+});
+
+test("compares assets against the downloaded uploads", () => {
+  const { design, project } = setup();
+  plant(design, "assets/Logos/app-icon.svg", "<svg>mine</svg>\n");
+  plant(project, "assets/Logos/app-icon.svg", "<svg>mine</svg>\n");
+  assert.equal(run(design, project).code, 0);
+  plant(project, "assets/Logos/app-icon.svg", "<svg>changed</svg>\n");
+  const r = run(design, project);
+  assert.notEqual(r.code, 0, "changed upload must fail");
+  assert.match(r.out, /assets\/Logos\/app-icon\.svg/);
+});
+
+test("compares SVGs after canonical serialization (the upload store rewrites empty-element tags)", () => {
+  const { design, project } = setup();
+  // Same vector, once as self-closing tags and once as explicit close tags
+  // with different inter-tag whitespace: the upload store rewrites one form
+  // into the other on publish.
+  plant(design, "assets/Logos/glyph.svg", '<svg><circle cx="12" cy="5" r="3"/><path d="M0 0h1"/></svg>\n');
+  plant(project, "assets/Logos/glyph.svg", '<svg>\n  <circle cx="12" cy="5" r="3"></circle>\n  <path d="M0 0h1" ></path>\n</svg>\n');
+  const r = run(design, project);
+  assert.equal(r.code, 0, `re-serialized SVG must compare equal: ${r.out}`);
+  plant(project, "assets/Logos/glyph.svg", '<svg><circle cx="12" cy="6" r="3"/><path d="M0 0h1"/></svg>\n');
+  const changed = run(design, project);
+  assert.notEqual(changed.code, 0, "a real SVG change must still fail");
+  assert.match(changed.out, /assets\/Logos\/glyph\.svg/);
 });
 
 test("exits 2 when the project dir is missing", () => {

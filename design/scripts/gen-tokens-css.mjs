@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Generates design/tokens.css from design/tokens.json (no dependencies).
+// tokens.json uses the Design System artifact list format: color tokens carry
+// per-theme values ({dark: ...}), every other family carries plain strings,
+// and {name} aliases resolve to var(--name) in the CSS output.
 // Usage: node design/scripts/gen-tokens-css.mjs [--check] [--tokens PATH] [--out PATH]
 // --check exits 1 when the committed CSS is stale instead of rewriting it.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -27,25 +30,59 @@ try {
 } catch (err) {
   fail(`${tokensPath}: ${err.message}`);
 }
-if (!doc || !Array.isArray(doc.groups) || doc.groups.length === 0) {
-  fail("top-level \"groups\" must be a non-empty array");
+
+const NAME = /^[a-z0-9-]+$/;
+const ALIAS = /\{([A-Za-z0-9_-]+)\}/g;
+
+// Resolve one token value to its CSS text: {dark: ...} takes the dark theme,
+// {name} aliases become var(--name).
+const resolveValue = (where, value) => {
+  const raw = typeof value === "string" ? value : value?.dark;
+  if (typeof raw !== "string" || raw.length === 0) fail(`${where} needs a string value or a {"dark": ...} value`);
+  return raw.replace(ALIAS, "var(--$1)");
+};
+
+const checkToken = (where, token) => {
+  if (!token || typeof token.name !== "string" || !NAME.test(token.name)) {
+    fail(`${where}: token name ${JSON.stringify(token?.name)} must match [a-z0-9-]+ (no -- prefix)`);
+  }
+  if (token.usage !== undefined && typeof token.usage !== "string") {
+    fail(`${where}: ${token.name} "usage" must be a string`);
+  }
+};
+
+if (!doc.color || !Array.isArray(doc.color.themes) || !doc.color.themes.some((t) => t.id === "dark")) {
+  fail('color.themes must list a "dark" theme');
 }
-const NAME = /^--[a-z0-9-]+$/;
-for (const [gi, group] of doc.groups.entries()) {
-  if (!group || typeof group.name !== "string" || group.name.length === 0) {
-    fail(`groups[${gi}].name must be a non-empty string`);
-  }
-  if (!group.tokens || typeof group.tokens !== "object" || Array.isArray(group.tokens)) {
-    fail(`groups[${gi}].tokens must be an object`);
-  }
-  for (const [name, token] of Object.entries(group.tokens)) {
-    if (!NAME.test(name)) fail(`groups[${gi}]: ${JSON.stringify(name)} is not a --custom-property name`);
-    if (!token || typeof token.value !== "string" || token.value.length === 0) {
-      fail(`groups[${gi}]: ${name} needs a non-empty string "value"`);
-    }
-    if (token.comment !== undefined && typeof token.comment !== "string") {
-      fail(`groups[${gi}]: ${name} "comment" must be a string`);
-    }
+if (!Array.isArray(doc.color.tokens) || doc.color.tokens.length === 0) {
+  fail("color.tokens must be a non-empty array");
+}
+for (const token of doc.color.tokens) {
+  checkToken("color", token);
+  if (typeof token.value !== "object" || token.value === null) fail(`color: ${token.name} value must be a {"dark": ...} object`);
+  resolveValue(`color: ${token.name}`, token.value);
+}
+
+// [family key in tokens.json, css group comment, emit --name for each token]
+const FAMILIES = [
+  ["text", "text"],
+  ["leading", "leading"],
+  ["weight", "weight"],
+  ["tracking", "tracking"],
+  ["spacing", "space"],
+  ["layout", "layout"],
+  ["radius", "radius"],
+  ["shadow", "shadow"],
+  ["gradient", "gradient"],
+  ["timing", "motion"],
+];
+for (const [key] of FAMILIES) {
+  const family = doc[key];
+  if (family === undefined) continue;
+  if (!Array.isArray(family.tokens)) fail(`${key}.tokens must be an array`);
+  for (const token of family.tokens) {
+    checkToken(key, token);
+    resolveValue(`${key}: ${token.name}`, token.value);
   }
 }
 
@@ -57,16 +94,60 @@ const lines = [
   "  color-scheme: dark;",
   "",
 ];
-for (const group of doc.groups) {
-  lines.push(`  /* ${group.name} */`);
-  for (const [name, token] of Object.entries(group.tokens)) {
-    const parts = token.value.split("\n");
-    const note = token.comment ? ` /* ${token.comment} */` : "";
-    parts.forEach((part, i) => {
-      const first = i === 0 ? `  ${name}: ` : "    ";
-      const last = i === parts.length - 1 ? `;${note}` : ",";
-      lines.push(`${first}${part.trimEnd()}${last}`);
-    });
+
+// Split a resolved value into layers at top-level commas (commas inside
+// functions like linear-gradient(...) stay put). Data keeps real comma
+// separators; the generator only wraps them one layer per line.
+const splitLayers = (css) => {
+  const layers = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of css) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      layers.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  layers.push(cur);
+  return layers.map((s) => s.trim()).filter((s) => s.length > 0);
+};
+
+// Usage strings stay in tokens.json (the artifact page shows them); the
+// generated CSS omits them so multi-line values stay readable.
+const emit = (group, name, value) => {
+  const layers = splitLayers(resolveValue(group, value));
+  layers.forEach((layer, i) => {
+    const first = i === 0 ? `  --${name}: ` : "    ";
+    const last = i === layers.length - 1 ? ";" : ",";
+    lines.push(`${first}${layer}${last}`);
+  });
+};
+
+lines.push("  /* color */");
+for (const token of doc.color.tokens) {
+  emit("color", token.name, token.value);
+}
+lines.push("");
+
+if (doc.type?.families) {
+  lines.push("  /* font */");
+  for (const [key, cssName] of [["sans", "font-sans"], ["mono", "font-mono"]]) {
+    if (doc.type.families[key] !== undefined) {
+      emit("type", cssName, doc.type.families[key]);
+    }
+  }
+  lines.push("");
+}
+for (const [key, group] of FAMILIES) {
+  const family = doc[key];
+  if (family === undefined) continue;
+  lines.push(`  /* ${group} */`);
+  for (const token of family.tokens) {
+    emit(key, token.name, token.value);
   }
   lines.push("");
 }
