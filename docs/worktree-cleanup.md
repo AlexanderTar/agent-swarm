@@ -55,6 +55,18 @@ Removes that worktree when its owner is not live and no live agent holds a reser
 
 The path is `filepath.Clean`'d before the row lookup, so a trailing slash, `//`, or `/./` still hits the row and its gates. A spelling `Clean` does not fold onto the stored path, such as a symlink, is refused when any non-removed row resolves to the same directory: pass the recorded path or the id. A directory under the home's `worktrees/` with no swarm row is removed with `git worktree remove --force` in the repo whose `git worktree list --porcelain` names it.
 
+## Headless Chrome and `code_sign_clone` leaks
+
+Chrome (and every Chromium app: Comet, Edge, ...) copies its app bundle into `$(getconf DARWIN_USER_DIR)/../X/<bundle id>.code_sign_clone/code_sign_clone.<id>` at every launch and deletes the copy only on a clean quit. UI reviewer and designer agents start headless Chrome (`--headless=new --remote-debugging-port=... --user-data-dir=<their scratchpad or work dir>`) and used to end without quitting it, so each left a running Chrome and a clone of ~1.3k inodes. 264 clones (~350k inodes) and a 3.7-day orphan were found on 2026-10-28.
+
+Rules:
+- An agent that starts Chrome keeps `--user-data-dir` inside its own scratchpad or work dir and closes it before its `completed` or `handoff` checkpoint: CDP `Browser.close`, or SIGTERM and wait for exit. Never SIGKILL first: a killed Chrome never deletes its clone. The `swarm-ui-reviewer` and `swarm-designer` skills carry this rule; any new skill that tells agents to start a browser must too.
+- Reclaiming a work dir or scratchpad (`ReclaimWorkDirs`, `ReclaimScratchpads`) first terminates every process whose command line has `--user-data-dir=` equal to or inside that dir (SIGTERM, up to 3 s wait, then SIGKILL). It matches on the path boundary and only inside the dir being removed, so the user's own browser profile is never touched. Each terminated process is a `terminated` line (`workdir terminated <dir> (chrome pid N)`). Dry runs and kept dirs signal nothing.
+- `ReclaimChromeClones` (daemon reclaim loop and `swarm cleanup`) removes `<root>/*.code_sign_clone/code_sign_clone.*` dirs that are older than the one-hour grace (any age with `--no-grace`) and held by nothing: no process has a file open under the clone (`lsof -w -n -Fn`) and no process command line runs from it. If `lsof` fails nothing is removed. Output lines are `chrome-clone removed|would_remove|kept <path> (reason)`.
+- Tests and scratch runs must not sweep the developer's real clones: `Store.CloneRoot` (env `SWARM_CHROME_CLONE_ROOT` for `swarm cleanup`) points the sweep at a temp dir, and `Store.Procs` / `Store.Signal` / `Store.OpenPaths` inject the process table, signals and open files.
+
+Detect a leak by hand: `ls "$(getconf DARWIN_USER_DIR)/../X"/*.code_sign_clone | wc -l` and `ps -axo pid,etime,command | grep -- --user-data-dir`. Fix it with `swarm cleanup --dry-run` then `swarm cleanup`. Guards: `go test ./internal/runtime/ -run 'Chrome'`, `go test ./internal/install/ -run TestBrowserSkillsCarryChromeCloseRule`.
+
 ## Tests
 
 ```sh

@@ -15,7 +15,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
-// cmdCleanup runs the work-dir and scratchpad passes and the worktree reclaim pass once, on
+// cmdCleanup runs the work-dir, scratchpad and Chrome code-sign-clone passes and the worktree reclaim pass once, on
 // the database directly like the other offline commands.
 func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	fs, home, _ := flags("cleanup", stderr, false)
@@ -37,7 +37,7 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	defer d.Close()
 	logf := func(string, ...any) {}
 	wt := &worktree.Service{DB: d, Run: execx.Run, Now: time.Now, Log: logf, Home: *home}
-	rt := &runtime.Store{DB: d, Home: *home, Now: time.Now, Log: logf, Worktree: wt}
+	rt := &runtime.Store{DB: d, Home: *home, Now: time.Now, Log: logf, Worktree: wt, CloneRoot: os.Getenv("SWARM_CHROME_CLONE_ROOT")}
 	wt.Evidence = rt.MergeEvidence()
 	if *discard != "" {
 		wt.Events = events.New(d, time.Now)
@@ -69,11 +69,13 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	printResults("workdir", dirs)
 	pads, padErr := rt.ReclaimScratchpads(ctx, opt)
 	printResults("scratchpad", pads)
+	clones, cloneErr := rt.ReclaimChromeClones(ctx, opt)
+	printResults("chrome-clone", clones)
 	trees, treeErr := rt.ReclaimWorktreesWith(ctx, opt)
 	printResults("worktree", trees)
 	fmt.Fprintf(stdout, "%d removed, %d would_remove, %d kept, %d untracked\n",
 		counts["removed"], counts["would_remove"], counts["kept"], counts["untracked"])
-	for _, err := range []error{dirErr, padErr, treeErr} {
+	for _, err := range []error{dirErr, padErr, cloneErr, treeErr} {
 		if err != nil {
 			return fail(stderr, err)
 		}

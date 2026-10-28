@@ -20,6 +20,8 @@ import (
 // a real worktree, plus an orphan work dir. Both agents finished long ago.
 func seedCleanupHome(t *testing.T) (home, agentDir, orphanDir, wtPath string) {
 	t.Helper()
+	// Never sweep the developer's real Chrome clones from a test.
+	t.Setenv("SWARM_CHROME_CLONE_ROOT", t.TempDir())
 	home = t.TempDir()
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(home, "swarm.db"))
@@ -192,5 +194,39 @@ func TestCleanupSweepsScratchpadsOfFinishedAgents(t *testing.T) {
 	}
 	if _, err := os.Stat(pad); !os.IsNotExist(err) {
 		t.Fatalf("scratchpad still exists (%v):\n%s", err, out.String())
+	}
+}
+
+func TestCleanupReportsChromeCloneResults(t *testing.T) {
+	home, _, _, _ := seedCleanupHome(t)
+	root := t.TempDir()
+	t.Setenv("SWARM_CHROME_CLONE_ROOT", root)
+	stale := filepath.Join(root, "com.google.Chrome.code_sign_clone", "code_sign_clone.AAA")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-3 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := run([]string{"cleanup", "--home", home, "--dry-run"}, &out, &out); code != 0 {
+		t.Fatalf("exit = %d, output = %q", code, out.String())
+	}
+	if want := "chrome-clone would_remove " + stale; !strings.Contains(out.String(), want) {
+		t.Fatalf("dry run output missing %q:\n%s", want, out.String())
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatal("dry run deleted the clone")
+	}
+	out.Reset()
+	if code := run([]string{"cleanup", "--home", home}, &out, &out); code != 0 {
+		t.Fatalf("exit = %d, output = %q", code, out.String())
+	}
+	if want := "chrome-clone removed " + stale; !strings.Contains(out.String(), want) {
+		t.Fatalf("output missing %q:\n%s", want, out.String())
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("stale clone should be removed")
 	}
 }

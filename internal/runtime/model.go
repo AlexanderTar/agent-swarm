@@ -413,6 +413,12 @@ type Store struct {
 	Procs  func() ([]OSProc, error)
 	Signal func(pid int, sig syscall.Signal) error
 
+	// CloneRoot is the dir holding <app>.code_sign_clone dirs and OpenPaths
+	// lists every open file path (ReclaimChromeClones); empty and nil mean
+	// $(getconf DARWIN_USER_DIR)/../X and `lsof`. Tests inject both.
+	CloneRoot string
+	OpenPaths func() ([]string, error)
+
 	// TmuxPath and TmuxSocketName are the two strings `swarm attach` and
 	// httpapi's Ghostty fallback need, so neither ever writes "-L swarm" as a
 	// literal (safety invariant S-1, R11). cmd/swarm sets both from the same
