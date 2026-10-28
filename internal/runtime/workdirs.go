@@ -88,6 +88,7 @@ func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]Clea
 			results = append(results, CleanupResult{Path: path, Action: "would_remove"})
 			continue
 		}
+		results = append(results, s.terminateChrome(path)...)
 		if err := os.RemoveAll(path); err != nil {
 			s.logf("workdir: remove %s failed: %v", path, err)
 			keep("error: " + err.Error())
