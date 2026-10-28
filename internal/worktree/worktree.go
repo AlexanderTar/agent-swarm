@@ -190,7 +190,7 @@ func onlyCookies(porcelain string) bool {
 // clearWatchman stops watchman watching path and deletes the cookies it left
 // there. Both are best effort: watchman may not be installed or running.
 func (s *Service) clearWatchman(ctx context.Context, path string) {
-	_, _ = s.Run(ctx, "watchman", "watch-del", path)
+	_, _ = s.Run(ctx, "watchman", "--no-spawn", "watch-del", path)
 	cookies, _ := filepath.Glob(filepath.Join(path, cookiePrefix+"*"))
 	for _, c := range cookies {
 		_ = os.Remove(c)
@@ -670,23 +670,57 @@ func (s *Service) WouldRemove(ctx context.Context, wt Worktree) (bool, string) {
 	return reason == "", reason
 }
 
-// stray reports a folder that exists but has lost its .git, as after a half
-// finished `git worktree remove`. cookiesOnly says it holds nothing but
-// watchman cookies (or nothing), so deleting it loses no work.
-func stray(path string) (isStray, cookiesOnly bool) {
-	if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+// stray reports a folder that is no longer a worktree: its .git is gone, or
+// the repo's `git worktree list` no longer names it (a leftover .git file then
+// points at a pruned admin dir). Both follow a half finished `git worktree
+// remove`. cookiesOnly says it holds nothing but watchman cookies (and a
+// dangling .git file), so deleting it loses no work.
+func (s *Service) stray(ctx context.Context, wt Worktree) (isStray, cookiesOnly bool) {
+	if _, err := os.Lstat(filepath.Join(wt.Path, ".git")); err != nil {
+		isStray = true
+	} else if !s.registered(ctx, wt) {
+		isStray = true
+	}
+	if !isStray {
 		return false, false
 	}
-	entries, err := os.ReadDir(path)
+	entries, err := os.ReadDir(wt.Path)
 	if err != nil {
 		return false, false
 	}
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), cookiePrefix) {
+		if !strings.HasPrefix(e.Name(), cookiePrefix) && !(e.Name() == ".git" && e.Type().IsRegular()) {
 			return true, false
 		}
 	}
 	return true, true
+}
+
+// registered is false only when the repo's worktree list is readable and does
+// not name wt.Path; an unreadable list says nothing.
+func (s *Service) registered(ctx context.Context, wt Worktree) bool {
+	repoPath, err := s.repoPath(ctx, wt.RepoID)
+	if err != nil {
+		return true
+	}
+	out, err := s.git(ctx, repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return true
+	}
+	want := realPath(wt.Path)
+	for _, line := range strings.Split(string(out), "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok && realPath(p) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
 }
 
 // removeStray deletes a cookies-only stray folder and prunes the repo's
@@ -706,7 +740,7 @@ func (s *Service) removeStray(ctx context.Context, wt Worktree) (Worktree, error
 
 // keepReason is remove's dirty and merged checks: "" means safe to delete.
 func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
-	if isStray, cookiesOnly := stray(wt.Path); isStray {
+	if isStray, cookiesOnly := s.stray(ctx, wt); isStray {
 		if cookiesOnly && s.underWorktrees(wt.Path) {
 			return ""
 		}
@@ -800,6 +834,9 @@ func (s *Service) onlyTrackedModifications(ctx context.Context, path string) boo
 		if line == "" {
 			continue
 		}
+		if strings.HasPrefix(line, "?? "+cookiePrefix) {
+			continue
+		}
 		saw = true
 		if !trackedModification(line) {
 			return false
@@ -829,7 +866,7 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if reason := s.keepReason(ctx, wt); reason != "" {
 		return s.retain(ctx, wt, reason)
 	}
-	if isStray, _ := stray(wt.Path); isStray {
+	if isStray, _ := s.stray(ctx, wt); isStray {
 		return s.removeStray(ctx, wt)
 	}
 	repoPath, err := s.repoPath(ctx, wt.RepoID)
@@ -847,7 +884,7 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 		s.clearWatchman(ctx, wt.Path)
 		out, rerr = s.git(ctx, repoPath, rmArgs...)
 		// git may already have taken .git before it failed.
-		if isStray, cookiesOnly := stray(wt.Path); rerr != nil && isStray && cookiesOnly {
+		if isStray, cookiesOnly := s.stray(ctx, wt); rerr != nil && isStray && cookiesOnly {
 			return s.removeStray(ctx, wt)
 		}
 	}
@@ -1057,7 +1094,7 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	if out, cerr := s.git(ctx, repoPath, "rev-list", "--count", wt.BaseRef+".."+head); cerr == nil {
 		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
 	}
-	if isStray, _ := stray(wt.Path); isStray && s.underWorktrees(wt.Path) {
+	if isStray, _ := s.stray(ctx, wt); isStray && s.underWorktrees(wt.Path) {
 		// Not a worktree any more, so git has nothing to remove.
 		if err := os.RemoveAll(wt.Path); err != nil {
 			return Worktree{}, 0, err

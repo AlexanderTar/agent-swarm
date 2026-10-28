@@ -66,7 +66,7 @@ func TestRemoveSurvivesWatchmanCookiesAppearingMidDelete(t *testing.T) {
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("folder left behind: %v", err)
 	}
-	if !slices.Contains(w.watchDels, "watch-del "+wt.Path) {
+	if !slices.Contains(w.watchDels, "--no-spawn watch-del "+wt.Path) {
 		t.Fatalf("watchman watch-del never ran for the path: %v", w.watchDels)
 	}
 	if w.removes != 2 {
@@ -172,5 +172,131 @@ func TestDiscardRemovesANotAWorktreeFolder(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("folder left behind: %v", err)
+	}
+}
+
+// raceAfterRealRemove is the real-git failure: git removes the admin entry and
+// the tracked files, then a cookie lands and the final rmdir fails.
+func TestRemoveEndsRemovedWhenGitDroppedTheWorktreeBeforeFailing(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/real-race",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := s.Run
+	removes := 0
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && slices.Contains(args, "worktree") && slices.Contains(args, "remove") {
+			removes++
+			if removes == 1 {
+				out, err := real(ctx, name, args...)
+				if err != nil {
+					return out, err
+				}
+				_ = os.MkdirAll(wt.Path, 0o755)
+				_ = os.WriteFile(filepath.Join(wt.Path, ".watchman-cookie-host-4242-9"), nil, 0o644)
+				return []byte("error: failed to delete '" + wt.Path + "': Directory not empty"),
+					errors.New("exit status 255")
+			}
+		}
+		return real(ctx, name, args...)
+	}
+
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+	if list := run(t, repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt.Path) {
+		t.Fatalf("git still lists the worktree:\n%s", list)
+	}
+}
+
+// prune drops the repo's admin entry for the worktree, leaving the folder's
+// .git file pointing at nothing, as after a failed forced remove.
+func prune(t *testing.T, repo, name string) {
+	t.Helper()
+	if err := os.RemoveAll(filepath.Join(repo, ".git", "worktrees", name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoveRetainsADanglingGitfileFolderAsNotAWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/dangling",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prune(t, repo, filepath.Base(wt.Path))
+
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "not_a_worktree" {
+		t.Fatalf("worktree = %+v, want retained/not_a_worktree", out)
+	}
+}
+
+func TestRemoveDeletesADanglingGitfileFolderHoldingOnlyCookies(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/dangling-cookies",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitfile, err := os.ReadFile(filepath.Join(wt.Path, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	strand(t, wt.Path, ".watchman-cookie-host-4242-3")
+	if err := os.WriteFile(filepath.Join(wt.Path, ".git"), gitfile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prune(t, repo, filepath.Base(wt.Path))
+
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+}
+
+func TestReclaimOneDiscardsBuildChurnThatAlsoHoldsAWatchmanCookie(t *testing.T) {
+	s, wt := churnTree(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE id = 'itm_1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, ".watchman-cookie-host-4242-5"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed: a cookie is not work", out)
 	}
 }
