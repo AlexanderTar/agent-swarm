@@ -70,7 +70,7 @@ Output:
 --- FAIL: TestSwarmWorkflowIdempotentStart (0.22s)
     workflow_test.go:274: first start call err = swarm_workflow: not available to this caller
 FAIL
-FAIL	github.com/AlexanderTar/agent-swarm/internal/mcpserver	1.211s
+FAIL	github.com/AlexanderTar/swarmrun/internal/mcpserver	1.211s
 FAIL
 ```
 
@@ -81,7 +81,7 @@ go test ./internal/mcpserver -run 'TestSwarmWorkflow' -count=1
 ```
 Output:
 ```
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	1.081s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	1.081s
 ```
 Verbose:
 ```
@@ -92,7 +92,7 @@ Verbose:
 === RUN   TestSwarmWorkflowIdempotentStart
 --- PASS: TestSwarmWorkflowIdempotentStart (0.22s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	0.945s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	0.945s
 ```
 
 ### Verification
@@ -102,9 +102,9 @@ go build ./... && go vet ./...
 
 go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/...
 # Output:
-# ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	13.902s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	29.911s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/items	2.518s
+# ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	13.902s
+# ok  	github.com/AlexanderTar/swarmrun/internal/runtime	29.911s
+# ok  	github.com/AlexanderTar/swarmrun/internal/items	2.518s
 ```
 
 ### Files Changed
@@ -170,7 +170,7 @@ Output:
 --- FAIL: TestSwarmCheckpointVerdictSchema (0.02s)
     tools_test.go:741: checkpoint schema.Required = [], want "kind"
 FAIL
-FAIL	github.com/AlexanderTar/agent-swarm/internal/mcpserver	1.268s
+FAIL	github.com/AlexanderTar/swarmrun/internal/mcpserver	1.268s
 FAIL
 ```
 
@@ -192,7 +192,7 @@ Output:
 === RUN   TestSwarmCheckpointVerdictSchema
 --- PASS: TestSwarmCheckpointVerdictSchema (0.03s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	1.482s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	1.482s
 ```
 
 ### Verification
@@ -202,9 +202,9 @@ go build ./... && go vet ./...
 
 go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/... -count=1
 # Output:
-# ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	13.246s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	27.747s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.923s
+# ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	13.246s
+# ok  	github.com/AlexanderTar/swarmrun/internal/runtime	27.747s
+# ok  	github.com/AlexanderTar/swarmrun/internal/items	1.923s
 ```
 
 ### Files Changed
@@ -267,8 +267,8 @@ Output:
 --- FAIL: TestStoryReviewChangesEscalates (0.15s)
     workflow_test.go:2938: STORY-1 has no workflow.
 FAIL
-FAIL	github.com/AlexanderTar/agent-swarm/internal/runtime	0.962s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	0.243s [no tests to run]
+FAIL	github.com/AlexanderTar/swarmrun/internal/runtime	0.962s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	0.243s [no tests to run]
 FAIL
 ```
 
@@ -294,7 +294,7 @@ Output:
 === RUN   TestStoryWithoutAfterTasksUnchanged
 --- PASS: TestStoryWithoutAfterTasksUnchanged (0.03s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	0.818s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	0.818s
 ```
 
 ### Verification
@@ -304,9 +304,9 @@ go build ./... && go vet ./...
 
 go test ./internal/items/... ./internal/runtime/... ./internal/mcpserver/... -count=1
 # Output:
-# ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.929s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	28.668s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	13.286s
+# ok  	github.com/AlexanderTar/swarmrun/internal/items	1.929s
+# ok  	github.com/AlexanderTar/swarmrun/internal/runtime	28.668s
+# ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	13.286s
 ```
 
 ### Files Changed
@@ -402,7 +402,7 @@ Output:
 === RUN   TestWorkflowBatchedPerUnitEvidence
 --- PASS: TestWorkflowBatchedPerUnitEvidence (0.51s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/scripts/e2e	4.052s
+ok  	github.com/AlexanderTar/swarmrun/scripts/e2e	4.052s
 ```
 
 Full E2E suite execution (`./scripts/e2e.sh`):
@@ -464,7 +464,7 @@ Full E2E suite execution (`./scripts/e2e.sh`):
 === RUN   TestWorkflowBatchedPerUnitEvidence
 --- PASS: TestWorkflowBatchedPerUnitEvidence (0.51s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/scripts/e2e	112.173s
+ok  	github.com/AlexanderTar/swarmrun/scripts/e2e	112.173s
 ```
 
 ### Verification
@@ -516,7 +516,7 @@ go build ./... && go vet ./...
 ```bash
 go test ./internal/runtime/... -run "TestWorkflowIdempotency|TestSpawnSharesWorktreesAtomically"
 # Output:
-# github.com/AlexanderTar/agent-swarm/internal/runtime [github.com/AlexanderTar/agent-swarm/internal/runtime.test]
+# github.com/AlexanderTar/swarmrun/internal/runtime [github.com/AlexanderTar/swarmrun/internal/runtime.test]
 internal/runtime/agents_test.go:2201:3: unknown field Worktrees in struct literal of type SpawnInput
 internal/runtime/workflow_test.go:3071:84: too many arguments in call to s.ResumeWorkflow
 	have (context.Context, Agent, string, string, string, string, string)
@@ -524,7 +524,7 @@ internal/runtime/workflow_test.go:3071:84: too many arguments in call to s.Resum
 internal/runtime/workflow_test.go:3096:62: too many arguments in call to s.CancelWorkflow
 	have (context.Context, Agent, string, string, string)
 	want (context.Context, Agent, string, string)
-FAIL	github.com/AlexanderTar/agent-swarm/internal/runtime [build failed]
+FAIL	github.com/AlexanderTar/swarmrun/internal/runtime [build failed]
 ```
 
 #### GREEN
@@ -536,7 +536,7 @@ go test ./internal/runtime/... -run "TestWorkflowIdempotency|TestSpawnSharesWork
 === RUN   TestWorkflowIdempotencyStartResumeCancel
 --- PASS: TestWorkflowIdempotencyStartResumeCancel (0.28s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	0.745s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	0.745s
 
 go test ./internal/mcpserver/... -run "TestSwarmWorkflow" -v
 # Output:
@@ -551,22 +551,22 @@ go test ./internal/mcpserver/... -run "TestSwarmWorkflow" -v
 === RUN   TestSwarmWorkflowIdempotentCancel
 --- PASS: TestSwarmWorkflowIdempotentCancel (0.25s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	1.699s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	1.699s
 ```
 
 ### Full Verification
 ```bash
 go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/... -count=1
-# ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	14.793s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	30.358s
-# ok  	github.com/AlexanderTar/agent-swarm/internal/items	2.181s
+# ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	14.793s
+# ok  	github.com/AlexanderTar/swarmrun/internal/runtime	30.358s
+# ok  	github.com/AlexanderTar/swarmrun/internal/items	2.181s
 
 go build ./... && go vet ./...
 # Exit 0
 
 make e2e
 # PASS
-# ok  	github.com/AlexanderTar/agent-swarm/scripts/e2e	112.484s
+# ok  	github.com/AlexanderTar/swarmrun/scripts/e2e	112.484s
 ```
 
 ### Files Changed

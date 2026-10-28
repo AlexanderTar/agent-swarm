@@ -42,7 +42,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // Spec E1 copy: the two accept kinds' native prompts.
@@ -1028,7 +1028,7 @@ func TestResumeResurfacesOpenRequests(t *testing.T) {
 }
 ```
 
-   Add `"strings"` and `"github.com/AlexanderTar/agent-swarm/internal/adapter"` to the test file's imports.
+   Add `"strings"` and `"github.com/AlexanderTar/swarmrun/internal/adapter"` to the test file's imports.
 2. Run `go test ./internal/runtime/ -run 'TestStartOrchestratorBinds|TestResumeResurfaces' -count=1`. Expected FAIL: `bound to ("", "")` / `0 relays`.
 3. In `internal/runtime/agents.go` `startSession`, after the `defer func() { ... failSession ... }()` block and before `var itemKey, itemTitle, itemTypeStr string`, add:
 

@@ -27,7 +27,7 @@ import (
     "testing"
     "time"
 
-    "github.com/AlexanderTar/agent-swarm/internal/usage"
+    "github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 func TestExhaustedAtCap(t *testing.T) {
@@ -59,8 +59,8 @@ import (
     "context"
     "time"
 
-    "github.com/AlexanderTar/agent-swarm/internal/runtime"
-    "github.com/AlexanderTar/agent-swarm/internal/usage"
+    "github.com/AlexanderTar/swarmrun/internal/runtime"
+    "github.com/AlexanderTar/swarmrun/internal/usage"
 )
 
 const exhaustionPct = 100.0
@@ -246,7 +246,7 @@ package runtime
 import (
     "context"
 
-    "github.com/AlexanderTar/agent-swarm/internal/catalog"
+    "github.com/AlexanderTar/swarmrun/internal/catalog"
 )
 
 // resolveUsageFallback is docs/specs/2026-09-19-usage-fallback-agent.md's

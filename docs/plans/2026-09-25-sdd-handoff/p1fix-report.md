@@ -111,7 +111,7 @@ captured *after* C1 steps 1 and 5 were already in place, so this run was safe
 ```
 --- FAIL: TestOpenDaemonWithACustomHomeLeavesTheRealUserHomeSkillsUntouched (0.05s)
 FAIL
-FAIL	github.com/AlexanderTar/agent-swarm/cmd/swarm	0.756s
+FAIL	github.com/AlexanderTar/swarmrun/cmd/swarm	0.756s
 ```
 (full transcript: `/private/tmp/claude-501/-Users-alexandertar-GitHub-agent-swarm/959691ff-160f-4831-94da-3c84074966d6/scratchpad/sdd/c1-red.txt`)
 
@@ -155,7 +155,7 @@ whole point is that this test's old expectation must stop holding. After
 replacing it with the two tests above:
 ```
 go test ./internal/install/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	1.178s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	1.178s
 ```
 all green, including both new tests individually verified.
 
@@ -221,11 +221,11 @@ cp -R skills internal/install/skills
 (git status: no diff — mirror already matched)
 
 $ go test ./internal/install/... ./internal/adapter/... ./internal/migrate/... ./cmd/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter
-ok  	github.com/AlexanderTar/agent-swarm/internal/migrate
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm-fake-agent
+ok  	github.com/AlexanderTar/swarmrun/internal/install
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter
+ok  	github.com/AlexanderTar/swarmrun/internal/migrate
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm-fake-agent
 
 $ go build ./... && go vet ./...
 (clean)
@@ -323,7 +323,7 @@ check (`if _, err := os.Stat(marker); err == nil { return true, nil }`) in
     skills_test.go:596: the foreign-marker dir's content was touched: "---\nname: swarm\n..." (the real swarm body)
 --- FAIL: TestSyncAndRefreshSkillsLeavesAnEmptyMarkerDirAloneButWriteSkillsAdoptsIt (0.01s)
     skills_test.go:628: SyncAndRefreshSkills touched an empty-marker dir: "---\nname: swarm\n..." (the real swarm body)
-FAIL	github.com/AlexanderTar/agent-swarm/internal/install	0.468s
+FAIL	github.com/AlexanderTar/swarmrun/internal/install	0.468s
 ```
 GREEN after reverting: `go test ./internal/install/... ` → `ok`.
 

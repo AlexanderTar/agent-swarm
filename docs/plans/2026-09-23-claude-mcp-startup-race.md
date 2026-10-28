@@ -99,7 +99,7 @@ func TestClaudeResumeWritesProjectScopeSkillsAndMCP(t *testing.T) {
 }
 ```
 
-Add `"github.com/AlexanderTar/agent-swarm/internal/install"` to
+Add `"github.com/AlexanderTar/swarmrun/internal/install"` to
 `claude_test.go`'s imports.
 
 Run the two new tests — confirm both fail.
@@ -108,7 +108,7 @@ Run the two new tests — confirm both fail.
 
 File: `internal/adapter/claude.go`.
 
-1. Add import `"github.com/AlexanderTar/agent-swarm/internal/install"`.
+1. Add import `"github.com/AlexanderTar/swarmrun/internal/install"`.
 2. In `flags()`, right after `mcpPath, err := c.d.writeLaunchFile(...)`
    succeeds, call the new helper:
 

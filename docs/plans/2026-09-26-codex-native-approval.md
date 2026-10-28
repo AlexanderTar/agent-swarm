@@ -65,7 +65,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 // Fixtures: testdata/codex/native-question, captured from codex 0.157 by an

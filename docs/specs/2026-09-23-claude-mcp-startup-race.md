@@ -204,7 +204,7 @@ func writeProjectSwarmConfig(cwd string, mcp []byte) error {
 }
 ```
 
-New import: `github.com/AlexanderTar/agent-swarm/internal/install` in
+New import: `github.com/AlexanderTar/swarmrun/internal/install` in
 `internal/adapter/claude.go`. Verified no import cycle: neither package
 currently imports the other.
 

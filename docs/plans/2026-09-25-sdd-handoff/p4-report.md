@@ -149,9 +149,9 @@ rm -rf internal/install/skills
 cp -R skills internal/install/skills
 
 $ go test ./internal/install/... ./internal/advisor/... ./internal/runtime/ -run 'Kickoff|RoleSkills'
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	0.289s
-ok  	github.com/AlexanderTar/agent-swarm/internal/advisor	0.748s [no tests to run]   # regex doesn't match Test*Advisor*; see below
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	0.569s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	0.289s
+ok  	github.com/AlexanderTar/swarmrun/internal/advisor	0.748s [no tests to run]   # regex doesn't match Test*Advisor*; see below
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	0.569s
 
 $ go build ./... && go vet ./...
 (clean)
@@ -297,7 +297,7 @@ $ go test ./internal/runtime/... -run 'Kickoff|RoleSkills' -v
 --- PASS: TestKickoffMandateForEveryRole
 --- PASS: TestKickoffNamesRoleSkill (incl. designer/task subtest)
 --- PASS: TestRoleSkillsExist
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	0.480s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	0.480s
 ```
 Commit `c795f31` (also covers item 4, see below — the two touch the same
 function).
@@ -412,9 +412,9 @@ rm -rf internal/install/skills
 cp -R skills internal/install/skills
 
 $ go test ./internal/install/... ./internal/advisor/... ./internal/runtime/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/internal/advisor	0.743s
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	16.838s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/advisor	0.743s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	16.838s
 
 $ go build ./... && go vet ./...
 (clean)

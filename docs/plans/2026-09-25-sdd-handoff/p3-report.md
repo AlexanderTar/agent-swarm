@@ -155,7 +155,7 @@ $ go test ./internal/install/... -v
     --- PASS: TestRoleSkillsReferenceTheirSkills/swarm-batching (0.00s)
 --- PASS: TestSuperpowersReferencesAreKnown (0.00s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.683s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.683s
 ```
 
 Additional commit `3ce94de docs(plan): tick P3 units` ticked the P3
@@ -171,7 +171,7 @@ rm -rf internal/install/skills
 cp -R skills internal/install/skills
 
 $ go test ./internal/install/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	(cached)   [full -v run: all tests PASS, see above]
+ok  	github.com/AlexanderTar/swarmrun/internal/install	(cached)   [full -v run: all tests PASS, see above]
 
 $ go build ./... && go vet ./...
 (no output — success)
@@ -274,7 +274,7 @@ Fix commit `8414070`. Re-verified:
 ```
 $ make skills-sync
 $ go test ./internal/install/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	5.899s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	5.899s
 $ go build ./... && go vet ./...
 (no output — success)
 $ git diff d53b689..HEAD -- skills/swarm/SKILL.md | grep '^-' | grep -v '^---'
@@ -364,7 +364,7 @@ $ go test ./internal/install/... -run 'TestRoleSkillsReferenceTheirSkills|TestSu
 
 ```
 $ go test ./internal/install/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.855s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.855s
 (full -v run: every test PASS, no skips)
 
 $ go build ./...
@@ -478,7 +478,7 @@ no unpaired content loss.
 
 ```
 $ go test ./internal/install/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.214s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.214s
 (full -v run: every test PASS)
 
 $ go build ./...
@@ -563,14 +563,14 @@ $ go test ./internal/install/... -v
     --- PASS: TestRoleSkillsReferenceTheirSkills/swarm-batching (0.00s)
 --- PASS: TestSuperpowersReferencesAreKnown (0.00s)
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.471s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.471s
 ```
 
 ### Full Verify (HEAD 7981427)
 
 ```
 $ go test ./internal/install/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	5.621s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	5.621s
 
 $ go build ./... && go vet ./...
 (no output — success)

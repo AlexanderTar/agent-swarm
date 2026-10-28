@@ -149,9 +149,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func mustTodos(t *testing.T, s *Store, itemID string) []Todo {
@@ -391,7 +391,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // TodoStatus is one progress-list entry's status (spec 2026-09-28-orchestrator-todos).
@@ -671,7 +671,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func spikeOrchestrator(t *testing.T, s *Store, intent string) (Session, items.Item) {
@@ -1143,7 +1143,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/swarmrun/internal/runtime"
 )
 
 func TestSyncToolCarriesTodosOnlyWhenChanged(t *testing.T) {

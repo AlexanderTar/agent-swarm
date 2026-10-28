@@ -253,8 +253,8 @@ Commit: `67aaf0b feat(adapter): link only swarm-managed skills into muse spawns`
 
 ```
 $ go test ./internal/adapter/... ./internal/install/...
-ok      github.com/AlexanderTar/agent-swarm/internal/adapter    0.489s
-ok      github.com/AlexanderTar/agent-swarm/internal/install    3.989s
+ok      github.com/AlexanderTar/swarmrun/internal/adapter    0.489s
+ok      github.com/AlexanderTar/swarmrun/internal/install    3.989s
 
 $ go build ./... && go vet ./...
 (clean, no output)
@@ -407,8 +407,8 @@ explicitly among what lands in the real, shared data dir.
 
 ```
 $ go test ./internal/adapter/... ./internal/install/...
-ok      github.com/AlexanderTar/agent-swarm/internal/adapter
-ok      github.com/AlexanderTar/agent-swarm/internal/install
+ok      github.com/AlexanderTar/swarmrun/internal/adapter
+ok      github.com/AlexanderTar/swarmrun/internal/install
 
 $ go build ./... && go vet ./...
 (clean)

@@ -342,7 +342,7 @@ Files: `internal/runtime/reconcile.go`, `internal/runtime/reconcile_test.go`.
        return s.Tmux.Kill(ctx, r.TmuxName)
    }
    ```
-   Add `"github.com/AlexanderTar/agent-swarm/internal/adapter"` to
+   Add `"github.com/AlexanderTar/swarmrun/internal/adapter"` to
    `reconcile.go`'s imports if not already present (it isn't — `reconcile.go`
    today only imports `context`, `database/sql`, `encoding/json`, `time`,
    and the local `db` package).

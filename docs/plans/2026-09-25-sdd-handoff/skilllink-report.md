@@ -144,8 +144,8 @@ $ go build ./... && go vet ./...
 (clean)
 
 $ go test ./internal/install/... ./internal/adapter/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	3.123s
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/install	3.123s
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	(cached)
 
 $ go test ./...
 ... all ok except:
@@ -248,8 +248,8 @@ $ go build ./... && go vet ./...
 (clean)
 
 $ go test ./internal/install/... ./internal/adapter/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.051s
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	1.342s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.051s
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	1.342s
 
 $ go test ./...
 ... all ok except the same pre-existing baseline failure:

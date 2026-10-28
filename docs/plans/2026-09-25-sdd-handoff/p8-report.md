@@ -83,9 +83,9 @@ $ go build ./... && go vet ./...
 (clean)
 
 $ go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	17.4s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.9s
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	11.3s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	17.4s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	1.9s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	11.3s
 ```
 
 Also ran `go test ./...` (whole repo, not just the package Verify set) to confirm nothing outside the three packages regressed from the `internal/ids` prefix addition: every package passes except the one pre-existing baseline failure named in the contract, `internal/httpapi TestBoardServedAtRoot` (web bundle not built) — unrelated to this package, untouched by it.
@@ -241,10 +241,10 @@ Done first, folded into commits 1–3 (see note above): exported `workflow.SHA7`
 
 ```
 $ go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... ./internal/workflow/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	18.954s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	2.030s
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	12.344s
-ok  	github.com/AlexanderTar/agent-swarm/internal/workflow	1.248s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	18.954s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	2.030s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	12.344s
+ok  	github.com/AlexanderTar/swarmrun/internal/workflow	1.248s
 
 $ go build ./... && go vet ./...
 (clean)
@@ -348,10 +348,10 @@ PASS (5/5)
 
 ```
 $ go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... ./internal/workflow/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	19.131s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	2.148s
-ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	12.484s
-ok  	github.com/AlexanderTar/agent-swarm/internal/workflow	0.542s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	19.131s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	2.148s
+ok  	github.com/AlexanderTar/swarmrun/internal/mcpserver	12.484s
+ok  	github.com/AlexanderTar/swarmrun/internal/workflow	0.542s
 
 $ go build ./... && go vet ./...
 (clean)

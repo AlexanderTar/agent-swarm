@@ -163,10 +163,10 @@ Commit: `537e8bd fix(install): re-verify agy follows a symlink at the corrected 
 
 ```
 $ go test ./internal/install/... ./internal/adapter/... ./cmd/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	3.877s
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	0.810s
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm	3.385s
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm-fake-agent	1.855s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	3.877s
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	0.810s
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm	3.385s
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm-fake-agent	1.855s
 
 $ go build ./... && go vet ./...
 (clean, exit 0)
@@ -311,10 +311,10 @@ Commit: `1b78a27 fix(adapter): agy setupEnv never deletes existing agy-home conf
 $ go build ./... && go vet ./...
 (clean)
 $ go test ./internal/install/... ./internal/adapter/... ./cmd/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	0.902s
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm	2.708s
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm-fake-agent	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/install	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	0.902s
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm	2.708s
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm-fake-agent	(cached)
 $ go test ./...
 ... all ok except the same pre-existing baseline failure
 (internal/httpapi TestBoardServedAtRoot, web bundle not built)
@@ -516,10 +516,10 @@ the identical path `swarm install` uses. This was true before fix round
 $ go build ./... && go vet ./...
 (clean)
 $ go test ./internal/install/... ./internal/adapter/... ./cmd/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.085s (or cached)
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm-fake-agent	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.085s (or cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	(cached)
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm	(cached)
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm-fake-agent	(cached)
 $ go test ./...
 ... all ok except the same pre-existing baseline failure
 (internal/httpapi TestBoardServedAtRoot, web bundle not built)
@@ -660,10 +660,10 @@ match. Fixed: `docs/plans/2026-09-24-self-contained-tasks-and-role-skills.md:796
 $ go build ./... && go vet ./...
 (clean)
 $ go test ./internal/install/... ./internal/adapter/... ./cmd/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.281s
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	0.711s
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm	2.933s
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm-fake-agent	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.281s
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	0.711s
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm	2.933s
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm-fake-agent	(cached)
 $ go test ./...
 ... all ok except the same pre-existing baseline failure
 (internal/httpapi TestBoardServedAtRoot, web bundle not built)
@@ -795,10 +795,10 @@ correctly).
 $ go build ./... && go vet ./...
 (clean)
 $ go test ./internal/install/... ./internal/adapter/... ./cmd/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/internal/adapter	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm	(cached)
-ok  	github.com/AlexanderTar/agent-swarm/cmd/swarm-fake-agent	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/install	(cached)
+ok  	github.com/AlexanderTar/swarmrun/internal/adapter	(cached)
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm	(cached)
+ok  	github.com/AlexanderTar/swarmrun/cmd/swarm-fake-agent	(cached)
 $ go test ./...
 ... all ok except the same pre-existing baseline failure
 (internal/httpapi TestBoardServedAtRoot, web bundle not built)

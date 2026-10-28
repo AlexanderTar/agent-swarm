@@ -197,7 +197,7 @@ $ go test ./internal/install/... -v 2>&1 | tail -20
 --- PASS: TestVendoredSkillsHaveLicenseAndProvenance (0.01s)
 ...
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.743s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.743s
 ```
 
 ### Extra commit — `aa78270` `chore(skills): drop __pycache__ from ui-ux-pro-max, ignore it repo-wide`
@@ -222,7 +222,7 @@ $ go test ./internal/install/... -v
 --- PASS: TestVendoredSkillsHaveLicenseAndProvenance (0.01s)
 ...
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.841s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.841s
 
 $ python3 skills/vendor/ui-ux-pro-max/scripts/search.py "dashboard" --domain style | head -5
 ## UI Pro Max Search Results
@@ -375,7 +375,7 @@ $ go test ./internal/install/... -v
 --- PASS: TestVendoredSkillsHaveLicenseAndProvenance (0.01s)
 ...
 PASS
-ok  	github.com/AlexanderTar/agent-swarm/internal/install	4.875s
+ok  	github.com/AlexanderTar/swarmrun/internal/install	4.875s
 
 $ python3 skills/vendor/ui-ux-pro-max/scripts/search.py "dashboard" --domain style | head -5
 ## UI Pro Max Search Results

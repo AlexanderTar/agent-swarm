@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/workflow"
+	"github.com/AlexanderTar/swarmrun/internal/workflow"
 )
 
 // Crash between applyRetryFix's successful Retry() and its claim UPDATE:

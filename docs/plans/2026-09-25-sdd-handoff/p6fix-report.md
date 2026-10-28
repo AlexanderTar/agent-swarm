@@ -119,7 +119,7 @@ Commits:
 
 ```
 $ go test ./internal/workflow/... -count=1 && go vet ./internal/workflow/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/workflow	0.192s
+ok  	github.com/AlexanderTar/swarmrun/internal/workflow	0.192s
 ```
 (vet produced no output — clean.)
 
@@ -205,7 +205,7 @@ $ go test ./internal/workflow/... -run 'TestNextPinnedFromFailedOutranksStale' -
 GREEN (after fix):
 ```
 $ go test ./internal/workflow/... -count=1 && go vet ./internal/workflow/...
-ok  	github.com/AlexanderTar/agent-swarm/internal/workflow	0.202s
+ok  	github.com/AlexanderTar/swarmrun/internal/workflow	0.202s
 ```
 Full verbose run confirmed no regressions across all existing tests
 (`TestNext`, `TestNextThreeLoops`, `TestNextFixIndexCarryForward`,

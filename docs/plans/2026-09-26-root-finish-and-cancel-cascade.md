@@ -332,9 +332,9 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
-	"github.com/AlexanderTar/agent-swarm/internal/ids"
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/ids"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 // rootDoneSummary is the daemon-written completed checkpoint's summary; %s is
@@ -411,7 +411,7 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 
 ### 1.4 `OnRootDone`: paused and pausing agents finish at once, and in-flight operations are cancelled
 
-1. Append to `internal/runtime/finish_test.go`, and add `"github.com/AlexanderTar/agent-swarm/internal/db"` to its imports:
+1. Append to `internal/runtime/finish_test.go`, and add `"github.com/AlexanderTar/swarmrun/internal/db"` to its imports:
 
 ```go
 // Spec R2.
@@ -497,7 +497,7 @@ func TestRootDoneFinishesPausedAndPausingAgentsAtOnce(t *testing.T) {
 
 ### 1.5 Spike close and materialize paths stay unchanged
 
-1. Append to `internal/runtime/finish_test.go`, and add `"github.com/AlexanderTar/agent-swarm/internal/items"` to its imports:
+1. Append to `internal/runtime/finish_test.go`, and add `"github.com/AlexanderTar/swarmrun/internal/items"` to its imports:
 
 ```go
 // Spec R5: close_spike approved -> spike Done; its orchestrator already wrote

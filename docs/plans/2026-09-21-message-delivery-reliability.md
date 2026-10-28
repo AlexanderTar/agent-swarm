@@ -5,7 +5,7 @@ Order is the spec's priority order, except that "count only pending" (spec fix 3
 
 Rules for every task: strict TDD (write the failing test, run it and watch it fail for the stated reason, minimal change, run it green, commit). Stage explicit paths only; never `git add -A`; never `git commit --amend`. Do not delete or weaken an existing test; where a test's name or comment no longer fits, rename it or update its assertions. Commit messages below carry no attribution trailer because swarm agents must not add one (`skills/swarm/SKILL.md` rule 10); add the one your harness requires if you are not a swarm agent.
 
-Module path used in imports: `github.com/AlexanderTar/agent-swarm`.
+Module path used in imports: `github.com/AlexanderTar/swarmrun`.
 
 ## Task 0: Sibling worktree and testdata
 

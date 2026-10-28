@@ -58,7 +58,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 func png(t *testing.T) []byte {
@@ -192,7 +192,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/swarmrun/internal/items"
 )
 
 const (

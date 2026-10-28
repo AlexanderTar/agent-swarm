@@ -127,9 +127,9 @@ Diff vs branch point: 12 files, +2873/-31 (`git diff --stat b36a5fd..HEAD`).
 
 ```
 $ go test ./internal/runtime/... ./internal/items/... ./internal/hook/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	23.005s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.735s
-ok  	github.com/AlexanderTar/agent-swarm/internal/hook	6.639s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	23.005s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	1.735s
+ok  	github.com/AlexanderTar/swarmrun/internal/hook	6.639s
 
 $ go build ./... && go vet ./...
 (clean, no output)
@@ -171,9 +171,9 @@ Ran the advisor before declaring done; it found 4 blocking gaps, 2 should-fix on
 **Tests run:** `go test ./internal/runtime/... -run 'TestDesignThenBuildStatusFlow|TestResumeRetryAfterBlocked' -v` → both `PASS` on first run. Then the full existing workflow test set (33 tests) and the package Verify set again:
 ```
 $ go test ./internal/runtime/... ./internal/items/... ./internal/hook/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	23.014s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.961s
-ok  	github.com/AlexanderTar/agent-swarm/internal/hook	6.899s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	23.014s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	1.961s
+ok  	github.com/AlexanderTar/swarmrun/internal/hook	6.899s
 
 $ go build ./... && go vet ./...
 (clean)
@@ -199,9 +199,9 @@ $ go test ./internal/runtime/... -run TestWorkflowAutoRetryOnCrash -v
 --- PASS: TestWorkflowAutoRetryOnCrash
 
 $ go test ./internal/runtime/... ./internal/items/... ./internal/hook/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	22.130s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.903s
-ok  	github.com/AlexanderTar/agent-swarm/internal/hook	6.962s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	22.130s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	1.903s
+ok  	github.com/AlexanderTar/swarmrun/internal/hook	6.962s
 
 $ go build ./... && go vet ./...
 (clean)
@@ -344,10 +344,10 @@ An orchestrator's subagent budget (`SubagentSlots`) is one shared pool across ev
 
 ```
 $ go test ./internal/runtime/... ./internal/items/... ./internal/hook/... ./internal/workflow/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	25.847s
-ok  	github.com/AlexanderTar/agent-swarm/internal/items	2.213s
-ok  	github.com/AlexanderTar/agent-swarm/internal/hook	7.103s
-ok  	github.com/AlexanderTar/agent-swarm/internal/workflow	0.524s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	25.847s
+ok  	github.com/AlexanderTar/swarmrun/internal/items	2.213s
+ok  	github.com/AlexanderTar/swarmrun/internal/hook	7.103s
+ok  	github.com/AlexanderTar/swarmrun/internal/workflow	0.524s
 
 $ go build ./... && go vet ./...
 (clean, no output)
@@ -359,12 +359,12 @@ $ go test ./...
  report's own Verify section already named after unit 9.5 and fix round 1.)
 
 $ go test -race ./internal/runtime/ -run Workflow
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	20.039s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	20.039s
 ```
 A broader `go test -race ./internal/runtime/... -count=1` (every runtime test, not just the `Workflow`-named subset, since this round touched locking/concurrency directly in findings 1/7/8) was also run to be thorough, mid-round (before the final two self-found commits, which don't touch locking):
 ```
 $ go test -race ./internal/runtime/... -count=1
-ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	337.401s
+ok  	github.com/AlexanderTar/swarmrun/internal/runtime	337.401s
 ```
 Clean pass, no `WARNING: DATA RACE` anywhere in the output.
 
