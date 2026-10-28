@@ -65,6 +65,25 @@ grep -oE 'srcset="[^"]+"' "$PAGE" | sed -E 's/^srcset="//; s/"$//' | tr ',' '\n'
   [ -e "$DIST/$url" ] || fail "missing srcset asset: $url"
 done
 
+# Every external link must open in a new tab with noopener.
+tmp_tags="$(mktemp)"
+grep -oE '<a[^>]*>' "$PAGE" > "$tmp_tags" || true
+while IFS= read -r tag; do
+  case "$tag" in
+    *'href="http'*) ;;
+    *) continue ;;
+  esac
+  case "$tag" in
+    *'target="_blank"'*) ;;
+    *) fail "external link without target=\"_blank\": $tag" ;;
+  esac
+  case "$tag" in
+    *noopener*) ;;
+    *) fail "external link without rel noopener: $tag" ;;
+  esac
+done < "$tmp_tags"
+rm -f "$tmp_tags"
+
 # Every Screens string, word for word.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
