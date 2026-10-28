@@ -4,7 +4,9 @@
 # (including /install.sh and /social-preview.png), the tracked sources of the
 # served images exist (site/assets/social-preview.png, board-kanban png/webp),
 # no raw colours in site/*.css (hex or colour functions), no "Agent Swarm"
-# text, and every Screens string present in dist/index.html.
+# text, every external link opens in a new tab with rel noopener, no hero logo
+# lockup (hero starts with the h1), and every Screens string present in
+# dist/index.html.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -78,7 +80,7 @@ while IFS= read -r tag; do
     *) fail "external link without target=\"_blank\": $tag" ;;
   esac
   case "$tag" in
-    *noopener*) ;;
+    *'rel="'*noopener*) ;;
     *) fail "external link without rel noopener: $tag" ;;
   esac
 done < "$tmp_tags"
