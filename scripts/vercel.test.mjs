@@ -14,7 +14,7 @@ test("vercel builds site/dist and skips builds unless site, design or vercel.jso
   const v = vercel();
   assert.equal(v.buildCommand, "node design/scripts/gen-tokens-css.mjs --check && sh site/build.sh");
   assert.equal(v.outputDirectory, "site/dist");
-  assert.equal(v.ignoreCommand, "git diff --quiet HEAD^ HEAD -- site design vercel.json");
+  assert.equal(v.ignoreCommand, "[ -n \"${VERCEL_GIT_PREVIOUS_SHA:-}\" ] && git cat-file -e \"$VERCEL_GIT_PREVIOUS_SHA\" 2>/dev/null && git diff --quiet \"$VERCEL_GIT_PREVIOUS_SHA\" HEAD -- site design vercel.json");
   assert.equal(v.framework, null);
   assert.equal(v.installCommand, "");
 });
