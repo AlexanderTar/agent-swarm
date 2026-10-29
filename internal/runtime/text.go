@@ -522,21 +522,16 @@ func BudgetHandoffNote(tokens, budget int) string {
 
 // LowTokenBlock is the guidance appended to a kickoff (or sent as a note) while
 // low-token mode is on: LowTokenOrchestrator for orchestrators, else
-// LowTokenWorker. Muse gets no mid-turn notices, so it carries one more sentence.
+// LowTokenWorker. The same for every kind (muse gets tool-boundary notices from
+// its settings-level hooks now); kind stays in the signature for callers.
 func LowTokenBlock(role Role, kind string) string {
-	b := LowTokenWorker
 	if role == RoleOrchestrator {
-		b = LowTokenOrchestrator
+		return LowTokenOrchestrator
 	}
-	sync := ""
-	if kind == "muse" {
-		sync = " You get no mid-turn notices, so also call it before any long stretch of work."
-	}
-	return strings.Replace(b, "{muse_sync}", sync, 1)
+	return LowTokenWorker
 }
 
-// LowTokenOrchestrator and LowTokenWorker are the spec's kickoff blocks;
-// {muse_sync} is filled by LowTokenBlock.
+// LowTokenOrchestrator and LowTokenWorker are the spec's kickoff blocks.
 const LowTokenOrchestrator = `## Low-token mode is on
 Your user turned on low-token mode for this orchestrator. These rules override the skill steps they name:
 - Do small work yourself: at most one research question, config or doc edits touching three files or fewer, and your own plan check instead of spawning a completeness critic.
@@ -545,12 +540,12 @@ Your user turned on low-token mode for this orchestrator. These rules override t
 - Batch work into fewer, larger packages (four to five units).
 - Keep messages and checkpoint summaries to three sentences. Don't send a finding when your checkpoint already says it.
 - Read the lines you need, not whole files. Query graphify if it is built; don't build it for small tasks.
-- Call swarm_sync when a notice arrives and before you complete, not on a timer.{muse_sync}
+- Call swarm_sync when a notice arrives and before you complete. The progress cadence does not change: still write a progress checkpoint at least every ~15 minutes of work, in one or two plain sentences.
 - The daemon caps review loops at two rounds, one reviewer per step, and no automatic retries.`
 
 const LowTokenWorker = `## Low-token mode is on
 Your orchestrator runs in low-token mode. These rules override the skill steps they name:
 - Keep messages and checkpoint summaries to three sentences.
 - Read the lines you need, not whole files. Query graphify if it is built; don't build it for small tasks.
-- Call swarm_sync when a notice arrives and before you complete, not on a timer.{muse_sync}
+- Call swarm_sync when a notice arrives and before you complete. The progress cadence does not change: still write a progress checkpoint at least every ~15 minutes of work, in one or two plain sentences.
 - Researchers: answer in eight tool calls or fewer.`

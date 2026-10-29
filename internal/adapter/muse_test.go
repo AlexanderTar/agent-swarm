@@ -1213,8 +1213,8 @@ func TestMuseObservedAnswerTextMismatchDoesNotBind(t *testing.T) {
 	}
 }
 
-// Muse 1.4.0 probe: a paste while Muse is busy is safe (it steers a running
-// shell tool or queues behind streaming), so PasteReady is true for a busy
+// Muse probes (1.4.0, re-checked on 1.4.14 2026-10-29): a paste while Muse is
+// busy is safe (it steers the running turn), so PasteReady is true for a busy
 // pane. Only the request_user_input dialog eats a paste: typed letters move
 // the highlight and Enter selects an option.
 func TestMusePasteReady(t *testing.T) {

@@ -16,14 +16,14 @@ Your user turned on low-token mode for this orchestrator. These rules override t
 - Batch work into fewer, larger packages (four to five units).
 - Keep messages and checkpoint summaries to three sentences. Don't send a finding when your checkpoint already says it.
 - Read the lines you need, not whole files. Query graphify if it is built; don't build it for small tasks.
-- Call swarm_sync when a notice arrives and before you complete, not on a timer.
+- Call swarm_sync when a notice arrives and before you complete. The progress cadence does not change: still write a progress checkpoint at least every ~15 minutes of work, in one or two plain sentences.
 - The daemon caps review loops at two rounds, one reviewer per step, and no automatic retries.`
 
 const wantWorkerBlock = `## Low-token mode is on
 Your orchestrator runs in low-token mode. These rules override the skill steps they name:
 - Keep messages and checkpoint summaries to three sentences.
 - Read the lines you need, not whole files. Query graphify if it is built; don't build it for small tasks.
-- Call swarm_sync when a notice arrives and before you complete, not on a timer. You get no mid-turn notices, so also call it before any long stretch of work.
+- Call swarm_sync when a notice arrives and before you complete. The progress cadence does not change: still write a progress checkpoint at least every ~15 minutes of work, in one or two plain sentences.
 - Researchers: answer in eight tool calls or fewer.`
 
 func TestLowTokenBlockText(t *testing.T) {
@@ -33,12 +33,16 @@ func TestLowTokenBlockText(t *testing.T) {
 	if got := LowTokenBlock(RoleCoder, "muse"); got != wantWorkerBlock {
 		t.Fatalf("worker block (muse):\n%s", got)
 	}
-	muse := LowTokenBlock(RoleOrchestrator, "muse")
-	if !strings.Contains(muse, "not on a timer. You get no mid-turn notices, so also call it before any long stretch of work.\n") {
-		t.Fatalf("muse orchestrator block lacks the sync sentence:\n%s", muse)
-	}
-	if strings.Contains(LowTokenBlock(RoleCoder, "claude"), "mid-turn") || strings.Contains(LowTokenBlock(RoleCoder, "claude"), "{muse_sync}") {
-		t.Fatal("non-muse worker block must not carry the muse sentence or placeholder")
+	for _, kind := range []string{"claude", "muse"} {
+		for _, role := range []Role{RoleOrchestrator, RoleCoder} {
+			got := LowTokenBlock(role, kind)
+			if strings.Contains(got, "not on a timer") || strings.Contains(got, "mid-turn") || strings.Contains(got, "{muse_sync}") {
+				t.Fatalf("%s %s block still carries the old sync wording:\n%s", kind, role, got)
+			}
+			if !strings.Contains(got, "at least every ~15 minutes of work") {
+				t.Fatalf("%s %s block lacks the regular progress cadence (skills/swarm/SKILL.md rule 3):\n%s", kind, role, got)
+			}
+		}
 	}
 	if got := LowTokenOnNote(RoleCoder, "claude"); got != "Low-token mode is now on for your orchestrator.\n\n"+LowTokenBlock(RoleCoder, "claude") {
 		t.Fatalf("on-note:\n%s", got)

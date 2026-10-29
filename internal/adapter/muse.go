@@ -493,10 +493,13 @@ func (m *Muse) IdlePrompt() *regexp.Regexp     { return museIdle }
 func (m *Muse) Busy() *regexp.Regexp           { return museBusy }
 func (m *Muse) Idle(capture string) bool       { return idle(m, capture) }
 
-// PasteReady is the wake-paste gate (runtime tryPaste). Muse 1.4.0 accepts a
-// paste mid-turn: during a shell tool it steers the running turn, during
-// streaming it queues the input for after the turn. Only the question dialog
-// eats it. Idle stays the real idleness check for every other caller.
+// PasteReady is the wake-paste gate (runtime tryPaste). Muse 1.4.14 steers the
+// running turn with a line submitted mid-turn (footer "steering the running
+// turn"; probed 2026-10-29: the model acted on it before the turn ended). Until
+// its next model boundary the line shows as a "Queued input" block
+// (QueuedInput), which the model sees once a tool finishes or backgrounds.
+// Only the question dialog eats a paste. Idle stays the real idleness check for
+// every other caller.
 func (m *Muse) PasteReady(capture string) bool {
 	return !museQuestionDialog.MatchString(StripANSI(capture))
 }
