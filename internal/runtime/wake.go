@@ -279,6 +279,41 @@ func (s *Store) WakeDue(ctx context.Context) error {
 	return nil
 }
 
+// submitChecks bounds the Enters resubmitIfHeld sends; submitCheckGap is how
+// long the composer gets to take each one.
+const (
+	submitChecks   = 3
+	submitCheckGap = 700 * time.Millisecond
+)
+
+// resubmitIfHeld looks at the composer after a paste and sends Enter again
+// while the pasted text is still sitting in it, at most submitChecks times.
+// Muse sometimes ignores an Enter that follows the paste too closely and leaves
+// the notice unsent (probed 2026-10-29); only adapters that can read their
+// composer (ComposerHolds) take part.
+func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName, text string) {
+	ch, ok := ad.(interface{ ComposerHolds(capture, text string) bool })
+	if !ok {
+		return
+	}
+	for i := 0; i < submitChecks; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.after(submitCheckGap):
+		}
+		capture, err := s.Tmux.Capture(ctx, tmuxName, 30)
+		if err != nil || !ch.ComposerHolds(capture, text) {
+			return
+		}
+		if err := s.Tmux.Keys(ctx, tmuxName, "Enter"); err != nil {
+			s.logf("wake: resubmit Enter for %s: %v", tmuxName, err)
+			return
+		}
+		s.logf("wake: notice still in the composer of %s; sent Enter again (%d of %d)", tmuxName, i+1, submitChecks)
+	}
+}
+
 // noticeStillQueued reports whether r's batch was already pasted and the pane
 // still shows that paste as queued input. A TUI that queues a mid-turn paste
 // (Muse: "Queued input") replays it at its next model boundary, so pasting the
@@ -441,6 +476,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")
 	}
+	s.resubmitIfHeld(ctx, ad, r.TmuxName, pasteNotice)
 	if inboxRendered {
 		s.MarkNoticeSeen(r.SessionID)
 	}

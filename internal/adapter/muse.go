@@ -472,6 +472,37 @@ func (m *Muse) QueuedInput(capture string) bool {
 	return museQueuedInput.MatchString(StripANSI(capture))
 }
 
+// ComposerHolds reports whether text (a line just pasted) is still sitting in
+// Muse's composer: the lines from the last ❯ prompt down to the box's bottom
+// rule, compared on the first 30 non-space characters because the TUI hard
+// wraps the text. Earlier ❯ lines are the transcript's echoed user prompts and
+// the queued block draws its own glyphs, so neither matches.
+func (m *Muse) ComposerHolds(capture, text string) bool {
+	lines := strings.Split(StripANSI(capture), "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "❯") {
+			start = i
+		}
+	}
+	if start < 0 {
+		return false
+	}
+	var box strings.Builder
+	for _, l := range lines[start:] {
+		if strings.HasPrefix(strings.TrimSpace(l), "─") && box.Len() > 0 {
+			break
+		}
+		box.WriteString(l)
+	}
+	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	want := []rune(squash(text))
+	if len(want) > 30 {
+		want = want[:30]
+	}
+	return len(want) > 0 && strings.Contains(squash(box.String()), string(want))
+}
+
 // museTrust is D7 (dialog-needs-you spec): --yolo --trust-workspace already
 // avoids this dialog (P-M1), confirmed live not to trigger any blocking
 // first-run/foreign-context dialog (PM.1, docs/plans/2026-09-25-muse-isolation-probe.md).

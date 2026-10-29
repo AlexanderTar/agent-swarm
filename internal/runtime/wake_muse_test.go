@@ -14,6 +14,8 @@ import (
 // input the way Muse does.
 type museLikeFake struct{ pasteReadyFake }
 
+func (museLikeFake) ComposerHolds(capture, _ string) bool { return strings.Contains(capture, "HELD") }
+
 func (museLikeFake) QueuedInput(capture string) bool {
 	return strings.Contains(capture, "Queued input")
 }
@@ -89,6 +91,55 @@ func TestWakeDueDoesNotRepasteWhileMuseShowsQueuedInput(t *testing.T) {
 	if len(tm.pasted) != 2 {
 		t.Fatalf("pasted = %d after the queue drained, want a re-paste: %v", len(tm.pasted), tm.pasted)
 	}
+}
+
+// Muse sometimes leaves a pasted line sitting in its composer when the Enter
+// lands too early (probed 2026-10-29). After the paste Swarm looks at the
+// composer and sends Enter again while the text is still there.
+func TestTryPasteResendsEnterWhileTheComposerStillHoldsTheNotice(t *testing.T) {
+	s, tm, a, ses := museWakeSetup(t)
+	tm.captures[ses.TmuxName] = []string{museBusyPane, "HELD", "HELD", museBusyPane}
+	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
+	if err := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnters(tm); got != 2 {
+		t.Fatalf("Enter re-sent %d times, want 2 (keys %v)", got, tm.keys)
+	}
+}
+
+func TestTryPasteResendsEnterAtMostThreeTimes(t *testing.T) {
+	s, tm, a, ses := museWakeSetup(t)
+	tm.captures[ses.TmuxName] = []string{museBusyPane, "HELD"}
+	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
+	if err := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnters(tm); got != 3 {
+		t.Fatalf("Enter re-sent %d times for a notice that never leaves, want the bound of 3", got)
+	}
+}
+
+func TestTryPasteSendsNoExtraEnterWhenTheComposerIsClear(t *testing.T) {
+	s, tm, a, ses := museWakeSetup(t)
+	tm.captures[ses.TmuxName] = []string{museBusyPane}
+	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
+	if err := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnters(tm); got != 0 {
+		t.Fatalf("Enter re-sent %d times with a clear composer", got)
+	}
+}
+
+func countEnters(tm *fakeTmux) int {
+	n := 0
+	for _, k := range tm.keys {
+		if strings.HasSuffix(k, "|Enter") {
+			n++
+		}
+	}
+	return n
 }
 
 var _ adapter.Adapter = museLikeFake{}

@@ -1138,6 +1138,27 @@ func TestMuseQueuedInput(t *testing.T) {
 	}
 }
 
+// Muse 1.4.14 probe (2026-10-29): a pasted line the Enter did not submit sits
+// in the composer after the prompt glyph, hard-wrapped (continuation lines
+// indented, a word may break at the wrap). A submitted line leaves the composer
+// (it moves to the queued block or the transcript, which the check ignores).
+func TestMuseComposerHolds(t *testing.T) {
+	a := newMuse(testDeps(t))
+	text := "swarm: inbox (call swarm_sync) 2 new message(s) for probe-coder (TASK-9). lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet END-OF-NOTICE"
+	if !a.ComposerHolds(pane(t, "muse", "pane-composer-held.txt"), text) {
+		t.Error("wrapped notice in the composer must be reported as held")
+	}
+	if a.ComposerHolds(pane(t, "muse", "pane-queued-input.txt"), "NOTICE 1: swarm inbox test line, reply with ack1") {
+		t.Error("a notice in the queued block (empty composer) is submitted")
+	}
+	if a.ComposerHolds(pane(t, "muse", "pane-idle.txt"), text) {
+		t.Error("an idle empty composer holds nothing")
+	}
+	if a.ComposerHolds("❯ Start a message with ! to run a shell command yourself\n────\n", text) {
+		t.Error("the placeholder is not the notice")
+	}
+}
+
 // TestMuseLastReply: the newest run's committed assistant text at or after
 // since, joined by newline; a missing log is unreadable (print-then-ask fails open).
 func TestMuseLastReply(t *testing.T) {
