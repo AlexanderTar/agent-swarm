@@ -939,6 +939,59 @@ func TestAgyAssistantTextSinceLastTurnResetsOnToolResult(t *testing.T) {
 	}
 }
 
+// TestAgySetupEnvLinksSharedSwarmDirs: with the swarm home nested under
+// the user home, the isolated agy HOME's .swarm/<dir> must resolve to the
+// real swarm home's agent-facing dirs (screenshots, specs, plans, research,
+// designs, kb), run/ must stay absent, and Resume (same launchDir) must keep
+// the links.
+func TestAgySetupEnvLinksSharedSwarmDirs(t *testing.T) {
+	d := testDeps(t)
+	d.Home = filepath.Join(d.UserHome, ".swarm")
+	if err := os.MkdirAll(d.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s := agySpec(t)
+	l, err := newAgy(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+	for _, sub := range []string{"screenshots", "specs", "plans", "research", "designs", "kb"} {
+		got, err := filepath.EvalSymlinks(filepath.Join(agyHome, ".swarm", sub))
+		if err != nil {
+			t.Errorf("%s: EvalSymlinks: %v", sub, err)
+			continue
+		}
+		// Both sides are evaluated: on macOS t.TempDir() sits under /var,
+		// itself a symlink to /private/var.
+		want, err := filepath.EvalSymlinks(filepath.Join(d.Home, sub))
+		if err != nil {
+			t.Errorf("%s: EvalSymlinks(real): %v", sub, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s resolves to %q, want %q", sub, got, want)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(agyHome, ".swarm", "run")); !os.IsNotExist(err) {
+		t.Errorf("isolated agy HOME's .swarm must not carry run, got err=%v", err)
+	}
+
+	s.ProviderSessionID = "conv-xyz"
+	resume, err := newAgy(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"screenshots", "specs", "plans", "research", "designs", "kb"} {
+		got, err := filepath.EvalSymlinks(filepath.Join(resume.Env["HOME"], ".swarm", sub))
+		want, werr := filepath.EvalSymlinks(filepath.Join(d.Home, sub))
+		if err != nil || werr != nil || got != want {
+			t.Errorf("after Resume %s resolves to %q, %v", sub, got, err)
+		}
+	}
+}
+
 // Live probe 2026-10-29 (agy 1.4.9, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
 // a PreToolUse output {"injectSteps":[...]} is rejected ("unknown field
 // injectSteps") and the TOOL CALL FAILS. Context on PreToolUse must never be

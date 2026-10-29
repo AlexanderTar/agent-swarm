@@ -226,6 +226,14 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 			return nil, err
 		}
 	}
+	// The agent-facing shared swarm folders (screenshots, specs, ...) live
+	// under the real swarm home, but skills address them as ~/.swarm/... --
+	// which resolves inside this isolated HOME without the links below. run/,
+	// db files and config.json are never linked (run/ holds this HOME's own
+	// launch dir: linking it would cycle).
+	if err := linkSwarmShared(agyHome, a.d.UserHome, a.d.Home, a.d.Log); err != nil {
+		return nil, err
+	}
 	return map[string]string{"HOME": agyHome}, nil
 }
 
