@@ -234,6 +234,13 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		// — recording every per-tick false would hold paste-only sessions
 		// behind permanent backoff.
 		if !r.NativeTried {
+			// Agy.Wake starts a second `agy --conversation <id>` process; while the
+			// TUI turn is busy that is a hidden parallel agent on the same conversation
+			// (probe 2026-10-29). A busy agy gets the batch from its PreInvocation hook
+			// notice, an idle one from this wake, so skip quietly: no failure backoff.
+			if r.Kind == Agy && s.busyAfterPaneLook(ctx, r) {
+				continue
+			}
 			delivered, err := ad.Wake(ctx, adapter.WakeTarget{SessionID: r.SessionID, AgentID: r.AgentID,
 				ProviderSessionID: r.ProviderID, TmuxName: r.TmuxName, Notice: notice,
 				Model: s.resolveLaunchModel(ctx, r.Kind, r.Model, r.Effort)})

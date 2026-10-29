@@ -1416,3 +1416,75 @@ func TestMCPSeenPrunedWhenSessionEnds(t *testing.T) {
 		t.Fatal("mcpSeen entry survived the session's end")
 	}
 }
+
+// Live probe 2026-10-29 (agy 1.4.9, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
+// Agy.Wake starts a second `agy --conversation <id>` process, and while the TUI
+// turn is busy that runs a hidden parallel agent on the same conversation. A busy
+// agy gets the batch from its PreInvocation hook notice; only an idle one is woken.
+func TestNativeWakeSkipsABusyAgy(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	s.Adapters[Agy] = fa
+	seedAgyCatalog(t, s.DB)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "agy"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "AgyBusyWake", Intent: "feature", Kind: Agy, Model: "gemini-3.8-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "agy"})
+	tm.clk.Advance(25 * time.Second)
+
+	showPane(tm, a.Name, paneBusyFooter)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastWakeTarget.SessionID != "" {
+		t.Fatal("native wake ran against a busy agy: it would start a hidden parallel agent on the same conversation")
+	}
+	s.bookkeepingMu.Lock()
+	n := s.pasteAttempts[ses.ID]
+	s.bookkeepingMu.Unlock()
+	if n != 0 {
+		t.Fatalf("a busy agy skipped for its hook notice recorded %d wake failures, want 0", n)
+	}
+
+	showPane(tm, a.Name, paneIdlePrompt)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastWakeTarget.SessionID != ses.ID {
+		t.Fatal("an idle agy must still be natively woken")
+	}
+}
+
+// An open tool call is busy evidence too (hook, no pane look needed).
+func TestNativeWakeSkipsAnAgyInsideAToolCall(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	s.Adapters[Agy] = fa
+	seedAgyCatalog(t, s.DB)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "agy"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "AgyToolWake", Intent: "feature", Kind: Agy, Model: "gemini-3.8-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "agy"})
+	tm.clk.Advance(25 * time.Second)
+	s.ToolStarted(ses.ID)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastWakeTarget.SessionID != "" {
+		t.Fatal("native wake ran inside an open agy tool call")
+	}
+}
