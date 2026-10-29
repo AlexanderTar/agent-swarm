@@ -94,6 +94,35 @@ func (m *Muse) argv(s Spec) []string {
 	return append(a, s.Kickoff)
 }
 
+// museHookEvents are the settings-level hook events Swarm registers. SessionStart
+// is left out: it fires at the first turn, not at launch (brigade probe, 1.4.10).
+var museHookEvents = []string{"PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"}
+
+// museInternalTool is the tool muse's own reminder sub-agent calls. Its hooks
+// fire with the child session's session_id, so they must not reach the handler.
+const museInternalTool = "submit_reminder_decision"
+
+var museShellSafe = regexp.MustCompile(`^[A-Za-z0-9_./:@%+=,-]+$`)
+
+func museShellQuote(v string) string {
+	if museShellSafe.MatchString(v) {
+		return v
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+}
+
+// museHookCommand is one hook's command line: `swarm hook` reads
+// SWARM_SESSION/SWARM_TOKEN_FILE/SWARM_URL from its env, so they are set by
+// env(1) in front of it (probed 2026-10-29: the string runs through a shell,
+// quoted paths with spaces work).
+func museHookCommand(s Spec, event string) string {
+	return strings.Join([]string{"env",
+		"SWARM_SESSION=" + museShellQuote(s.SessionID),
+		"SWARM_TOKEN_FILE=" + museShellQuote(s.TokenFile),
+		"SWARM_URL=" + museShellQuote(s.DaemonURL),
+		museShellQuote(s.Bin), "hook", string(kinds.Muse), event}, " ")
+}
+
 // museMCPEnv is the literal env block the isolated settings.json's swarm
 // entry needs for this one launch (P0-1). Confirmed live 2026-09-23 by
 // strings-dumping the installed muse-bin-1.3.0-R3401.1 binary: its own
@@ -291,6 +320,17 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 			"env":     museMCPEnv(s),
 		},
 	}
+	// Settings-level hooks (probed live on 1.4.14, 2026-10-29) fire for the
+	// tool boundaries and the turn, carry muse's own session_id on stdin, and
+	// their stdout reaches the model. The hook env has no SWARM_* (it is muse's
+	// own small allowlist), so the session's env rides in each command's argv.
+	// The operator's own hooks are replaced, like their MCP servers.
+	hooks := map[string]any{}
+	for _, ev := range museHookEvents {
+		hooks[ev] = []any{map[string]any{"hooks": []any{map[string]any{
+			"type": "command", "command": museHookCommand(s, ev), "timeout": 3}}}}
+	}
+	settings["hooks"] = hooks
 	// Q3/Finding 2b: suppresses muse's own $HOME/.claude and $HOME/.codex
 	// "foreign personal" skill+rules import (confirmed live settings.json
 	// keys). Merged into any existing context map so an operator's other
@@ -560,12 +600,38 @@ func (m *Muse) InterruptKeys() []string { return []string{"C-c"} }
 // must not refuse `swarm_ask kind:"question"` for muse without a fallback
 // (spec section 10, new OQ).
 //
-// Task 6: muse's own plugin docs (native-plugin-contract.md,
-// capability-examples.json) specify only the manifest schema, not a hook
-// stdout/decision contract, and no deny was ever exercised live (there is
-// no hook to deny request_user_input from). There is no probed shape to
-// emit, so this stays a fail-open no-op for every event and decision.
-func (m *Muse) HookOutput(string, HookDecision) ([]byte, error) { return nil, nil }
+// Settings-level hooks (2026-10-29, muse 1.4.14-R7309.1, throwaway echo/real
+// model turns on a private tmux server): `settings.json` `hooks` in Claude's
+// shape ({Event: [{hooks: [{type, command, timeout}]}]}) fire PreToolUse,
+// PostToolUse, UserPromptSubmit and Stop with muse's own session_id on stdin
+// (also MUSE_SESSION_ID in env; no SWARM_* ever). Output, all Claude-shaped:
+// hookSpecificOutput.additionalContext from PreToolUse, PostToolUse and
+// UserPromptSubmit reaches the model (plain stdout from UserPromptSubmit too);
+// a PreToolUse permissionDecision "deny" fails the tool with "tool blocked by
+// hook: <reason>"; a Stop {"decision":"block","reason"} re-fires Stop with
+// stop_hook_active=true and lands the reason as a developer context block.
+// Not probed, so not emitted: updatedInput and sessionTitle. Muse fires the
+// same hooks for its internal submit_reminder_decision tool with a child
+// session_id (IgnoreHook). transcript_path is always null, and tool_name is
+// "bash" for the shell tool. The old plugin-hook probe notes above still hold.
+func (m *Muse) HookOutput(event string, d HookDecision) ([]byte, error) {
+	if d.Block {
+		if event == "Stop" {
+			return json.Marshal(map[string]string{"decision": "block", "reason": d.Reason})
+		}
+		return json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{
+			"hookEventName": event, "permissionDecision": "deny", "permissionDecisionReason": d.Reason}})
+	}
+	if d.Context == "" {
+		return nil, nil
+	}
+	return json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{
+		"hookEventName": event, "additionalContext": d.Context}})
+}
+
+// IgnoreHook drops the hooks of muse's internal reminder tool before the
+// handler records anything from them (their session_id is a child's).
+func (m *Muse) IgnoreHook(in HookInput) bool { return in.ToolName == museInternalTool }
 
 func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
@@ -575,6 +641,9 @@ func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolInput    json.RawMessage `json:"tool_input"`
 		ToolResponse json.RawMessage `json:"tool_response"`
 		Prompt       string          `json:"prompt"`
+		Model        string          `json:"model"`
+		StopActive   bool            `json:"stop_hook_active"`
+		LastMessage  string          `json:"last_assistant_message"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -600,6 +669,11 @@ func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
 		RawToolInput:      raw.ToolInput,
 		ToolResponse:      raw.ToolResponse,
 		Prompt:            raw.Prompt,
+		Model:             raw.Model,
+		StopHookActive:    raw.StopActive,
+		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
+
+		LastAssistantMessage: raw.LastMessage,
 	}, nil
 }
 

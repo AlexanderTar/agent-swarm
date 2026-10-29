@@ -1316,6 +1316,39 @@ func TestMuseSiblingToolHookFixturesOpenNoRowAndDoNotBlock(t *testing.T) {
 	}
 }
 
+// Muse fires its settings-level hooks for the internal reminder tool from a
+// child session with its own session_id (probe 2026-10-29). Recording that id
+// as the provider session would break resume, and the handler must not count it
+// as the agent's own tool call.
+func TestMuseInternalReminderToolHooksAreIgnored(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'muse' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	child := []byte(`{"hook_event_name":"PreToolUse","tool_name":"submit_reminder_decision","tool_input":{},"session_id":"child-session"}`)
+	if out, err := h.Handle(ctx, runtime.Muse, "PreToolUse", ses, child); err != nil || len(out) != 0 {
+		t.Fatalf("Handle = %q, %v; want nothing", out, err)
+	}
+	var provider, seen any
+	if err := h.DB.QueryRowContext(ctx, `SELECT provider_session_id, last_seen_at FROM sessions WHERE id = ?`, ses).Scan(&provider, &seen); err != nil {
+		t.Fatal(err)
+	}
+	if provider != nil || seen != nil {
+		t.Fatalf("provider_session_id=%v last_seen_at=%v after an ignored hook, want both unset", provider, seen)
+	}
+	main := []byte(`{"hook_event_name":"PreToolUse","tool_name":"bash","tool_input":{"command":"echo hi"},"session_id":"main-session"}`)
+	if _, err := h.Handle(ctx, runtime.Muse, "PreToolUse", ses, main); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DB.QueryRowContext(ctx, `SELECT provider_session_id FROM sessions WHERE id = ?`, ses).Scan(&provider); err != nil {
+		t.Fatal(err)
+	}
+	if provider != "main-session" {
+		t.Fatalf("provider_session_id = %v, want the real tool call's session", provider)
+	}
+}
+
 // TestMuseUserPromptSubmitClosesOpenQuestionRows replays the Task 4
 // live-probe UserPromptSubmit fixture: a top-level muse agent has no way to
 // have Swarm open its native question's row (see the sibling-tool test

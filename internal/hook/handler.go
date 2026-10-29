@@ -682,6 +682,11 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		h.logf("hook: %s %s does not parse: %v", s0.Kind, event, err)
 		in = adapter.HookInput{}
 	}
+	// an adapter can drop hooks that are not the agent's own (muse's internal
+	// reminder tool fires from a child session) before they touch the session
+	if ig, ok := a.(interface{ IgnoreHook(adapter.HookInput) bool }); ok && ig.IgnoreHook(in) {
+		return nil, nil
+	}
 	if err := h.touch(ctx, s0, in); err != nil {
 		return nil, err
 	}

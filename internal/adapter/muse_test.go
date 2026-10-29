@@ -880,13 +880,120 @@ func TestMuseParseHookExtractsCommandFromToolInput(t *testing.T) {
 // deny (request_user_input). There is no probed deny shape to emit, so
 // HookOutput stays a fail-open no-op for every decision, matching the
 // existing doc comment's contract ("must not fail closed").
-func TestMuseHookOutputStaysNil(t *testing.T) {
+// Muse 1.4.14 settings-level hooks probe (2026-10-29): a Stop block re-fires
+// Stop with stop_hook_active and lands the reason as a developer context block;
+// PreToolUse deny reaches the model as "tool blocked by hook: <reason>";
+// additionalContext from PreToolUse, PostToolUse and UserPromptSubmit reaches
+// the model. All in Claude's JSON shapes.
+func TestMuseHookOutputUsesTheProbedShapes(t *testing.T) {
 	m := newMuse(Deps{})
-	for _, d := range []HookDecision{{}, {Block: true, Reason: "x"}, {Context: "c"}} {
-		out, err := m.HookOutput("PreToolUse", d)
-		if err != nil || out != nil {
-			t.Fatalf("HookOutput(%+v) = %q, %v; want nil, nil", d, out, err)
+	cases := []struct {
+		event string
+		d     HookDecision
+		want  string
+	}{
+		{"Stop", HookDecision{Block: true, Reason: "r"}, `{"decision":"block","reason":"r"}`},
+		{"PreToolUse", HookDecision{Block: true, Reason: "r"}, `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"r"}}`},
+		{"PreToolUse", HookDecision{Context: "c"}, `{"hookSpecificOutput":{"additionalContext":"c","hookEventName":"PreToolUse"}}`},
+		{"PostToolUse", HookDecision{Context: "c"}, `{"hookSpecificOutput":{"additionalContext":"c","hookEventName":"PostToolUse"}}`},
+		{"UserPromptSubmit", HookDecision{Context: "c", SessionTitle: "t"}, `{"hookSpecificOutput":{"additionalContext":"c","hookEventName":"UserPromptSubmit"}}`},
+	}
+	for _, c := range cases {
+		out, err := m.HookOutput(c.event, c.d)
+		if err != nil || string(out) != c.want {
+			t.Errorf("HookOutput(%s, %+v) = %s, %v; want %s", c.event, c.d, out, err, c.want)
 		}
+	}
+	for _, d := range []HookDecision{{}, {SessionTitle: "t"}} {
+		if out, err := m.HookOutput("PostToolUse", d); err != nil || out != nil {
+			t.Errorf("HookOutput(%+v) = %q, %v; want nil, nil", d, out, err)
+		}
+	}
+}
+
+// Settings-level hooks fire with muse's own env (no SWARM_*), so the per-launch
+// settings.json bakes the session's env into each hook command's argv.
+func TestMuseSetupEnvRegistersSettingsHooksWithTheSessionInArgv(t *testing.T) {
+	d := testDeps(t)
+	real := filepath.Join(d.UserHome, ".config", "muse")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "settings.json"),
+		[]byte(`{"schema_version":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/operator/own-hook"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := museSpec(t)
+	l, err := newMuse(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(l.Env["XDG_CONFIG_HOME"], "muse", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Timeout int    `json:"timeout"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Hooks) != 4 {
+		t.Fatalf("hooks = %v, want exactly PreToolUse, PostToolUse, UserPromptSubmit and Stop (the operator's own are dropped)", m.Hooks)
+	}
+	for _, ev := range []string{"PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"} {
+		g := m.Hooks[ev]
+		if len(g) != 1 || len(g[0].Hooks) != 1 {
+			t.Fatalf("%s = %+v, want one group with one hook", ev, g)
+		}
+		h := g[0].Hooks[0]
+		want := "env SWARM_SESSION=ses_01 SWARM_TOKEN_FILE=/swarm-home/run/tokens/ses_01 SWARM_URL=http://127.0.0.1:17778 /usr/local/bin/swarm hook muse " + ev
+		if h.Type != "command" || h.Command != want || h.Timeout != 3 {
+			t.Errorf("%s hook = %+v, want command %q, timeout 3", ev, h, want)
+		}
+	}
+}
+
+func TestMuseHookCommandQuotesUnsafeValues(t *testing.T) {
+	spec := museSpec(t)
+	spec.Bin = "/Users/me/my dir/swarm"
+	got := museHookCommand(spec, "Stop")
+	if !strings.Contains(got, "'/Users/me/my dir/swarm' hook muse Stop") {
+		t.Errorf("command = %q, want the spaced path single-quoted", got)
+	}
+}
+
+// Probe 2026-10-29: stdin carries session_id (muse's own, not Swarm's),
+// stop_hook_active and last_assistant_message on Stop; the model-facing MCP
+// tool is named mcp__swarm__<tool> in muse's log. Muse also fires the hooks for
+// its internal submit_reminder_decision tool from child sessions with their own
+// session_id; those must not reach the handler.
+func TestMuseParseHookStopAndSwarmTool(t *testing.T) {
+	m := newMuse(Deps{})
+	in, err := m.ParseHook("Stop", []byte(`{"hook_event_name":"Stop","stop_hook_active":true,"last_assistant_message":"done","session_id":"S1","model":"muse-spark-1.3"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.StopHookActive || in.LastAssistantMessage != "done" || in.ProviderSessionID != "S1" || in.Model != "muse-spark-1.3" {
+		t.Errorf("ParseHook(Stop) = %+v", in)
+	}
+	in, _ = m.ParseHook("PreToolUse", []byte(`{"tool_name":"mcp__swarm__swarm_sync","session_id":"S1"}`))
+	if !in.IsSwarmTool {
+		t.Error("mcp__swarm__ tools are Swarm tools")
+	}
+	in, _ = m.ParseHook("PreToolUse", []byte(`{"tool_name":"submit_reminder_decision","session_id":"child"}`))
+	if !m.IgnoreHook(in) {
+		t.Error("the internal reminder tool's hooks must be ignored")
+	}
+	in, _ = m.ParseHook("PreToolUse", []byte(`{"tool_name":"bash","session_id":"S1"}`))
+	if m.IgnoreHook(in) {
+		t.Error("a real tool's hooks must not be ignored")
 	}
 }
 
