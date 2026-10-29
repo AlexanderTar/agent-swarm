@@ -292,7 +292,9 @@ const (
 // the notice unsent (probed 2026-10-29); only adapters that can read their
 // composer (ComposerHolds) take part.
 func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName, text string) {
-	ch, ok := ad.(interface{ ComposerHolds(capture, text string) bool })
+	ch, ok := ad.(interface {
+		ComposerHolds(capture, text string) bool
+	})
 	if !ok {
 		return
 	}
