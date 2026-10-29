@@ -225,3 +225,34 @@ func TestLinkSwarmSharedReplacesLegacyBaseLink(t *testing.T) {
 		t.Errorf("real screenshot content lost: %v", err)
 	}
 }
+
+// TestLinkSwarmSharedThroughLinkedAncestor: with a swarm home nested below a
+// subfolder of HOME (~/foo/.swarm), muse links ~/foo whole into its isolated
+// HOME, so base already resolves to the real swarm home. Each shared dir must
+// be left as the real dir it already is, never replaced by a link to itself.
+func TestLinkSwarmSharedThroughLinkedAncestor(t *testing.T) {
+	userHome := t.TempDir()
+	swarmHome := filepath.Join(userHome, "foo", ".swarm")
+	if err := os.MkdirAll(swarmHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	isolatedHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(userHome, "foo"), filepath.Join(isolatedHome, "foo")); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := linkSwarmShared(isolatedHome, userHome, swarmHome, quietLog); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, sub := range swarmSharedDirs {
+		fi, err := os.Lstat(filepath.Join(swarmHome, sub))
+		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("real %s must stay a real dir, got %v, %v", sub, fi, err)
+		}
+		if _, err := os.Stat(filepath.Join(isolatedHome, "foo", ".swarm", sub)); err != nil {
+			t.Errorf("%s must resolve from the isolated HOME: %v", sub, err)
+		}
+	}
+}

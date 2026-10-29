@@ -52,6 +52,14 @@ func linkSwarmShared(isolatedHome, userHome, swarmHome string, logf func(string,
 			return err
 		}
 		dst := filepath.Join(base, sub)
+		// base can already resolve to the real swarm home (a linked ancestor,
+		// e.g. muse-home/foo -> ~/foo for a ~/foo/.swarm home): dst is then the
+		// real dir itself, and replacing it would link it to itself.
+		if rfi, err := os.Stat(real); err == nil {
+			if dfi, err := os.Stat(dst); err == nil && os.SameFile(rfi, dfi) {
+				continue
+			}
+		}
 		fi, err := os.Lstat(dst)
 		if err == nil {
 			if fi.Mode()&os.ModeSymlink != 0 {
