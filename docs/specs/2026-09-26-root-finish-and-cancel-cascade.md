@@ -15,7 +15,7 @@ Case `support-chat-attachments-orchestrator-2` / EPIC-3, 2026-09-26 11:19-11:21:
 2. The orchestrator wrote a `handoff` checkpoint. `onPausingCheckpoint` (`internal/runtime/pause.go:356`) moves any handoff to `stopping`, so the session parked as `paused`.
 3. It was resumed (generation 3), and the user closed it with `POST /api/agents/{name}/cancel` (`internal/httpapi/spawn.go:243`). `Store.Cancel` (`internal/runtime/agents.go:1730`) set the live session to `cancelled` (`agents.go:1764`).
 
-Nothing in the daemon reacts to a root reaching Done. The only session-ending signal is the agent's own `completed` checkpoint on its own item. `resolveAlive` kills that pane `killCompletedAfter` (60 s, `reconcile.go:19`, check at `reconcile.go:1102`) later, and `resolveDeadInner` (`reconcile.go:739`, completed branch `reconcile.go:842`) ends it `completed` and the agent `finished`.
+Nothing in the daemon reacts to a root reaching Done. The only session-ending signal is the agent's own `completed` checkpoint on its own item. `resolveAlive` kills that pane once it reads idle after `killCompletedAfter` (60 s grace, `reconcile.go`), or at the 2 h `killCompletedBusyCap` even if busy, and `resolveDeadInner` ends it `completed` and the agent `finished`.
 
 ### Problem 2: cancelling a parent leaves its children running
 
@@ -61,7 +61,7 @@ Only `agent-swarm`, and only this worktree. Nothing here touches the primary che
 
 ### Caveats (scope calls made)
 
-- **Pause requested inside the 60 s grace.** If the user pauses an orchestrator after `RootDone` wrote its `completed` and before the reaper kills it, the agent can write neither `handoff` (refused, decision 3) nor `completed` (refused while pausing, `pauseAllowedKinds`). The reaper still kills it at 60 s. It ends `completed` unless the pause deadline already sent interrupt keys, in which case it ends `interrupted`. Recovery: the user closes it, and decision 2 records `completed`. No special code.
+- **Pause requested inside the 60 s grace.** If the user pauses an orchestrator after `RootDone` wrote its `completed` and before the reaper kills it, the agent can write neither `handoff` (refused, decision 3) nor `completed` (refused while pausing, `pauseAllowedKinds`). The reaper still kills it once the pane reads idle after the 60 s grace (a paused pane is idle, so in practice still at 60 s). It ends `completed` unless the pause deadline already sent interrupt keys, in which case it ends `interrupted`. Recovery: the user closes it, and decision 2 records `completed`. No special code.
 - **Operation lock.** `OnRootDone` runs inside the items tx, so it calls `cancelAgentOperationsTx` without `lockAgentOperations`. A replacement driver that already committed its launch could still start a successor. That successor then has a done root: its handoff is refused, and closing it records `completed`. Marked with a `ponytail:` comment.
 - **Chore roots** get the same treatment as epics and bugs: when a chore reaches Done, its agents finish.
 
@@ -70,7 +70,7 @@ Only `agent-swarm`, and only this worktree. Nothing here touches the primary che
 1. **The daemon finishes a done root's agents, authoritatively.**
    a. `setStatus` fires `RootDone(ctx, tx, it.ID)` when `to == Done && it.ID == it.RootID`, next to the `DepUnblocked` hook.
    b. `OnRootDone` acts on every agent with `root_item_id = rootID` and `state IN ('queued','active')`:
-      - Latest session `spawning` or `running`: insert a `completed` checkpoint with `daemon_written = 1`, `item_id = agents.item_id` (the agent's own item) and `attempt = sessions.attempt`. The reaper ends the session `completed` 60 s later.
+      - Latest session `spawning` or `running`: insert a `completed` checkpoint with `daemon_written = 1`, `item_id = agents.item_id` (the agent's own item) and `attempt = sessions.attempt`. The reaper ends the session `completed` once the pane reads idle after a 60 s grace (`killCompletedAfter`), or at the 2 h hard cap (`killCompletedBusyCap`) even if the pane is still busy — so post-merge work (deploys, beta builds, cleanup) done in the same turn right after `finishing` survives Done.
       - Anything else: set the session to `completed` if it is `pause_requested`, `quiescing`, `stopping`, `paused` or `interrupted`. Then set the agent to `finished`, release its worktree reservations and publish `agent.changed`. A leftover live pane is killed by Reconcile's finished-agent pass (`reconcile.go:196-210`) on the next tick.
       - Every agent gets `cancelAgentOperationsTx` first.
    c. On a **spike** root, the live session of the agent whose `item_id` is the spike itself is skipped. Such an agent is either inside `swarm_materialize` or has already written `completed` with a `resolution` (the only way `close_spike` opens). Either way it ends through its own checkpoint. The spike close and materialize paths are unchanged.
@@ -275,7 +275,7 @@ Nothing.
 
 | # | Scenario | Expected | Covered by |
 |---|---|---|---|
-| R1 | Epic accepted with its orchestrator live | `approval_result approved` reaches the orchestrator. Epic Done. One `completed` checkpoint with `daemon_written = 1` on the orchestrator's own item and attempt, summary `EPIC-1 is done; Swarm finished this agent.` The pane is not killed before 60 s and is killed after. Once it is gone the session is `completed` and the agent `finished`. Live workers on the root get the same. | `TestRootDoneLiveAgentsEndCompletedAfterGrace`, e2e `TestScenarioEpicApprovalLane` tail (asserts the checkpoint, then `killPane` stands in for the 60 s reaper, then `completed` / `finished`) |
+| R1 | Epic accepted with its orchestrator live | `approval_result approved` reaches the orchestrator. Epic Done. One `completed` checkpoint with `daemon_written = 1` on the orchestrator's own item and attempt, summary `EPIC-1 is done; Swarm finished this agent.` The pane is not killed before 60 s; it is killed once it reads idle after that, or at the 2 h cap even if busy. Once it is gone the session is `completed` and the agent `finished`. Live workers on the root get the same. | `TestRootDoneLiveAgentsEndCompletedAfterGrace`, e2e `TestScenarioEpicApprovalLane` tail (asserts the checkpoint, then `killPane` stands in for the 60 s reaper, then `completed` / `finished`) |
 | R2 | Epic accepted while the orchestrator is paused | The session becomes `completed` at once and the agent `finished`, with no checkpoint written. Its in-flight operation is `cancelled`. A `stopping` worker is also finished at once. | `TestRootDoneFinishesPausedAndPausingAgentsAtOnce` |
 | R3 | Late handoff after acceptance | `swarm_checkpoint kind:"handoff"` returns conflict `Root accepted; write completed.`, and `completed` is still accepted. | `TestHandoffRefusedOnceTheRootIsDone`, e2e tail |
 | R4 | Manual close on an accepted root (legacy: root Done before this shipped, agent still active) | `POST /api/agents/{name}/cancel` ends a live session `completed` and a paused one `completed`, and the agent `finished`. On a root that is not Done a live session still ends `cancelled` (existing tests). | `TestCancelOnADoneRootRecordsCompleted`, existing Cancel tests |

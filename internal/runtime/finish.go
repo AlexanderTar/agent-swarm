@@ -27,9 +27,12 @@ func (s *Store) rootIsDone(ctx context.Context, q txQuerier, rootID string) (boo
 // OnRootDone is items.Store.RootDone (spec locked decision 1): rootID just
 // reached Done, so every agent still queued or active on it finishes. A
 // spawning/running session gets a daemon-written completed checkpoint on its
-// own item and attempt; resolveAlive kills the pane killCompletedAfter later
-// and resolveDeadInner ends it completed, which leaves the orchestrator a
-// minute to read approval_result and post its final message.
+// own item and attempt; resolveAlive kills the pane once the killCompletedAfter
+// grace (60 s) has passed and the pane reads idle, or at killCompletedBusyCap
+// (2 h) even if still busy, and resolveDeadInner ends it completed, which
+// leaves the orchestrator room to read approval_result, post its final
+// message, and do post-merge work (deploys, beta builds, cleanup) before
+// going idle.
 func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error {
 	var rootKey, rootType string
 	if err := tx.QueryRowContext(ctx, `SELECT key, type FROM items WHERE id = ?`, rootID).Scan(&rootKey, &rootType); err != nil {
