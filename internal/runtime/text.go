@@ -188,8 +188,11 @@ func StartContextDropped(k AgentKind) bool { return k == Grok }
 const ErrBriefTooLong = items.ErrBriefTooLong
 
 // BriefWorktree is one worktree line in the brief's header (§9.4).
+// HeadSHA7 is the detached HEAD a branchless (review) tree was created at;
+// empty for a branch tree, whose line names the branch instead.
 type BriefWorktree struct {
 	Repo, Path, Branch, BaseSHA7, Mode string
+	HeadSHA7                           string
 }
 
 // BriefInput is RenderBrief's input (§9.4).
@@ -437,7 +440,23 @@ func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string 
 	if len(in.Worktrees) > 0 {
 		b.WriteString("worktrees:\n")
 		for _, w := range in.Worktrees {
-			fmt.Fprintf(&b, "- %s: %s @ %s (base %s, %s)\n", w.Repo, w.Path, w.Branch, w.BaseSHA7, w.Mode)
+			if w.Branch != "" {
+				fmt.Fprintf(&b, "- %s: %s @ %s (base %s, %s)\n", w.Repo, w.Path, w.Branch, w.BaseSHA7, w.Mode)
+				continue
+			}
+			// A branchless (detached review) tree names its HEAD after '@',
+			// never an empty branch. The base clause appears only when a
+			// real base differing from that HEAD is known; the tree's own
+			// HEAD is never printed as its base.
+			head := w.HeadSHA7
+			if head == "" {
+				head = w.BaseSHA7
+			}
+			if w.BaseSHA7 != "" && w.BaseSHA7 != head {
+				fmt.Fprintf(&b, "- %s: %s @ %s (detached, base %s, %s)\n", w.Repo, w.Path, head, w.BaseSHA7, w.Mode)
+			} else {
+				fmt.Fprintf(&b, "- %s: %s @ %s (detached, %s)\n", w.Repo, w.Path, head, w.Mode)
+			}
 		}
 	}
 	if in.Objective != "" {

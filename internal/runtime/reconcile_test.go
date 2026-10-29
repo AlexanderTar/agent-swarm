@@ -679,6 +679,70 @@ func TestACompletedCheckpointAgainstAChildItemDoesNotKillTheOrchestrator(t *test
 	}
 }
 
+// TASK-1494: a completed session whose pane is still busy (post-merge work)
+// must NOT be killed once the 60 s grace has passed; the kill waits for the
+// pane to read idle. The daemon-written root-done checkpoint lands the same
+// way (same CompletedCheckpointAt), so one busy builder covers both.
+func TestAliveWithAnOldCompletedCheckpointAndBusyPaneIsNotKilled(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'docs' WHERE key = 'TASK-1'`)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	showPane(tm, w.Name, paneBusyFooter)
+	at.Advance(61 * time.Second)
+	before := len(tm.killed)
+	s.Reconcile(ctx)
+	if len(tm.killed) != before {
+		t.Fatalf("busy pane killed 61s after the completed checkpoint: killed = %v", tm.killed[before:])
+	}
+}
+
+// Companion: the same completed session at an idle prompt IS killed after the
+// grace, exactly as before.
+func TestAliveWithAnOldCompletedCheckpointAndIdlePaneIsKilled(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'docs' WHERE key = 'TASK-1'`)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	showPane(tm, w.Name, paneIdlePrompt)
+	at.Advance(61 * time.Second)
+	before := len(tm.killed)
+	s.Reconcile(ctx)
+	if len(tm.killed)-before != 1 {
+		t.Fatalf("idle pane 61s after the completed checkpoint: killed = %v, want one kill", tm.killed[before:])
+	}
+}
+
+// Companion: a busy pane is still killed at the hard cap, even if busy.
+func TestAliveWithAnOldCompletedCheckpointAndBusyPaneIsKilledAtCap(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'docs' WHERE key = 'TASK-1'`)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	showPane(tm, w.Name, paneBusyFooter)
+	at.Advance(killCompletedBusyCap + time.Second)
+	before := len(tm.killed)
+	s.Reconcile(ctx)
+	if len(tm.killed)-before != 1 {
+		t.Fatalf("busy pane past the cap: killed = %v, want one kill", tm.killed[before:])
+	}
+}
+
 // M6: a waiting session is never marked stale.
 func TestWaitingIsSetAndClearedAndNeverStale(t *testing.T) {
 	s, tm, at := clockStore(t)

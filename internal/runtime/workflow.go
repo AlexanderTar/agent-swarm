@@ -1145,6 +1145,14 @@ func (s *Store) stepBrief(ctx context.Context, wf wfRow, it items.Item, run wfRu
 		if err != nil {
 			return BriefInput{}, nil, err
 		}
+		// The review tree's own base_sha is the reviewed HEAD (Review
+		// stores BaseSHA=head); the honest base is the rw worktree's, in
+		// the same repo. Only a base differing from the head is shown.
+		if base, ok := s.rwBaseForReview(ctx, wf, run.ReviewWorktreeID); ok {
+			for i := range wts {
+				wts[i].BaseSHA7 = base
+			}
+		}
 		brief.Worktrees = wts
 	} else if it.Type == items.Story {
 		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
@@ -1819,15 +1827,53 @@ func (s *Store) BriefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]B
 		if _, err := s.checkWorktreePath(ctx, id, false); err != nil {
 			return nil, err
 		}
-		var repo, path, branch, base string
-		err = s.DB.QueryRowContext(ctx, `SELECT r.name, wt.path, COALESCE(wt.branch, ''), COALESCE(wt.base_sha, '')
-			FROM worktrees wt JOIN repos r ON r.id = wt.repo_id WHERE wt.id = ?`, id).Scan(&repo, &path, &branch, &base)
+		var repo, path, branch, base, detached string
+		err = s.DB.QueryRowContext(ctx, `SELECT r.name, wt.path, COALESCE(wt.branch, ''), COALESCE(wt.base_sha, ''),
+			COALESCE(wt.detached_sha, '')
+			FROM worktrees wt JOIN repos r ON r.id = wt.repo_id WHERE wt.id = ?`, id).Scan(&repo, &path, &branch, &base, &detached)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, BriefWorktree{Repo: repo, Path: path, Branch: branch, BaseSHA7: workflow.SHA7(base), Mode: w.Mode})
+		head := detached
+		if head == "" {
+			head = base
+		}
+		out = append(out, BriefWorktree{Repo: repo, Path: path, Branch: branch, BaseSHA7: workflow.SHA7(base),
+			HeadSHA7: workflow.SHA7(head), Mode: w.Mode})
 	}
 	return out, nil
+}
+
+// rwBaseForReview returns the base_sha7 of the workflow's rw worktree in
+// the same repo as the review tree, when it is known and differs from the
+// reviewed HEAD. A review tree's own base_sha is always its HEAD (Review
+// stores BaseSHA=head so sweeps can rely on it), so without this lookup the
+// brief would print the head as its own base.
+func (s *Store) rwBaseForReview(ctx context.Context, wf wfRow, reviewWTID string) (string, bool) {
+	var repoID, detached, base string
+	if err := s.DB.QueryRowContext(ctx, `SELECT repo_id, COALESCE(detached_sha, ''), COALESCE(base_sha, '')
+		FROM worktrees WHERE id = ?`, reviewWTID).Scan(&repoID, &detached, &base); err != nil {
+		return "", false
+	}
+	head := detached
+	if head == "" {
+		head = base
+	}
+	head7 := workflow.SHA7(head)
+	for _, w := range wf.worktrees() {
+		if w.Mode != "rw" {
+			continue
+		}
+		var rwRepo, rwBase string
+		if err := s.DB.QueryRowContext(ctx, `SELECT repo_id, COALESCE(base_sha, '') FROM worktrees WHERE id = ?`,
+			w.WorktreeID).Scan(&rwRepo, &rwBase); err != nil || rwRepo != repoID || rwBase == "" {
+			continue
+		}
+		if b7 := workflow.SHA7(rwBase); b7 != head7 {
+			return b7, true
+		}
+	}
+	return "", false
 }
 
 // notWaitingOnYou is spec B7's resume-refusal copy.
