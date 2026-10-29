@@ -2501,3 +2501,33 @@ func TestBlockedStopRecordsNoSample(t *testing.T) {
 		t.Fatalf("blocked Stop recorded a sample: %v", tok)
 	}
 }
+
+// Live probe 2026-10-29 (cursor-agent 2026.10.22, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
+// a queued follow-up fires beforeSubmitPrompt while a tool still runs. That is
+// not a turn start, so it must not clear the open tool call.
+func TestCursorQueuedFollowUpDoesNotEndTheTurn(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	h.DB.Exec(`UPDATE agents SET kind = 'cursor' WHERE id = 'agt_1'`)
+	handle := func(event, body string) {
+		t.Helper()
+		if _, err := h.Handle(ctx, runtime.Cursor, event, ses, []byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handle("preToolUse", `{"conversation_id":"c1","tool_name":"Shell","tool_input":{"command":"sleep 20"}}`)
+	handle("beforeSubmitPrompt", `{"conversation_id":"c1","prompt":"queued follow-up"}`)
+	if _, ok := h.RT.BusySince(ses); !ok {
+		t.Fatal("a queued follow-up's beforeSubmitPrompt cleared the open tool call while the tool still runs")
+	}
+	handle("postToolUse", `{"conversation_id":"c1","tool_name":"Shell","tool_input":{"command":"sleep 20"}}`)
+	if _, ok := h.RT.BusySince(ses); ok {
+		t.Fatal("postToolUse must close the call")
+	}
+	// the real end of the turn still clears a lost postToolUse
+	handle("preToolUse", `{"conversation_id":"c1","tool_name":"Shell","tool_input":{"command":"sleep 20"}}`)
+	handle("stop", `{"conversation_id":"c1"}`)
+	if _, ok := h.RT.BusySince(ses); ok {
+		t.Fatal("stop must clear an unclosed tool call")
+	}
+}
