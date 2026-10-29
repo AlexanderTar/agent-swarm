@@ -192,7 +192,7 @@ const ErrBriefTooLong = items.ErrBriefTooLong
 // empty for a branch tree, whose line names the branch instead.
 type BriefWorktree struct {
 	Repo, Path, Branch, BaseSHA7, Mode string
-	HeadSHA7                            string
+	HeadSHA7                           string
 }
 
 // BriefInput is RenderBrief's input (§9.4).
