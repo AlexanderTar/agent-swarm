@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,9 +41,9 @@ func TestReclaimPassWaitsForAnotherPassHoldingTheLock(t *testing.T) {
 	}
 }
 
-// A `git worktree remove` that deletes part of the tree and then fails must be
-// reported kept, with the error, and the row stays retained -- never removed.
-func TestReclaimReportsAPartialRemoveAsKeptWithTheError(t *testing.T) {
+// A Go-side delete that fails must be reported kept, with the error, and the
+// row stays retained -- never removed.
+func TestReclaimReportsAFailedRemoveAsKeptWithTheError(t *testing.T) {
 	s, _, at := clockStore(t)
 	ctx := context.Background()
 	ep := seedEpicWithTask(t, s)
@@ -53,22 +52,21 @@ func TestReclaimReportsAPartialRemoveAsKeptWithTheError(t *testing.T) {
 	repoID := seedRepo(t, s, "proj")
 	repoPath := repoPathFor(t, s, repoID)
 	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/partial", "owner_a", ep.ID)
-	real := s.Worktree.Run
-	s.Worktree.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
-			os.Remove(filepath.Join(wt.Path, "README.md")) // part of the tree goes, then it fails
-			return []byte("error: unlinkat failed"), errors.New("exit status 1")
-		}
-		return real(ctx, name, args...)
+	// Deny writes on the tree so os.RemoveAll fails: the bulk delete is
+	// Go-side now, so there is no `git worktree remove` to fake any more.
+	if err := os.Chmod(wt.Path, 0o500); err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = os.Chmod(wt.Path, 0o700) }()
 	at.Advance(2 * time.Hour)
 	res, err := s.ReclaimWorktreesWith(ctx, CleanupOptions{})
+	_ = os.Chmod(wt.Path, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r, ok := resultFor(res, wt.Path)
-	if !ok || r.Action != "kept" || !strings.Contains(r.Reason, "remove_failed") || !strings.Contains(r.Reason, "unlinkat failed") {
-		t.Fatalf("result = %+v, want kept with remove_failed and the git error", r)
+	if !ok || r.Action != "kept" || !strings.Contains(r.Reason, "remove_failed") || !strings.Contains(r.Reason, "permission denied") {
+		t.Fatalf("result = %+v, want kept with remove_failed and the delete error", r)
 	}
 	if st, reason := reclaimWorktreeState(t, s, wt.ID); st != "retained" || reason != "remove_failed" {
 		t.Fatalf("row = %s/%s, want retained/remove_failed", st, reason)

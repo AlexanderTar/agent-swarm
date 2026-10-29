@@ -625,8 +625,10 @@ func (s *Service) undoAdd(repoPath, path string, newBranch bool, branch string) 
 	ctx := context.Background()
 	// Go-side delete: the bulk `git worktree remove --force` runs under the
 	// 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
-	if err := s.deleteTree(ctx, repoPath, path); err != nil {
+	if err := s.deleteTree(ctx, path); err != nil {
 		s.logf("worktree: undo add %s failed: %v", path, err)
+	} else {
+		s.pruneUnlessPass(ctx, repoPath)
 	}
 	if newBranch {
 		if out, err := s.git(ctx, repoPath, "branch", "-D", branch); err != nil {
@@ -741,16 +743,17 @@ func (s *Service) removeStray(ctx context.Context, wt Worktree) (Worktree, error
 }
 
 // deleteTree removes path without a bulk `git worktree remove` subprocess:
-// os.RemoveAll has no 30 s execx cap, and `git worktree prune` only drops
-// the repo's admin entry for the worktree. A watchman cookie landing
-// mid-delete is cleared and the delete retried once, the way the old
-// "Directory not empty" retry did.
-func (s *Service) deleteTree(ctx context.Context, repoPath, path string) error {
+// os.RemoveAll has no 30 s execx cap. It never prunes: the reclaim pass
+// prunes once per repo after removing its trees, and every other caller
+// prunes after a successful delete via pruneUnlessPass.
+func (s *Service) deleteTree(ctx context.Context, path string) error {
 	s.clearWatchman(ctx, path)
 	if err := os.RemoveAll(path); err != nil {
 		return err
 	}
 	if fileExists(path) {
+		// A watchman cookie landed mid-delete; clear and retry once, the way
+		// the old "Directory not empty" retry did.
 		s.clearWatchman(ctx, path)
 		if err := os.RemoveAll(path); err != nil {
 			return err
@@ -759,10 +762,27 @@ func (s *Service) deleteTree(ctx context.Context, repoPath, path string) error {
 			return fmt.Errorf("worktree: %s still exists after delete", path)
 		}
 	}
-	if _, err := s.git(ctx, repoPath, "worktree", "prune"); err != nil {
-		s.logf("worktree: prune after removing %s failed: %v", path, err)
-	}
 	return nil
+}
+
+// inPass reports whether a reclaim pass is open on this Service: the runtime
+// loop prunes once per repo after removing its trees, so per-tree prunes are
+// skipped inside a pass.
+func (s *Service) inPass() bool {
+	s.pass.mu.Lock()
+	defer s.pass.mu.Unlock()
+	return s.pass.fetched != nil
+}
+
+// pruneUnlessPass drops the repo's admin entry for a just-deleted worktree,
+// except inside a reclaim pass, whose loop prunes once per repo.
+func (s *Service) pruneUnlessPass(ctx context.Context, repoPath string) {
+	if s.inPass() {
+		return
+	}
+	if _, err := s.git(ctx, repoPath, "worktree", "prune"); err != nil {
+		s.logf("worktree: prune after removing failed: %v", err)
+	}
 }
 
 // keepReason is remove's dirty and merged checks: "" means safe to delete.
@@ -907,12 +927,13 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if err != nil {
 		return Worktree{}, err
 	}
-	if derr := s.deleteTree(ctx, repoPath, wt.Path); derr != nil {
+	if derr := s.deleteTree(ctx, wt.Path); derr != nil {
 		s.logf("worktree: remove %s failed: %v", wt.Path, derr)
 		wt, err := s.retain(ctx, wt, "remove_failed")
 		wt.RemoveError = strings.TrimSpace(derr.Error())
 		return wt, err
 	}
+	s.pruneUnlessPass(ctx, repoPath)
 	wt.State, wt.RetainedReason = "removed", ""
 	now := s.Now()
 	wt.RemovedAt = &now
@@ -1178,9 +1199,10 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 	} else if fileExists(wt.Path) {
 		// Go-side delete: the bulk `git worktree remove --force` runs under
 		// the 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
-		if derr := s.deleteTree(ctx, repoPath, wt.Path); derr != nil {
+		if derr := s.deleteTree(ctx, wt.Path); derr != nil {
 			return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", wt.Path, derr)
 		}
+		s.pruneUnlessPass(ctx, repoPath)
 	}
 	now := s.Now()
 	wt.State, wt.RetainedReason, wt.RemovedAt = "removed", "", &now
@@ -1259,9 +1281,10 @@ func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, i
 	}
 	// Go-side delete: the bulk `git worktree remove --force` runs under the
 	// 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
-	if derr := s.deleteTree(ctx, repoPath, ref); derr != nil {
+	if derr := s.deleteTree(ctx, ref); derr != nil {
 		return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", ref, derr)
 	}
+	s.pruneUnlessPass(ctx, repoPath)
 	now := s.Now()
 	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil
 }
