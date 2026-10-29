@@ -628,7 +628,7 @@ func (s *Service) undoAdd(repoPath, path string, newBranch bool, branch string) 
 	if err := s.deleteTree(ctx, path); err != nil {
 		s.logf("worktree: undo add %s failed: %v", path, err)
 	} else {
-		s.pruneUnlessPass(ctx, repoPath)
+		s.prune(ctx, repoPath)
 	}
 	if newBranch {
 		if out, err := s.git(ctx, repoPath, "branch", "-D", branch); err != nil {
@@ -743,9 +743,8 @@ func (s *Service) removeStray(ctx context.Context, wt Worktree) (Worktree, error
 }
 
 // deleteTree removes path without a bulk `git worktree remove` subprocess:
-// os.RemoveAll has no 30 s execx cap. It never prunes: the reclaim pass
-// prunes once per repo after removing its trees, and every other caller
-// prunes after a successful delete via pruneUnlessPass.
+// os.RemoveAll has no 30 s execx cap. It never prunes; every caller prunes
+// the repo right after a successful delete.
 func (s *Service) deleteTree(ctx context.Context, path string) error {
 	s.clearWatchman(ctx, path)
 	if err := os.RemoveAll(path); err != nil {
@@ -765,21 +764,12 @@ func (s *Service) deleteTree(ctx context.Context, path string) error {
 	return nil
 }
 
-// inPass reports whether a reclaim pass is open on this Service: the runtime
-// loop prunes once per repo after removing its trees, so per-tree prunes are
-// skipped inside a pass.
-func (s *Service) inPass() bool {
-	s.pass.mu.Lock()
-	defer s.pass.mu.Unlock()
-	return s.pass.fetched != nil
-}
-
-// pruneUnlessPass drops the repo's admin entry for a just-deleted worktree,
-// except inside a reclaim pass, whose loop prunes once per repo.
-func (s *Service) pruneUnlessPass(ctx context.Context, repoPath string) {
-	if s.inPass() {
-		return
-	}
+// prune drops the repo's admin entry for a just-deleted worktree. It runs on
+// every delete, even inside a reclaim pass: skipping it while any pass was
+// open left `git worktree list` naming the path, so a later add on the same
+// path or branch failed with "already registered" (BUG-137 fix round). The
+// pass loop's own once-per-repo prune stays as a second sweep.
+func (s *Service) prune(ctx context.Context, repoPath string) {
 	if _, err := s.git(ctx, repoPath, "worktree", "prune"); err != nil {
 		s.logf("worktree: prune after removing failed: %v", err)
 	}
@@ -915,8 +905,12 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 		// reads as dirty (deletions), but the deletions ARE the delete: when
 		// porcelain lists only tracked deletions plus watchman cookies and
 		// the branch is otherwise merged, retry the delete instead of keeping
-		// the tree forever. Real uncommitted work still retains.
-		if !(wt.RetainedReason == "remove_failed" && reason == "dirty" && s.isInterruptedDelete(ctx, wt)) {
+		// the tree forever. When the kill landed after the `.git` file was
+		// already deleted, keepReason can only say not_a_worktree, but git's
+		// own list still registers the path: a remove_failed row that is
+		// still registered and whose branch is merged from the repo side
+		// retries too. Real uncommitted work still retains.
+		if !s.retryInterruptedDelete(ctx, wt, reason) {
 			return s.retain(ctx, wt, reason)
 		}
 	}
@@ -933,13 +927,71 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 		wt.RemoveError = strings.TrimSpace(derr.Error())
 		return wt, err
 	}
-	s.pruneUnlessPass(ctx, repoPath)
+	s.prune(ctx, repoPath)
 	wt.State, wt.RetainedReason = "removed", ""
 	now := s.Now()
 	wt.RemovedAt = &now
 	_, err = s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'removed', retained_reason = NULL,
 		removed_at = ? WHERE id = ?`, db.Millis(now), wt.ID)
 	return wt, err
+}
+
+// retryInterruptedDelete reports whether a retained/remove_failed row reads
+// as a half-finished bulk delete worth retrying: porcelain shows only tracked
+// deletions of a merged tree, or the `.git` file is already gone while git's
+// own list still registers the path and the branch is merged from the repo
+// side. Anything else is real work (or an unknown folder) and stays retained.
+func (s *Service) retryInterruptedDelete(ctx context.Context, wt Worktree, reason string) bool {
+	if wt.RetainedReason != "remove_failed" {
+		return false
+	}
+	if reason == "dirty" {
+		return s.isInterruptedDelete(ctx, wt)
+	}
+	if reason == "not_a_worktree" {
+		return s.interruptedWithoutGit(ctx, wt)
+	}
+	return false
+}
+
+// interruptedWithoutGit is the no-`.git` half of an interrupted delete: the
+// kill (or a partially failed delete) removed the `.git` file early, so git
+// can no longer run inside the tree, but the repo's worktree list still names
+// the path and the branch is merged when judged from the repo.
+func (s *Service) interruptedWithoutGit(ctx context.Context, wt Worktree) bool {
+	if _, err := os.Lstat(filepath.Join(wt.Path, ".git")); err == nil {
+		return false
+	}
+	if !s.registered(ctx, wt) {
+		return false
+	}
+	return s.branchMergedFromRepo(ctx, wt)
+}
+
+// branchMergedFromRepo judges wt's branch merged without running git inside
+// the tree (its `.git` is gone): merged into the base, or vouched for by
+// merged evidence. A squash-merged branch with no evidence row stays
+// retained; see docs/worktree-cleanup.md.
+func (s *Service) branchMergedFromRepo(ctx context.Context, wt Worktree) bool {
+	repoPath, err := s.repoPath(ctx, wt.RepoID)
+	if err != nil {
+		return false
+	}
+	head := wt.Branch
+	if head == "" {
+		head = wt.DetachedSHA
+	}
+	if head == "" {
+		return false
+	}
+	if _, err := s.git(ctx, repoPath, "merge-base", "--is-ancestor", head, wt.BaseRef); err == nil {
+		return true
+	}
+	out, err := s.git(ctx, repoPath, "rev-parse", "--verify", "--quiet", head)
+	if err != nil {
+		return false
+	}
+	return s.Evidence != nil && s.Evidence.Merged(ctx, wt, repoPath, strings.TrimSpace(string(out)))
 }
 
 // isInterruptedDelete reports whether wt looks stranded halfway through a
@@ -1202,7 +1254,7 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 		if derr := s.deleteTree(ctx, wt.Path); derr != nil {
 			return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", wt.Path, derr)
 		}
-		s.pruneUnlessPass(ctx, repoPath)
+		s.prune(ctx, repoPath)
 	}
 	now := s.Now()
 	wt.State, wt.RetainedReason, wt.RemovedAt = "removed", "", &now
@@ -1284,7 +1336,7 @@ func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, i
 	if derr := s.deleteTree(ctx, ref); derr != nil {
 		return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", ref, derr)
 	}
-	s.pruneUnlessPass(ctx, repoPath)
+	s.prune(ctx, repoPath)
 	now := s.Now()
 	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil
 }
