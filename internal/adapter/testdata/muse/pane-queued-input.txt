@@ -1,0 +1,9 @@
+◇ Running command · Run first sleep 25 — running (2s · esc to interrupt)
+└ (ctrl+alt(option)+b to send to background)
+◆ Queued input · ↑ to edit
+├ NOTICE 1: swarm inbox test line, reply with ack1
+└ NOTICE 2: swarm inbox test line, reply with ack2
+── Voice input (alt(option)+v to start) ────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  muse-spark-1.3 · minimal · /p/t/c/-/4/s/probe/ws · YOLO                steering the running turn

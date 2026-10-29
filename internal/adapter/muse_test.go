@@ -1125,6 +1125,19 @@ func TestMusePasteReady(t *testing.T) {
 	}
 }
 
+// Muse 1.4.14 probe (2026-10-29): a line pasted while a tool runs shows as a
+// "Queued input" block until the next model boundary drains it. WakeDue holds
+// its re-paste while the block is on screen.
+func TestMuseQueuedInput(t *testing.T) {
+	a := newMuse(testDeps(t))
+	if !a.QueuedInput(pane(t, "muse", "pane-queued-input.txt")) {
+		t.Error("pane with a Queued input block must report queued input")
+	}
+	if a.QueuedInput(pane(t, "muse", "pane-idle.txt")) || a.QueuedInput("◈ Running command (12s · esc to interrupt)\n─────\n❯ \n─────\n") {
+		t.Error("a pane without the block must not report queued input")
+	}
+}
+
 // TestMuseLastReply: the newest run's committed assistant text at or after
 // since, joined by newline; a missing log is unreadable (print-then-ask fails open).
 func TestMuseLastReply(t *testing.T) {

@@ -211,6 +211,9 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < cool && !r.NewestPendingAt.After(*r.LastWakeAt) {
 			continue
 		}
+		if s.noticeStillQueued(ctx, r) {
+			continue
+		}
 		notice, err := s.InboxNotice(ctx, r.SessionID, r.AgentID, r.AgentName, r.ItemKey)
 		inboxRendered := err == nil && !r.HasControl // only a real inbox notice spends the trailer
 		if err != nil {
@@ -274,6 +277,24 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		_ = s.tryPaste(ctx, ad, r, notice, inboxRendered)
 	}
 	return nil
+}
+
+// noticeStillQueued reports whether r's batch was already pasted and the pane
+// still shows that paste as queued input. A TUI that queues a mid-turn paste
+// (Muse: "Queued input") replays it at its next model boundary, so pasting the
+// batch again only stacks a duplicate notice (seen live 2026-10-29: a re-paste
+// 31 s after the first, both drained). Held until the queue drains, at most
+// repasteCap after the wake so a misread pane cannot silence a session.
+func (s *Store) noticeStillQueued(ctx context.Context, r wakeRow) bool {
+	if r.HasControl || r.LastWakeAt == nil || r.NewestPendingAt.After(*r.LastWakeAt) || s.Now().Sub(*r.LastWakeAt) >= repasteCap {
+		return false
+	}
+	ad, ok := s.Adapters[r.Kind].(interface{ QueuedInput(capture string) bool })
+	if !ok {
+		return false
+	}
+	capture, err := s.Tmux.Capture(ctx, r.TmuxName, 20)
+	return err == nil && ad.QueuedInput(capture)
 }
 
 // pasteSessionRenames pastes each live session's pending rename command
@@ -428,6 +449,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 		n = r.BatchPastes + 1 // a re-paste of a batch an earlier wake already covered
 	}
 	s.setBatchPastes(r.SessionID, n)
+	s.logf("wake: pasted %s (%d pending)", r.AgentName, r.Pending)
 	if err := s.markWoken(ctx, r.SessionID, false); err != nil {
 		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 		s.logf("wake: markWoken for %s failed (fail=%d backoff=%s)", r.AgentName, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))

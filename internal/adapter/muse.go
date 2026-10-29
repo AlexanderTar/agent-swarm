@@ -461,6 +461,17 @@ func (m *Muse) PasteReady(capture string) bool {
 	return !museQuestionDialog.MatchString(StripANSI(capture))
 }
 
+// museQueuedInput is the block Muse draws for a line submitted mid-turn: it
+// stays until the next model boundary drains it into the turn (probed live on
+// 1.4.14, 2026-10-29).
+var museQueuedInput = regexp.MustCompile(`(?m)^\s*◆ Queued input`)
+
+// QueuedInput reports whether a mid-turn paste is still waiting in Muse's queue
+// (runtime noticeStillQueued holds the re-paste of the batch meanwhile).
+func (m *Muse) QueuedInput(capture string) bool {
+	return museQueuedInput.MatchString(StripANSI(capture))
+}
+
 // museTrust is D7 (dialog-needs-you spec): --yolo --trust-workspace already
 // avoids this dialog (P-M1), confirmed live not to trigger any blocking
 // first-run/foreign-context dialog (PM.1, docs/plans/2026-09-25-muse-isolation-probe.md).
