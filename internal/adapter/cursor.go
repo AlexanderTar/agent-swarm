@@ -121,12 +121,20 @@ var (
 	// "ctrl+c to stop" on that line.
 	cursorIdle = regexp.MustCompile("(?m)^(?:\u001b\\[[0-9;]*m|\\s)*\u2192\\s*(?:(?:\u001b\\[[0-9;]*m)*(?:Add a follow-up|[^\u001b\n]*\u001b\\[(?:0;)?2m[^\n]*))?(?:\u001b\\[[0-9;]*m|\\s)*$")
 	cursorBusy = regexp.MustCompile(`ctrl\+c to stop`)
+	// cursorQueued is the follow-ups box hint (probe 2026-10-29): a line pasted or
+	// queued while no turn runs can sit there and never start.
+	cursorQueued = regexp.MustCompile(`enter steer\s*·[^\n]*esc cancel`)
 )
 
 func (c *Cursor) ProcessNames() []*regexp.Regexp { return cursorProcess }
 func (c *Cursor) IdlePrompt() *regexp.Regexp     { return cursorIdle }
 func (c *Cursor) Busy() *regexp.Regexp           { return cursorBusy }
-func (c *Cursor) Idle(capture string) bool       { return idle(c, capture) }
+
+// Idle is false while the follow-ups box holds an item, so a notice never stacks
+// on a stranded one; the "Stranded follow-up" prompt pattern submits it.
+func (c *Cursor) Idle(capture string) bool {
+	return idle(c, capture) && !cursorQueued.MatchString(StripANSI(capture))
+}
 
 var (
 	cursorAllowDeny = regexp.MustCompile(`(?i)allow\s*/\s*deny`)
@@ -146,6 +154,9 @@ func (c *Cursor) PromptPatterns() []PromptMatcher {
 	return []PromptMatcher{
 		{Match: cursorAllowDeny, Title: "Permission prompt (Allow/Deny)", Action: "Enter"},
 		{Match: cursorContinue, Title: "Continue confirmation", Action: "y"},
+		// Behind a running turn the queued item runs by itself; with no busy footer it
+		// is stranded (server error, probe 2026-10-29): select it and submit.
+		{Match: cursorQueued, Exclude: cursorBusy, Title: "Stranded follow-up", Action: "Up+Enter"},
 		{Match: cursorTrust, Require: cursorTrustQuit, Title: "Trust this workspace"},
 	}
 }

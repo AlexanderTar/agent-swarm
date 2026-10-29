@@ -311,3 +311,43 @@ func TestCursorMCPEnvPlaceholdersAreDocumentedInOneMap(t *testing.T) {
 		}
 	}
 }
+
+// Live probe 2026-10-29 (cursor-agent 2026.10.22, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
+// after a server error a pasted prompt sat in the "follow-ups" box and never ran,
+// the pane showing "→ Add a follow-up" and no busy footer. The fixtures are composed
+// from that probe's description (box hint "enter steer · ↑ select/edit · esc cancel"),
+// not captured live. An idle pane holding a queued item is not idle (no more pastes
+// stack on it) and gets Up+Enter; the same box under a busy footer is a normal
+// queued follow-up and is left alone.
+func TestCursorStrandedFollowUpIsSubmitted(t *testing.T) {
+	a := newCursor(testDeps(t))
+	stranded := pane(t, "cursor", "pane-followups-stranded.txt")
+	if a.Idle(stranded) {
+		t.Error("a pane whose follow-ups box holds a queued item must not read idle: a paste would stack on it")
+	}
+	var pm *PromptMatcher
+	for _, p := range a.PromptPatterns() {
+		if p.Title == "Stranded follow-up" {
+			p := p
+			pm = &p
+		}
+	}
+	if pm == nil {
+		t.Fatal("no PromptPatterns entry titled \"Stranded follow-up\"")
+	}
+	hits := func(capture string) bool {
+		return pm.Match.MatchString(capture) && (pm.Exclude == nil || !pm.Exclude.MatchString(capture))
+	}
+	if !hits(stranded) {
+		t.Error("the stranded pane must match")
+	}
+	if pm.Action != "Up+Enter" {
+		t.Errorf("Action = %q, want Up+Enter (select the queued item, submit it)", pm.Action)
+	}
+	if hits(pane(t, "cursor", "pane-followups-busy.txt")) {
+		t.Error("a follow-up queued behind a running turn must be left alone")
+	}
+	if hits(pane(t, "cursor", "pane-idle.txt")) {
+		t.Error("an empty idle pane must not match")
+	}
+}

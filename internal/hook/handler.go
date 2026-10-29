@@ -750,6 +750,10 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 			h.RT.ToolStarted(s.ID)
 		case ev == "PostToolUse":
 			h.RT.ToolFinished(s.ID)
+		// A cursor queued follow-up fires beforeSubmitPrompt while a tool still runs
+		// (probe 2026-10-29), so for cursor it is no turn boundary: stop and
+		// sessionStart close the turn, and the ceiling bounds a lost postToolUse.
+		case ev == "UserPromptSubmit" && kind == runtime.Cursor:
 		case endsTurn(ev) && !d.Block, ev == "UserPromptSubmit", ev == "SessionStart":
 			h.RT.TurnEnded(s.ID)
 		}
@@ -763,13 +767,19 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	}
 	// AGY accepts injected context only on PreInvocation, but PostToolUse has
 	// already consumed it (answered question, compaction flag). Hold it for
-	// the next PreInvocation instead of dropping it.
+	// the next PreInvocation instead of dropping it. PreToolUse is held the
+	// same way: injectSteps there fails the tool call (probe 2026-10-29).
 	if s0.Kind == runtime.Agy && !d.Block {
 		h.mu.Lock()
 		if h.deferred == nil {
 			h.deferred = make(map[string]string)
 		}
 		switch ev {
+		case "PreToolUse":
+			if d.Context != "" {
+				h.deferred[s.ID] = strings.TrimSpace(h.deferred[s.ID] + " " + d.Context)
+				d.Context = ""
+			}
 		case "PostToolUse":
 			// PostInvocation also normalizes here but accepts injectSteps,
 			// so its context goes out now; only raw PostToolUse is held.

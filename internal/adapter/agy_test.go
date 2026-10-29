@@ -938,3 +938,18 @@ func TestAgyAssistantTextSinceLastTurnResetsOnToolResult(t *testing.T) {
 		t.Fatalf("text = %q, want the summary excluded (it precedes a tool result)", text)
 	}
 }
+
+// Live probe 2026-10-29 (agy 1.4.9, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
+// a PreToolUse output {"injectSteps":[...]} is rejected ("unknown field
+// injectSteps") and the TOOL CALL FAILS. Context on PreToolUse must never be
+// emitted for agy; the handler holds it for the next PreInvocation instead.
+func TestAgyHookOutputNeverInjectsStepsOnPreToolUse(t *testing.T) {
+	a := newAgy(testDeps(t))
+	out, err := a.HookOutput("PreToolUse", HookDecision{Context: "T"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "injectSteps") {
+		t.Fatalf("PreToolUse output = %s: agy rejects injectSteps there and fails the tool call", out)
+	}
+}

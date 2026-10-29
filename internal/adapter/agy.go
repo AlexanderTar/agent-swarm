@@ -304,6 +304,12 @@ func (a *Agy) HookOutput(event string, d HookDecision) ([]byte, error) {
 	if event == "PostToolUse" {
 		return []byte("{}"), nil
 	}
+	// PreToolUse rejects injectSteps too, and the rejection fails the tool call
+	// (probe 2026-10-29, agy 1.4.9): emit nothing. The handler holds the context
+	// for the next PreInvocation.
+	if event == "PreToolUse" {
+		return nil, nil
+	}
 	// P0-2: ephemeralMessage is visible to the model for this invocation only;
 	// userMessage would show up as a user prompt.
 	return json.Marshal(map[string]any{"injectSteps": []any{
