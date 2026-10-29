@@ -623,8 +623,12 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 // a fresh context: ctx may be the very thing that cancelled the insert.
 func (s *Service) undoAdd(repoPath, path string, newBranch bool, branch string) {
 	ctx := context.Background()
-	if out, err := s.git(ctx, repoPath, "worktree", "remove", "--force", path); err != nil {
-		s.logf("worktree: undo add %s failed: %v: %s", path, err, out)
+	// Go-side delete: the bulk `git worktree remove --force` runs under the
+	// 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
+	if err := s.deleteTree(ctx, path); err != nil {
+		s.logf("worktree: undo add %s failed: %v", path, err)
+	} else {
+		s.prune(ctx, repoPath)
 	}
 	if newBranch {
 		if out, err := s.git(ctx, repoPath, "branch", "-D", branch); err != nil {
@@ -736,6 +740,39 @@ func (s *Service) removeStray(ctx context.Context, wt Worktree) (Worktree, error
 		}
 	}
 	return s.markRemoved(ctx, wt)
+}
+
+// deleteTree removes path without a bulk `git worktree remove` subprocess:
+// os.RemoveAll has no 30 s execx cap. It never prunes; every caller prunes
+// the repo right after a successful delete.
+func (s *Service) deleteTree(ctx context.Context, path string) error {
+	s.clearWatchman(ctx, path)
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	if fileExists(path) {
+		// A watchman cookie landed mid-delete; clear and retry once, the way
+		// the old "Directory not empty" retry did.
+		s.clearWatchman(ctx, path)
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		if fileExists(path) {
+			return fmt.Errorf("worktree: %s still exists after delete", path)
+		}
+	}
+	return nil
+}
+
+// prune drops the repo's admin entry for a just-deleted worktree. It runs on
+// every delete, even inside a reclaim pass: skipping it while any pass was
+// open left `git worktree list` naming the path, so a later add on the same
+// path or branch failed with "already registered" (BUG-137 fix round). The
+// pass loop's own once-per-repo prune stays as a second sweep.
+func (s *Service) prune(ctx context.Context, repoPath string) {
+	if _, err := s.git(ctx, repoPath, "worktree", "prune"); err != nil {
+		s.logf("worktree: prune after removing failed: %v", err)
+	}
 }
 
 // keepReason is remove's dirty and merged checks: "" means safe to delete.
@@ -864,7 +901,18 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	}
 
 	if reason := s.keepReason(ctx, wt); reason != "" {
-		return s.retain(ctx, wt, reason)
+		// A row stranded retained/remove_failed by a SIGKILLed bulk delete
+		// reads as dirty (deletions), but the deletions ARE the delete: when
+		// porcelain lists only tracked deletions plus watchman cookies and
+		// the branch is otherwise merged, retry the delete instead of keeping
+		// the tree forever. When the kill landed after the `.git` file was
+		// already deleted, keepReason can only say not_a_worktree, but git's
+		// own list still registers the path: a remove_failed row that is
+		// still registered and whose branch is merged from the repo side
+		// retries too. Real uncommitted work still retains.
+		if !s.retryInterruptedDelete(ctx, wt, reason) {
+			return s.retain(ctx, wt, reason)
+		}
 	}
 	if isStray, _ := s.stray(ctx, wt); isStray {
 		return s.removeStray(ctx, wt)
@@ -873,33 +921,133 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if err != nil {
 		return Worktree{}, err
 	}
-	rmArgs := []string{"worktree", "remove", wt.Path}
-	if s.discardable(ctx, wt) {
-		rmArgs = []string{"worktree", "remove", "--force", wt.Path}
-	}
-	s.clearWatchman(ctx, wt.Path)
-	out, rerr := s.git(ctx, repoPath, rmArgs...)
-	if rerr != nil && strings.Contains(string(out)+rerr.Error(), "Directory not empty") {
-		// A watchman cookie landed while git was deleting the folder.
-		s.clearWatchman(ctx, wt.Path)
-		out, rerr = s.git(ctx, repoPath, rmArgs...)
-		// git may already have taken .git before it failed.
-		if isStray, cookiesOnly := s.stray(ctx, wt); rerr != nil && isStray && cookiesOnly {
-			return s.removeStray(ctx, wt)
-		}
-	}
-	if rerr != nil {
-		s.logf("worktree: remove %s failed: %v: %s", wt.Path, rerr, out)
+	if derr := s.deleteTree(ctx, wt.Path); derr != nil {
+		s.logf("worktree: remove %s failed: %v", wt.Path, derr)
 		wt, err := s.retain(ctx, wt, "remove_failed")
-		wt.RemoveError = strings.TrimSpace(rerr.Error() + ": " + string(out))
+		wt.RemoveError = strings.TrimSpace(derr.Error())
 		return wt, err
 	}
+	s.prune(ctx, repoPath)
 	wt.State, wt.RetainedReason = "removed", ""
 	now := s.Now()
 	wt.RemovedAt = &now
 	_, err = s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'removed', retained_reason = NULL,
 		removed_at = ? WHERE id = ?`, db.Millis(now), wt.ID)
 	return wt, err
+}
+
+// retryInterruptedDelete reports whether a retained/remove_failed row reads
+// as a half-finished bulk delete worth retrying: porcelain shows only tracked
+// deletions of a merged tree, or the `.git` file is already gone while git's
+// own list still registers the path and the branch is merged from the repo
+// side. Anything else is real work (or an unknown folder) and stays retained.
+func (s *Service) retryInterruptedDelete(ctx context.Context, wt Worktree, reason string) bool {
+	if wt.RetainedReason != "remove_failed" {
+		return false
+	}
+	if reason == "dirty" {
+		return s.isInterruptedDelete(ctx, wt)
+	}
+	if reason == "not_a_worktree" {
+		return s.interruptedWithoutGit(ctx, wt)
+	}
+	return false
+}
+
+// interruptedWithoutGit is the no-`.git` half of an interrupted delete: the
+// kill (or a partially failed delete) removed the `.git` file early, so git
+// can no longer run inside the tree, but the repo's worktree list still names
+// the path and the branch is merged when judged from the repo.
+func (s *Service) interruptedWithoutGit(ctx context.Context, wt Worktree) bool {
+	if _, err := os.Lstat(filepath.Join(wt.Path, ".git")); err == nil {
+		return false
+	}
+	if !s.registered(ctx, wt) {
+		return false
+	}
+	return s.branchMergedFromRepo(ctx, wt)
+}
+
+// branchMergedFromRepo judges wt's branch merged without running git inside
+// the tree (its `.git` is gone): merged into the base, or vouched for by
+// merged evidence. A squash-merged branch with no evidence row stays
+// retained; see docs/worktree-cleanup.md.
+func (s *Service) branchMergedFromRepo(ctx context.Context, wt Worktree) bool {
+	repoPath, err := s.repoPath(ctx, wt.RepoID)
+	if err != nil {
+		return false
+	}
+	head := wt.Branch
+	if head == "" {
+		head = wt.DetachedSHA
+	}
+	if head == "" {
+		return false
+	}
+	if _, err := s.git(ctx, repoPath, "merge-base", "--is-ancestor", head, wt.BaseRef); err == nil {
+		return true
+	}
+	out, err := s.git(ctx, repoPath, "rev-parse", "--verify", "--quiet", head)
+	if err != nil {
+		return false
+	}
+	return s.Evidence != nil && s.Evidence.Merged(ctx, wt, repoPath, strings.TrimSpace(string(out)))
+}
+
+// isInterruptedDelete reports whether wt looks stranded halfway through a
+// bulk delete: porcelain lists only tracked deletions (plus watchman
+// cookies, which are never dirt) and the branch is otherwise merged. A
+// modification, add, rename, untracked path, or unmerged branch reads as
+// real work and returns false, so the normal dirty path still retains.
+func (s *Service) isInterruptedDelete(ctx context.Context, wt Worktree) bool {
+	if !s.onlyDeletions(ctx, wt.Path) {
+		return false
+	}
+	return s.mergedForRemove(ctx, wt)
+}
+
+// onlyDeletions is true when status --porcelain lists at least one tracked
+// deletion and nothing else except watchman cookies.
+func (s *Service) onlyDeletions(ctx context.Context, path string) bool {
+	out, err := s.git(ctx, path, "--no-optional-locks", "status", "--porcelain")
+	if err != nil {
+		return false
+	}
+	saw := false
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "?? "+cookiePrefix) {
+			continue
+		}
+		saw = true
+		if !isDeletion(line) {
+			return false
+		}
+	}
+	return saw
+}
+
+// isDeletion is a porcelain line deleting a tracked file with no other
+// change staged or unstaged: " D path" or "D  path". Mixed (MD), both-deleted
+// (DD), renames, and unmerged entries are not deletions.
+func isDeletion(line string) bool {
+	if len(line) < 4 || (line[2] != ' ' && line[2] != '\t') {
+		return false
+	}
+	x, y := line[0], line[1]
+	return (x == 'D' && y == ' ') || (x == ' ' && y == 'D')
+}
+
+// mergedForRemove mirrors keepReason's merged half: discardable review trees
+// are already removable, so this covers branch trees (merged or pushed) and
+// detached trees (still at sha or merged elsewhere).
+func (s *Service) mergedForRemove(ctx context.Context, wt Worktree) bool {
+	if wt.Branch == "" {
+		return s.atDetachedSHA(ctx, wt) || s.mergedOnlyElsewhere(ctx, wt)
+	}
+	return s.mergedOrPushed(ctx, wt)
 }
 
 // mergedOnlyElsewhere is merged evidence 2-4 for the tree's current HEAD.
@@ -1101,9 +1249,12 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 		}
 		_, _ = s.git(ctx, repoPath, "worktree", "prune")
 	} else if fileExists(wt.Path) {
-		if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", wt.Path); rerr != nil {
-			return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", wt.Path, rerr, strings.TrimSpace(string(out)))
+		// Go-side delete: the bulk `git worktree remove --force` runs under
+		// the 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
+		if derr := s.deleteTree(ctx, wt.Path); derr != nil {
+			return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", wt.Path, derr)
 		}
+		s.prune(ctx, repoPath)
 	}
 	now := s.Now()
 	wt.State, wt.RetainedReason, wt.RemovedAt = "removed", "", &now
@@ -1126,7 +1277,8 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 }
 
 // discardUntracked removes a directory under the worktrees dir that has no
-// row, via `git worktree remove` in the repo whose worktree list names it.
+// row, with a Go-side delete in the repo whose worktree list names it (no
+// capped `git worktree remove --force`).
 // The branch is kept. Anything else is an unknown ref.
 func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, int, error) {
 	unknown := fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
@@ -1179,9 +1331,12 @@ func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, i
 			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
 		}
 	}
-	if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", ref); rerr != nil {
-		return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", ref, rerr, strings.TrimSpace(string(out)))
+	// Go-side delete: the bulk `git worktree remove --force` runs under the
+	// 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
+	if derr := s.deleteTree(ctx, ref); derr != nil {
+		return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", ref, derr)
 	}
+	s.prune(ctx, repoPath)
 	now := s.Now()
 	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil
 }

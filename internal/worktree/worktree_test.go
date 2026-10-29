@@ -484,17 +484,15 @@ func TestRetainedReasonIsAlwaysADocumentedValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	real := s.Run
-	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
-			return nil, errors.New("boom: simulated git worktree remove failure")
-		}
-		return real(ctx, name, args...)
+	// The bulk delete is Go-side (no capped `git worktree remove`): force
+	// its failure by denying writes on the tree so os.RemoveAll fails.
+	if err := os.Chmod(failed.Path, 0o500); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := s.Remove(ctx, failed.ID, "agt_1"); err != nil {
 		t.Fatal(err)
 	}
-	s.Run = real
+	_ = os.Chmod(failed.Path, 0o700)
 
 	clean, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reason-clean",
 		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
@@ -1201,13 +1199,12 @@ func TestReclaimOneRetainsOnRemoveFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	real := s.Run
-	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
-			return nil, errors.New("boom: simulated git worktree remove failure")
-		}
-		return real(ctx, name, args...)
+	// The bulk delete is Go-side (no capped `git worktree remove`): force
+	// its failure by denying writes on the tree so os.RemoveAll fails.
+	if err := os.Chmod(wt.Path, 0o500); err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = os.Chmod(wt.Path, 0o700) }()
 	out, err := s.ReclaimOne(ctx, wt)
 	if err != nil {
 		t.Fatal(err)
@@ -1215,6 +1212,7 @@ func TestReclaimOneRetainsOnRemoveFailure(t *testing.T) {
 	if out.State != "retained" || out.RetainedReason != "remove_failed" {
 		t.Fatalf("worktree = %+v, want retained/remove_failed", out)
 	}
+	_ = os.Chmod(wt.Path, 0o700)
 	if _, err := os.Stat(wt.Path); err != nil {
 		t.Fatalf("a retain-on-failure must leave the directory untouched: %v", err)
 	}

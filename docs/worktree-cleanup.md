@@ -61,8 +61,9 @@ Cause (BUG-132): watchman, when it watches a worktree, keeps writing `.watchman-
 
 What `remove` does now (`internal/worktree/worktree.go`):
 
-- Before `git worktree remove` it runs `watchman --no-spawn watch-del <path>` (`--no-spawn` so a remove never starts a watchman server; errors and a missing watchman are ignored) and deletes `.watchman-cookie-*` in the folder. Cookies are never dirt: `DirtyStrict` and the build-churn check ignore `??` lines for them.
-- On `Directory not empty` it clears cookies and retries once.
+- Safety checks run first (§12.1 via `keepReason`: stray, discardable, `DirtyStrict`, merged). Only then the bulk delete, which is Go-side: `watchman --no-spawn watch-del <path>` (`--no-spawn` so a remove never starts a watchman server; errors and a missing watchman are ignored), delete `.watchman-cookie-*`, `os.RemoveAll`, then `git worktree prune` in the repo on every delete, including inside a reclaim pass (whose loop additionally prunes once per repo, as a second sweep). Prune is one cheap admin-entry drop, not a bulk delete, so the 30 s execx cap below cannot strand it; skipping it while a pass was open left `git worktree list` naming the path and a later add on the same path or branch failed with "already registered". No `git worktree remove` subprocess runs, so the cap cannot SIGKILL the delete. A cookie landing mid-delete is cleared and the delete retried once. Cookies are never dirt: `DirtyStrict`, the build-churn check, and the interrupted-delete check ignore `??` lines for them.
+- A row stranded `retained/remove_failed` by an older SIGKILLed `git worktree remove` reads as dirty (tracked files show as `D`), but the deletions ARE the delete: when porcelain lists only tracked deletions (` D` / `D ` lines, plus watchman cookies) and the branch is otherwise merged, the next remove retries the delete instead of keeping the tree. Any modification, add, rename, untracked path, or unmerged branch still retains: real work is never deleted by a retry.
+- When the kill landed after the `.git` file was already deleted, git can no longer run inside the tree, so the row reads as `not_a_worktree`. A `remove_failed` row that git's `worktree list` still registers, and whose branch is merged judged from the repo side (`merge-base --is-ancestor <branch> <base_ref>` in the repo, or merged evidence), retries the delete too. An unmerged branch or a missing registration still retains, as does dirt beyond bare deletions when `.git` is still present. Known gap: a `remove_failed` row with no `.git`, leftover files, and NO registration (the kill finished the admin removal but not the files) stays `not_a_worktree` — look at the folder, then `swarm cleanup --discard <path-or-id>`. A squash-merged branch with no evidence row and no `.git` stays retained for the same reason.
 - A folder with no `.git`, or whose `.git` file points at a worktree that `git worktree list --porcelain` no longer names, is a stray, not a worktree. Cookies only (plus a dangling `.git` file, or empty): `os.RemoveAll`, `git worktree prune`, row `removed`. Anything else: row `retained` with reason `not_a_worktree`, folder untouched. The retained row and `swarm cleanup` show the reason (`worktree kept <path> (not_a_worktree)`).
 - The reclaim pass re-judges retained rows, so an old stuck `dirty` row with a cookie-only folder is cleared on the next pass without manual steps.
 
@@ -71,6 +72,18 @@ What to do with a `not_a_worktree` row: look at the folder, then `swarm cleanup 
 Never `rm -rf` a worktree by hand while watchman runs: it can recreate the folder with cookies. Never read a `git status` failure in a folder with no `.git` as work to keep; check `.git` first.
 
 Reproduce: `go test ./internal/worktree -run 'WatchmanCookies|NonGit|NotAWorktree'` and `go test ./internal/runtime -run StuckDirtyRow`.
+
+## Bulk deletes and the 30 s execx cap
+
+Cause (BUG-137): `worktree.Service.Run` is `execx.Run` (`cmd/swarm/daemon.go`), which SIGKILLs any command at 30 s when the context carries no deadline (`internal/execx/execx.go`). MCP and reconcile contexts carry none. `git worktree remove [--force]` on a tree holding multi-GB ignored dirs (node_modules, ios/Pods, Gradle output) outlasts the cap and is killed mid-delete; `daemon.err.log` shows `worktree: remove <path> failed: git: signal: killed`. The tree is left half-deleted, the next pass reads the deletions as dirty, and the row is retained forever.
+
+Rules:
+
+- Never run a bulk delete (or a build) through `execx.Run`. Delete in Go (`os.RemoveAll`, then `git worktree prune`, which only drops the repo's admin entry) or use `execx.RunFor` with an explicit timeout (`internal/execx/timeout.go`; adapters already use `RunFor(240 * time.Second)`).
+- `git: signal: killed` in `daemon.err.log` reads as the 30 s cap firing, not a git bug: find which call ran under `execx.Run` with no deadline and move it off that runner.
+- Every `git worktree remove --force` call site (remove, undoAdd, Discard, discardUntracked in `internal/worktree/worktree.go`) shares the Go-side helper; a new call site must too.
+
+Reproduce: `go test ./internal/worktree -run 'WithoutWorktreeRemoveSubprocess|InterruptedDelete|RemoveFailed|PrunesWhilePassOpen|UndoAddDeletes'`.
 
 ## Headless Chrome and `code_sign_clone` leaks
 

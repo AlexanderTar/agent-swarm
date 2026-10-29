@@ -18,7 +18,12 @@ func resultFor(rs []CleanupResult, path string) (CleanupResult, bool) {
 	return CleanupResult{}, false
 }
 
-func TestReclaimPrunesOncePerRepoAndReportsUntrackedDirs(t *testing.T) {
+// Every delete prunes its repo, even inside the pass (BUG-137 fix round):
+// skipping the prune while a pass was open left `git worktree list` naming
+// the path, so a later add on the same path or branch failed with "already
+// registered". The count below is at least one per repo; what matters is the
+// behavioral check after it, that neither removed tree is still registered.
+func TestReclaimPrunesRemovedTreesAndReportsUntrackedDirs(t *testing.T) {
 	s, _, at := clockStore(t)
 	ctx := context.Background()
 	ep := seedEpicWithTask(t, s)
@@ -52,8 +57,24 @@ func TestReclaimPrunesOncePerRepoAndReportsUntrackedDirs(t *testing.T) {
 			prunes++
 		}
 	}
-	if prunes != 1 {
-		t.Fatalf("git worktree prune ran %d times, want once per repo: %v", prunes, *calls)
+	if prunes < 1 {
+		t.Fatalf("git worktree prune ran %d times, want at least one per repo: %v", prunes, *calls)
+	}
+	out, err := s.Worktree.Run(ctx, "git", "-C", repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Git spells a missing worktree resolved (/private/var/...) while the
+	// recorded path may use the unresolved spelling (/var/...), so match on
+	// the resolved parent plus the folder name.
+	realParent, err := filepath.EvalSymlinks(filepath.Join(s.Worktree.Home, "worktrees"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range []string{wt1.Path, wt2.Path} {
+		if strings.Contains(string(out), filepath.Join(realParent, filepath.Base(wt))) {
+			t.Fatalf("%s still registered after a reclaim that prunes", wt)
+		}
 	}
 	if r, ok := resultFor(res, stray); !ok || r.Action != "untracked" {
 		t.Fatalf("stray dir result = %+v, want untracked", r)

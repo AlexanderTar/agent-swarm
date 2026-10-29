@@ -2,6 +2,8 @@
 
 A squash already on the remote default branch counts as merged; a conflicting or differing merge-tree does not. Retained trees are re-checked by the reclaim pass, and build churn is discarded only after the root is done or cancelled. Rules and commands: docs/worktree-cleanup.md. A worktree folder with no `.git` is `not_a_worktree` (watchman-cookie-only ones are deleted); never read a git failure there as dirty (same doc).
 
+Bulk deletes and builds never run through `execx.Run`'s 30 s cap: delete Go-side (`os.RemoveAll`, then `git worktree prune`) or use `execx.RunFor`. `git: signal: killed` in `daemon.err.log` is the cap firing, not a git bug. Details: docs/worktree-cleanup.md, "Bulk deletes and the 30 s execx cap".
+
 Headless Chrome leaks a `code_sign_clone` copy of its app bundle (hundreds of thousands of inodes) unless it quits cleanly: an agent that starts Chrome keeps `--user-data-dir` inside its own scratchpad or work dir and closes it (CDP `Browser.close`, or SIGTERM and wait, never SIGKILL first) before `completed`/`handoff`; the reclaim passes kill Chrome profiles inside a reclaimed dir and sweep stale unheld clones. Cause, rules and detection: docs/worktree-cleanup.md, "Headless Chrome and `code_sign_clone` leaks".
 
 # Testing and coverage (strict)
