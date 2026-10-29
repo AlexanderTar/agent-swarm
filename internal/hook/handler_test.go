@@ -2256,6 +2256,31 @@ func TestStopAfterParaphraseSendsReprint(t *testing.T) {
 	}
 }
 
+// Muse has no transcript reader but its Stop input carries last_assistant_message, so a print-phase
+// approval is judged on it: a reply without the chat_block is reprinted, one with it moves to ask.
+func TestMuseStopJudgesLastAssistantMessage(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	h.DB.Exec(`UPDATE agents SET kind = 'muse' WHERE id = 'agt_1'`)
+	reqID, block := printingApproval(t, h, "Users table gets id and email.")
+	stop := func(reply string) {
+		t.Helper()
+		in, _ := json.Marshal(map[string]any{"session_id": "p1", "last_assistant_message": reply})
+		if _, err := h.Handle(ctx, runtime.Muse, "Stop", ses, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop("Approving the users table.")
+	if ev := relayEvent(t, h, reqID); ev != "request_print" {
+		t.Fatalf("paraphrase: event = %q, want request_print", ev)
+	}
+	h.DB.Exec(`UPDATE messages SET state = 'delivered' WHERE state = 'pending'`)
+	stop("**" + block + "**")
+	if ev := relayEvent(t, h, reqID); ev != "request_ask" {
+		t.Fatalf("block printed: event = %q, want request_ask", ev)
+	}
+}
+
 func TestStopWithUnreadableTranscriptSendsAsk(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)

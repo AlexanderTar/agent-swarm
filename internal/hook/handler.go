@@ -1126,13 +1126,15 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		// bounds this, so it never touches stop_blocks.
 		if h.RT != nil && s.ID != "" {
 			r := runtime.TurnReply{}
-			if texter, ok := a.(transcriptTexter); !ok {
-				r.Trusted = true
-			} else if in.LastAssistantMessage != "" {
+			texter, hasTexter := a.(transcriptTexter)
+			switch {
+			case in.LastAssistantMessage != "":
 				// Claude fires Stop before the final text reaches the transcript; its hook input
-				// carries that text directly.
+				// carries that text directly. Muse has no transcript reader but sends the same field.
 				r.Text, r.Readable = in.LastAssistantMessage, true
-			} else if in.TranscriptPath != "" {
+			case !hasTexter:
+				r.Trusted = true
+			case in.TranscriptPath != "":
 				r.Text, r.Readable = texter.AssistantTextSinceLastTurn(in.TranscriptPath)
 			}
 			sent, err := h.RT.PrintTurnEnded(ctx, s.ID, r)
