@@ -226,14 +226,22 @@ func TestLinkSwarmSharedReplacesLegacyBaseLink(t *testing.T) {
 	}
 }
 
-// TestLinkSwarmSharedThroughLinkedAncestor: with a swarm home nested below a
-// subfolder of HOME (~/foo/.swarm), muse links ~/foo whole into its isolated
-// HOME, so base already resolves to the real swarm home. Each shared dir must
-// be left as the real dir it already is, never replaced by a link to itself.
-func TestLinkSwarmSharedThroughLinkedAncestor(t *testing.T) {
+// TestLinkSwarmSharedNestedHomeIsNoop: a swarm home nested below a subfolder
+// of HOME (~/foo/.swarm) is reached through a linked ancestor in the isolated
+// HOME (muse links ~/foo whole), so every write would land in the real home.
+// The helper must leave it alone: the user's real ~/foo/.swarm link survives
+// and no shared dir is replaced, across reruns.
+func TestLinkSwarmSharedNestedHomeIsNoop(t *testing.T) {
 	userHome := t.TempDir()
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(filepath.Join(data, "screenshots", "K"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(userHome, "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	swarmHome := filepath.Join(userHome, "foo", ".swarm")
-	if err := os.MkdirAll(swarmHome, 0o755); err != nil {
+	if err := os.Symlink(data, swarmHome); err != nil {
 		t.Fatal(err)
 	}
 	isolatedHome := t.TempDir()
@@ -246,13 +254,45 @@ func TestLinkSwarmSharedThroughLinkedAncestor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if fi, err := os.Lstat(swarmHome); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("user's real swarm-home link must survive, got %v, %v", fi, err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "screenshots", "K")); err != nil {
+		t.Errorf("real screenshots content lost: %v", err)
+	}
 	for _, sub := range swarmSharedDirs {
-		fi, err := os.Lstat(filepath.Join(swarmHome, sub))
-		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			t.Errorf("real %s must stay a real dir, got %v, %v", sub, fi, err)
+		if sub == "screenshots" {
+			continue
 		}
-		if _, err := os.Stat(filepath.Join(isolatedHome, "foo", ".swarm", sub)); err != nil {
-			t.Errorf("%s must resolve from the isolated HOME: %v", sub, err)
+		if _, err := os.Lstat(filepath.Join(data, sub)); !os.IsNotExist(err) {
+			t.Errorf("nested home: helper must create nothing, but %s exists (err=%v)", sub, err)
 		}
+	}
+}
+
+// TestLinkSwarmSharedPlainNestedHomeIsNoop: a plain nested ~/foo/.swarm,
+// linked in through muse-home/foo -> ~/foo, is left untouched: the shared
+// dirs already resolve through that link, and none is created or replaced.
+func TestLinkSwarmSharedPlainNestedHomeIsNoop(t *testing.T) {
+	userHome := t.TempDir()
+	swarmHome := filepath.Join(userHome, "foo", ".swarm")
+	if err := os.MkdirAll(filepath.Join(swarmHome, "kb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	isolatedHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(userHome, "foo"), filepath.Join(isolatedHome, "foo")); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := linkSwarmShared(isolatedHome, userHome, swarmHome, quietLog); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fi, err := os.Lstat(filepath.Join(swarmHome, "kb")); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("real kb must stay a real dir, got %v, %v", fi, err)
+	}
+	if _, err := os.Lstat(filepath.Join(swarmHome, "screenshots")); !os.IsNotExist(err) {
+		t.Errorf("nested home: helper must create nothing, got err=%v", err)
 	}
 }

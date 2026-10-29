@@ -16,11 +16,11 @@ import (
 var swarmSharedDirs = []string{"screenshots", "specs", "plans", "research", "designs", "kb"}
 
 // linkSwarmShared links the agent-facing subdirs of the real swarm home into
-// an isolated HOME. When swarmHome sits under userHome, destBase
+// an isolated HOME. When swarmHome sits directly under userHome, destBase
 // (<isolatedHome>/<swarmHome rel userHome>) is created as a REAL directory
 // holding one symlink per swarmSharedDirs entry, each pointing at its real
 // counterpart (created first with MkdirAll, so an absent real dir is never
-// skipped). When swarmHome is not under userHome it does nothing.
+// skipped). When swarmHome is not directly under userHome it does nothing.
 //
 // It is idempotent across Resume (setupEnv reruns against the same
 // launchDir): stale links are removed and recreated, while a real file or a
@@ -32,6 +32,14 @@ func linkSwarmShared(isolatedHome, userHome, swarmHome string, logf func(string,
 	}
 	rel, err := filepath.Rel(userHome, swarmHome)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	// Only a swarm home directly under userHome (~/.swarm) is handled. A nested
+	// one (~/foo/.swarm) is reached through a linked ancestor in the isolated
+	// HOME (muse links ~/foo whole), so every write below would land in the
+	// real home -- removing its links or replacing shared dirs with self-links.
+	if strings.ContainsRune(rel, filepath.Separator) {
+		logf("swarm-shared: swarm home %s is nested below the user home; not linking shared dirs", swarmHome)
 		return nil
 	}
 	base := filepath.Join(isolatedHome, rel)
@@ -52,14 +60,6 @@ func linkSwarmShared(isolatedHome, userHome, swarmHome string, logf func(string,
 			return err
 		}
 		dst := filepath.Join(base, sub)
-		// base can already resolve to the real swarm home (a linked ancestor,
-		// e.g. muse-home/foo -> ~/foo for a ~/foo/.swarm home): dst is then the
-		// real dir itself, and replacing it would link it to itself.
-		if rfi, err := os.Stat(real); err == nil {
-			if dfi, err := os.Stat(dst); err == nil && os.SameFile(rfi, dfi) {
-				continue
-			}
-		}
 		fi, err := os.Lstat(dst)
 		if err == nil {
 			if fi.Mode()&os.ModeSymlink != 0 {
