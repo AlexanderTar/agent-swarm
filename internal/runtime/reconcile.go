@@ -21,6 +21,11 @@ import (
 const staleAfter = 30 * time.Minute
 const killCompletedAfter = 60 * time.Second
 
+// killCompletedBusyCap is the hard cap on the idle wait for a completed
+// session's pane: past this point after the completed checkpoint the pane is
+// killed even if it still reads busy (TASK-1494).
+const killCompletedBusyCap = 2 * time.Hour
+
 // ackTimeout is how long a freshly spawned session gets to write its first
 // checkpoint of any kind before the daemon raises agent.no_ack to its parent
 // (§10.6's ack-timeout). A child stuck before its first swarm_sync, or one
@@ -1172,9 +1177,6 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	if err := s.publishBusyChange(ctx, r); err != nil {
 		return err
 	}
-	if r.CompletedCheckpointAt != nil && s.Now().Sub(*r.CompletedCheckpointAt) >= killCompletedAfter {
-		return s.Tmux.Kill(ctx, r.TmuxName)
-	}
 	owesNothing, err := s.owesNothing(ctx, r)
 	if err != nil {
 		return err
@@ -1253,6 +1255,20 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 				}
 				break
 			}
+		}
+	}
+	// A completed session's pane is killed once the 60 s grace has passed AND
+	// the pane reads idle (adapter Idle, not LeaderBusy), so post-merge work
+	// survives Done; the hard cap kills it even if still busy (TASK-1494).
+	// This covers daemon-written root-done and agent-written completed
+	// checkpoints alike: both land in CompletedCheckpointAt the same way.
+	if r.CompletedCheckpointAt != nil {
+		elapsed := s.Now().Sub(*r.CompletedCheckpointAt)
+		if elapsed >= killCompletedBusyCap {
+			return s.Tmux.Kill(ctx, r.TmuxName)
+		}
+		if elapsed >= killCompletedAfter && idle {
+			return s.Tmux.Kill(ctx, r.TmuxName)
 		}
 	}
 	if !ownedByWatchStartup {
