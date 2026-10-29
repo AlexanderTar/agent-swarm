@@ -490,9 +490,10 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 			return Item{}, errf(CodeBadRequest, "%s", hint)
 		}
 		// An orchestrator proposing a new root item (2026-09-26 top-level
-		// items spec): always lands Draft (decision 2, refused rather than
-		// silently downgraded), any repos passed are suggestions only, and
-		// origin_spike_id records the caller's own root so the board's
+		// items spec, TASK-1496: proposals keep their repos confirmed):
+		// always lands Draft (decision 2, refused rather than silently
+		// downgraded), any repos passed are resolved and stay confirmed,
+		// and origin_spike_id records the caller's own root so the board's
 		// existing "Started from KEY" rendering resolves it. The
 		// top-level-only restriction (a child orchestrator may not propose)
 		// is enforced by the caller in internal/mcpserver, which knows
@@ -508,8 +509,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 				if err != nil {
 					return Item{}, err
 				}
-				in.SuggestedRepos = append(append([]string{}, in.SuggestedRepos...), repos...)
-				in.Repos = nil
+				in.Repos = repos
 			}
 			if in.OriginSpikeID == "" {
 				in.OriginSpikeID = by.RootID

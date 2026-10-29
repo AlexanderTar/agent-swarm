@@ -37,8 +37,8 @@ func TestResolveRepoRefTx(t *testing.T) {
 }
 
 // TestCreateCanonicalizesRepoRefs (BUG-68): swarm_items create takes a repo
-// name or path as well as an id, for a proposed root and a child task, and
-// always stores the catalog id.
+// name or path as well as an id, for a proposed root (confirmed) and a
+// child task, and always stores the catalog id.
 func TestCreateCanonicalizesRepoRefs(t *testing.T) {
 	s := newStore(t)
 	exec(t, s.DB, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
@@ -47,8 +47,8 @@ func TestCreateCanonicalizesRepoRefs(t *testing.T) {
 	st := mk(t, s, items.Story, e.Key, "S")
 	orch := items.Orchestrator("agt_1", e.ID)
 	proposed, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "New epic", Repos: []string{"alpha"}}, orch)
-	if err != nil || !slices.Equal(proposed.SuggestedRepos, []string{"repo_a"}) {
-		t.Fatalf("proposed = %v, %v; want suggested [repo_a]", proposed.SuggestedRepos, err)
+	if err != nil || !slices.Equal(proposed.Repos, []string{"repo_a"}) {
+		t.Fatalf("proposed = %v, %v; want confirmed [repo_a]", proposed.Repos, err)
 	}
 	task, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T", Repos: []string{"/tmp/alpha"},
 		Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch)
