@@ -194,7 +194,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		}
 		// A worker inside a tool call or a running grok turn picks mail up at the
 		// next tool boundary, so it is busy, not unreachable (busyCeiling).
-		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter && !s.busyWithinCeiling(r.SessionID) {
+		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter && !s.busyAfterPaneLook(ctx, r) {
 			if err := s.raiseUndeliverable(ctx, r); err != nil {
 				return err
 			}

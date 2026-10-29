@@ -595,7 +595,8 @@ func (s *Store) checkProgressDeadlock(ctx context.Context, r liveRow) error {
 	// r.LastCheckpointAt is always set together with r.LastCheckpointID (both
 	// come from the same LEFT JOIN row in liveSessionRows).
 	if s.Now().Sub(*r.LastCheckpointAt) < progressDeadlockTimeout ||
-		s.Now().Sub(r.lastActivity()) < progressDeadlockTimeout {
+		s.Now().Sub(r.lastActivity()) < progressDeadlockTimeout ||
+		s.busyWithinCeiling(r.SessionID) { // an open tool call under an idle-looking pane is working, not deadlocked
 		return nil
 	}
 	already, err := s.alreadyRelayedForCheckpoint(ctx, r.LastCheckpointID)

@@ -98,3 +98,91 @@ func TestPaneBusyDoesNotOverrideToolEvidence(t *testing.T) {
 		t.Fatal("tool finished but the pane still shows busy: want busy")
 	}
 }
+
+// agent.undeliverable: the wake tick alone (no reconcile before it) looks at the
+// pane before it calls a worker unreachable.
+func TestPaneBusySuppressesUndeliverable(t *testing.T) {
+	s, tm, at, _ := busySession(t, "PaneUndeliverable")
+	showPane(tm, tm.panes[0].Session, paneBusyFooter)
+	at.Advance(10 * time.Minute)
+	if err := s.WakeDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 0 {
+		t.Fatalf("pane busy: %d undeliverable alerts, want 0", n)
+	}
+	showPane(tm, tm.panes[0].Session, paneIdlePrompt)
+	if err := s.WakeDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 1 {
+		t.Fatalf("pane idle again: %d undeliverable alerts, want 1", n)
+	}
+}
+
+func TestPaneBusySuppressesStale(t *testing.T) {
+	s, tm, at, _ := busySession(t, "PaneStale")
+	showPane(tm, tm.panes[0].Session, paneBusyFooter)
+	at.Advance(45 * time.Minute)
+	reconcileOnce(t, s)
+	if n := notifiedCount(s, "agent.stale"); n != 0 {
+		t.Fatalf("pane busy at 45 min: %d stale alerts, want 0", n)
+	}
+	at.Advance(busyCeiling)
+	reconcileOnce(t, s)
+	if n := notifiedCount(s, "agent.stale"); n != 1 {
+		t.Fatalf("pane busy past the ceiling: %d stale alerts, want 1", n)
+	}
+}
+
+// The board label follows pane busy like any other evidence: plain running until
+// busyShownAfter, then busy.
+func TestPaneBusyDrivesTheBoardLabel(t *testing.T) {
+	s, tm, at, sid := busySession(t, "PaneLabel")
+	showPane(tm, tm.panes[0].Session, paneBusyFooter)
+	reconcileOnce(t, s)
+	if _, ok := s.BusyShown(sid); ok {
+		t.Fatal("a fresh pane-busy sample must not be shown yet")
+	}
+	at.Advance(busyShownAfter)
+	reconcileOnce(t, s)
+	if _, ok := s.BusyShown(sid); !ok {
+		t.Fatal("pane busy past the threshold must be shown")
+	}
+}
+
+// progress_deadlock relays a worker that went quiet after a progress checkpoint;
+// a worker the daemon sees working is not quiet.
+func TestBusyWorkerGetsNoProgressDeadlockRelay(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway"}); err != nil {
+		t.Fatal(err)
+	}
+	relays := func() int {
+		var n int
+		s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+			AND payload_json LIKE '%"event":"progress_deadlock"%'`, orch.ID).Scan(&n)
+		return n
+	}
+	// the pane reads idle between spinner frames, but a tool call is open
+	s.ToolStarted(wSes.ID)
+	at.Advance(6 * time.Minute)
+	reconcileOnce(t, s)
+	if n := relays(); n != 0 {
+		t.Fatalf("busy worker: %d progress_deadlock relays, want 0", n)
+	}
+	s.ToolFinished(wSes.ID)
+	reconcileOnce(t, s)
+	if n := relays(); n != 1 {
+		t.Fatalf("idle worker: %d progress_deadlock relays, want 1", n)
+	}
+}

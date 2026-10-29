@@ -114,6 +114,18 @@ func (s *Store) samplePaneBusy(sessionID string, ad adapter.Adapter, capture str
 	}
 }
 
+// busyAfterPaneLook is the wake tick's own look at the pane, taken only when it is
+// about to call a worker unreachable (the reconcile sample may be seconds old, or
+// not taken yet): it refreshes the pane evidence and reports busy under the ceiling.
+func (s *Store) busyAfterPaneLook(ctx context.Context, r wakeRow) bool {
+	if ad, ok := s.Adapters[r.Kind]; ok {
+		if capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15); err == nil {
+			s.samplePaneBusy(r.SessionID, ad, capture)
+		}
+	}
+	return s.busyWithinCeiling(r.SessionID)
+}
+
 // BusySince reports whether the session is busy, from an open tool call or the
 // grok leader's "working" push, and since when (the earliest evidence). With
 // neither, the last pane sample's busy footer counts, since the first sample that saw it.
