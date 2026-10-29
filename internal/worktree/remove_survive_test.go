@@ -46,3 +46,67 @@ func TestRemoveSurvivesKilledWorktreeRemove(t *testing.T) {
 		t.Fatalf("bulk delete ran through %d capped `git worktree remove` calls, want 0 (Go-side delete)", removes)
 	}
 }
+
+// Unit 2 red: a row stranded retained/remove_failed by an interrupted delete
+// (porcelain shows only tracked deletions, plus watchman cookies) must be
+// removed on retry when the branch is otherwise merged.
+func TestRemoveRetriesAnInterruptedDelete(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/interrupted",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Half-deleted shape: a tracked file is gone, .git is intact.
+	if err := os.Remove(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, ".watchman-cookie-host-1-2"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'remove_failed' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	wt.State, wt.RetainedReason = "retained", "remove_failed"
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed (interrupted delete must be retried)", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+}
+
+// Unit 2 guard: a remove_failed row whose dirt is real work (a modification,
+// not just deletions) must still be retained.
+func TestRemoveKeepsRealWorkOnARemoveFailedRetry(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/failed-dirty",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("real work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'remove_failed' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty (real work must never be deleted)", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("a retained worktree must still exist: %v", err)
+	}
+}

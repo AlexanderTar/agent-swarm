@@ -889,7 +889,14 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	}
 
 	if reason := s.keepReason(ctx, wt); reason != "" {
-		return s.retain(ctx, wt, reason)
+		// A row stranded retained/remove_failed by a SIGKILLed bulk delete
+		// reads as dirty (deletions), but the deletions ARE the delete: when
+		// porcelain lists only tracked deletions plus watchman cookies and
+		// the branch is otherwise merged, retry the delete instead of keeping
+		// the tree forever. Real uncommitted work still retains.
+		if !(wt.RetainedReason == "remove_failed" && reason == "dirty" && s.isInterruptedDelete(ctx, wt)) {
+			return s.retain(ctx, wt, reason)
+		}
 	}
 	if isStray, _ := s.stray(ctx, wt); isStray {
 		return s.removeStray(ctx, wt)
@@ -910,6 +917,62 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	_, err = s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'removed', retained_reason = NULL,
 		removed_at = ? WHERE id = ?`, db.Millis(now), wt.ID)
 	return wt, err
+}
+
+// isInterruptedDelete reports whether wt looks stranded halfway through a
+// bulk delete: porcelain lists only tracked deletions (plus watchman
+// cookies, which are never dirt) and the branch is otherwise merged. A
+// modification, add, rename, untracked path, or unmerged branch reads as
+// real work and returns false, so the normal dirty path still retains.
+func (s *Service) isInterruptedDelete(ctx context.Context, wt Worktree) bool {
+	if !s.onlyDeletions(ctx, wt.Path) {
+		return false
+	}
+	return s.mergedForRemove(ctx, wt)
+}
+
+// onlyDeletions is true when status --porcelain lists at least one tracked
+// deletion and nothing else except watchman cookies.
+func (s *Service) onlyDeletions(ctx context.Context, path string) bool {
+	out, err := s.git(ctx, path, "--no-optional-locks", "status", "--porcelain")
+	if err != nil {
+		return false
+	}
+	saw := false
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "?? "+cookiePrefix) {
+			continue
+		}
+		saw = true
+		if !isDeletion(line) {
+			return false
+		}
+	}
+	return saw
+}
+
+// isDeletion is a porcelain line deleting a tracked file with no other
+// change staged or unstaged: " D path" or "D  path". Mixed (MD), both-deleted
+// (DD), renames, and unmerged entries are not deletions.
+func isDeletion(line string) bool {
+	if len(line) < 4 || (line[2] != ' ' && line[2] != '\t') {
+		return false
+	}
+	x, y := line[0], line[1]
+	return (x == 'D' && y == ' ') || (x == ' ' && y == 'D')
+}
+
+// mergedForRemove mirrors keepReason's merged half: discardable review trees
+// are already removable, so this covers branch trees (merged or pushed) and
+// detached trees (still at sha or merged elsewhere).
+func (s *Service) mergedForRemove(ctx context.Context, wt Worktree) bool {
+	if wt.Branch == "" {
+		return s.atDetachedSHA(ctx, wt) || s.mergedOnlyElsewhere(ctx, wt)
+	}
+	return s.mergedOrPushed(ctx, wt)
 }
 
 // mergedOnlyElsewhere is merged evidence 2-4 for the tree's current HEAD.
