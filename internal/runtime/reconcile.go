@@ -1266,6 +1266,9 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			s.clearPromptState(r.SessionID, title)
 		}
 	}
+	if err := s.nudgeProgress(ctx, r); err != nil {
+		s.logf("reconcile: progress nudge for %s: %v", r.AgentName, err)
+	}
 	waiting := idle && owesNothing
 	if title := sessionTitle(waiting, r.Role, r.RootItemID, r.AgentName); title != s.getLastTitle(r.SessionID) {
 		if err := s.Tmux.RenameWindow(ctx, r.TmuxName, title); err != nil {

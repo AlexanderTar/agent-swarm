@@ -186,3 +186,83 @@ func TestBusyWorkerGetsNoProgressDeadlockRelay(t *testing.T) {
 		t.Fatalf("idle worker: %d progress_deadlock relays, want 1", n)
 	}
 }
+
+func nudgeCount(s *Store, agentID string) int {
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update' AND origin = 'daemon'
+		AND payload_json LIKE '%"event":"progress_nudge"%'`, agentID).Scan(&n)
+	return n
+}
+
+// A worker that stays busy for progressNudgeAfter without a checkpoint is asked
+// for one, once per window.
+func TestBusyWorkerWithoutCheckpointGetsOneNudgePerWindow(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeMe")
+	_, agentID := busyLiveRow(t, s, sid)
+	s.ToolStarted(sid)
+
+	at.Advance(progressNudgeAfter - time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("nudge before the window: %d, want 0", n)
+	}
+	at.Advance(time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("nudge at the window: %d, want 1", n)
+	}
+	reconcileOnce(t, s)
+	at.Advance(progressNudgeAfter - time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("second tick in the same window: %d nudges, want 1", n)
+	}
+	at.Advance(time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 2 {
+		t.Fatalf("next window: %d nudges, want 2", n)
+	}
+}
+
+// A checkpoint restarts the clock, and an idle worker is never nudged.
+func TestNudgeWaitsForSilenceAndBusy(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeQuiet")
+	ctx := context.Background()
+	_, agentID := busyLiveRow(t, s, sid)
+
+	at.Advance(progressNudgeAfter)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("idle worker: %d nudges, want 0", n)
+	}
+	s.ToolStarted(sid)
+	at.Advance(progressNudgeAfter - time.Minute)
+	if _, err := s.WriteCheckpoint(ctx, sid, CheckpointInput{Kind: Progress, Summary: "halfway"}); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(2 * time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("2 min after a checkpoint: %d nudges, want 0", n)
+	}
+}
+
+// No reminder while the worker is being paused or its kind is out of usage.
+func TestNudgeSkipsPausedAndExhausted(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgePaused")
+	_, agentID := busyLiveRow(t, s, sid)
+	s.ToolStarted(sid)
+	at.Advance(progressNudgeAfter)
+
+	mustExec(t, s.DB, `UPDATE sessions SET state = 'pause_requested' WHERE id = ?`, sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("pausing worker: %d nudges, want 0", n)
+	}
+	mustExec(t, s.DB, `UPDATE sessions SET state = 'running' WHERE id = ?`, sid)
+	s.noteUsageLimit(Fake, at.Now().Add(time.Hour))
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("exhausted kind: %d nudges, want 0", n)
+	}
+}
