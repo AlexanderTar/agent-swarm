@@ -196,3 +196,32 @@ func TestLinkSwarmSharedHasNoCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestLinkSwarmSharedReplacesLegacyBaseLink: an isolated HOME kept from before
+// this fix may hold .swarm as a symlink to the real swarm home. Linking through
+// it would replace the real (empty) shared dirs with links to themselves; the
+// legacy link must be swapped for a real dir and the real dirs left intact.
+func TestLinkSwarmSharedReplacesLegacyBaseLink(t *testing.T) {
+	userHome, swarmHome := fakeNestedSwarmHome(t)
+	isolatedHome := t.TempDir()
+	base := filepath.Join(isolatedHome, ".swarm")
+	if err := os.Symlink(swarmHome, base); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := linkSwarmShared(isolatedHome, userHome, swarmHome, quietLog); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(base); err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Fatalf("isolated .swarm must be a real dir, got %v, %v", fi, err)
+	}
+	for _, sub := range swarmSharedDirs {
+		fi, err := os.Lstat(filepath.Join(swarmHome, sub))
+		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("real %s must stay a real dir, got %v, %v", sub, fi, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(swarmHome, "screenshots", "seed.png")); err != nil {
+		t.Errorf("real screenshot content lost: %v", err)
+	}
+}

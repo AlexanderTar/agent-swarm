@@ -974,8 +974,10 @@ func TestAgySetupEnvLinksSharedSwarmDirs(t *testing.T) {
 			t.Errorf("%s resolves to %q, want %q", sub, got, want)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(agyHome, ".swarm", "run")); !os.IsNotExist(err) {
-		t.Errorf("isolated agy HOME's .swarm must not carry run, got err=%v", err)
+	for _, name := range []string{"run", "config.json", "swarm.db"} {
+		if _, err := os.Lstat(filepath.Join(agyHome, ".swarm", name)); !os.IsNotExist(err) {
+			t.Errorf("isolated agy HOME's .swarm must not carry %s, got err=%v", name, err)
+		}
 	}
 
 	s.ProviderSessionID = "conv-xyz"

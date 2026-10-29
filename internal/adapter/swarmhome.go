@@ -35,6 +35,14 @@ func linkSwarmShared(isolatedHome, userHome, swarmHome string, logf func(string,
 		return nil
 	}
 	base := filepath.Join(isolatedHome, rel)
+	// A legacy isolated HOME may hold base as a link (e.g. to the real swarm
+	// home): linking through it would replace real shared dirs with links to
+	// themselves. Remove only the link, then make base a real dir.
+	if fi, err := os.Lstat(base); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(base); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}
