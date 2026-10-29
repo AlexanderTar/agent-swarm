@@ -906,11 +906,17 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 		// porcelain lists only tracked deletions plus watchman cookies and
 		// the branch is otherwise merged, retry the delete instead of keeping
 		// the tree forever. When the kill landed after the `.git` file was
-		// already deleted, keepReason can only say not_a_worktree, but git's
-		// own list still registers the path: a remove_failed row that is
-		// still registered and whose branch is merged from the repo side
-		// retries too. Real uncommitted work still retains.
+		// already deleted, keepReason can only say not_a_worktree: a
+		// remove_failed row under the worktrees dir whose branch is merged
+		// from the repo side retries too. Real uncommitted work still retains.
 		if !s.retryInterruptedDelete(ctx, wt, reason) {
+			// A failed re-judge keeps the remove_failed marker while the
+			// folder still looks like an interrupted delete, so a later pass
+			// retries once the branch lands; otherwise the row would stick
+			// as dirty/not_a_worktree and never be retried.
+			if wt.RetainedReason == "remove_failed" && s.looksInterrupted(ctx, wt) {
+				return s.retain(ctx, wt, "remove_failed")
+			}
 			return s.retain(ctx, wt, reason)
 		}
 	}
@@ -938,9 +944,9 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 
 // retryInterruptedDelete reports whether a retained/remove_failed row reads
 // as a half-finished bulk delete worth retrying: porcelain shows only tracked
-// deletions of a merged tree, or the `.git` file is already gone while git's
-// own list still registers the path and the branch is merged from the repo
-// side. Anything else is real work (or an unknown folder) and stays retained.
+// deletions of a merged tree, or the `.git` file is already gone from a tree
+// under the worktrees dir whose branch is merged from the repo side.
+// Anything else is real work (or an unknown folder) and stays retained.
 func (s *Service) retryInterruptedDelete(ctx context.Context, wt Worktree, reason string) bool {
 	if wt.RetainedReason != "remove_failed" {
 		return false
@@ -954,15 +960,29 @@ func (s *Service) retryInterruptedDelete(ctx context.Context, wt Worktree, reaso
 	return false
 }
 
+// looksInterrupted reports whether the folder still has the shape of a
+// half-finished bulk delete: only tracked deletions with `.git` present, or
+// no `.git` under the worktrees dir with the branch merged judged from the
+// repo. Anything else (a modification, add, untracked path, or an unmerged
+// branch with `.git` present) is real work and returns false, so the normal
+// dirty path still retains under its own reason.
+func (s *Service) looksInterrupted(ctx context.Context, wt Worktree) bool {
+	if _, err := os.Lstat(filepath.Join(wt.Path, ".git")); err == nil {
+		return s.onlyDeletions(ctx, wt.Path)
+	}
+	return s.underWorktrees(wt.Path) && s.branchMergedFromRepo(ctx, wt)
+}
+
 // interruptedWithoutGit is the no-`.git` half of an interrupted delete: the
 // kill (or a partially failed delete) removed the `.git` file early, so git
-// can no longer run inside the tree, but the repo's worktree list still names
-// the path and the branch is merged when judged from the repo.
+// can no longer run inside the tree. Every delete prunes the repo's admin
+// entry, so a real stranded tree is never registered anymore: the gate is the
+// worktrees dir plus the branch merged judged from the repo.
 func (s *Service) interruptedWithoutGit(ctx context.Context, wt Worktree) bool {
 	if _, err := os.Lstat(filepath.Join(wt.Path, ".git")); err == nil {
 		return false
 	}
-	if !s.registered(ctx, wt) {
+	if !s.underWorktrees(wt.Path) {
 		return false
 	}
 	return s.branchMergedFromRepo(ctx, wt)

@@ -270,6 +270,136 @@ func TestRemoveKeepsUnmergedTreeWithoutGit(t *testing.T) {
 	}
 }
 
+// Unit 4: a remove_failed row whose `.git` is gone must still be retried
+// after `git worktree prune` dropped its registration (every delete and the
+// reclaim pass prune, so a real stranded tree is never registered anymore).
+func TestRemoveRetriesRemoveFailedAfterPrune(t *testing.T) {
+	repo := gitRepo(t)
+	// A second tracked file committed on main before the tree exists, so the
+	// branch is merged and a leftover remains once `.git` is deleted.
+	if err := os.WriteFile(filepath.Join(repo, "other.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo, "add", "other.txt")
+	run(t, repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "other")
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/no-git-pruned",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Half-deleted shape with `.git` gone first, then pruned like every
+	// delete and reclaim pass leaves it: git no longer registers the path.
+	if err := os.Remove(filepath.Join(wt.Path, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo, "worktree", "prune")
+	if list := run(t, repo, "worktree", "list", "--porcelain"); worktreeRegistered(list, wt.Path) {
+		t.Fatalf("registration for %s survived prune: the test would not exercise the pruned state", wt.Path)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'remove_failed' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed (a pruned registration must not block the retry)", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+}
+
+// Unit 4 guard: a remove_failed row whose dirt is deletions plus an untracked
+// file is real work and must stay retained, so a loosened onlyDeletions goes
+// red here.
+func TestRemoveKeepsDeletionsPlusUntrackedOnRemoveFailedRetry(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/failed-untracked",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "scratch.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'remove_failed' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty (an untracked file is real work)", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("a retained worktree must still exist: %v", err)
+	}
+}
+
+// Unit 4: a failed re-judge keeps the remove_failed marker while the folder
+// still looks like an interrupted delete (only deletions, branch not yet
+// merged), so a later pass retries once the branch lands instead of the row
+// sticking as dirty forever.
+func TestRemoveFailedRetryKeepsMarkerUntilMerged(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/keep-marker",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its own commit (unmerged) plus a tracked deletion: the shape of an
+	// interrupted delete on a branch that has not landed yet.
+	if err := os.WriteFile(filepath.Join(wt.Path, "own.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "own.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "unlanded")
+	if err := os.Remove(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'remove_failed' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "remove_failed" {
+		t.Fatalf("worktree = %+v, want retained/remove_failed (an unmerged interrupted delete must stay retryable)", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("a retained worktree must still exist: %v", err)
+	}
+	// Once the branch lands, the kept marker lets the next pass retry the
+	// delete instead of keeping the tree as dirty forever.
+	run(t, repo, "merge", "-q", "--ff-only", "task/keep-marker")
+	out, err = s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed (the kept marker must allow a retry after merge)", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+}
+
 // undoAdd deletes the folder Go-side and drops the repo's registration of it,
 // the same delete-plus-prune every other call site shares.
 func TestUndoAddDeletesAndPrunesRegistration(t *testing.T) {

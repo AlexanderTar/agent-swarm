@@ -456,6 +456,36 @@ func TestReportBugBoardTrueConfirmsSwarmrunRepo(t *testing.T) {
 	}
 }
 
+// TASK-1495 unit 4: a board:true report with no swarmrun repo in the catalog
+// still files the Draft bug, with no repos.
+func TestReportBugBoardTrueWithNoSwarmrunRepo(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx, `DELETE FROM repos WHERE id = ?`, seed.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug",
+		`{"title":"Sync drops acks","what_happened":"ack ignored","board":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	if got.ItemKey == "" {
+		t.Fatalf("out = %+v, want a board item with no repos", got)
+	}
+	it, err := s.RT.Items.Get(ctx, got.ItemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(it.Repos) != 0 {
+		t.Fatalf("repos = %v, want empty (no swarmrun repo in the catalog)", it.Repos)
+	}
+	if len(it.SuggestedRepos) != 0 {
+		t.Fatalf("suggested = %v, want empty (no swarmrun repo in the catalog)", it.SuggestedRepos)
+	}
+}
+
 // TASK-1206: a board:true report whose fields add up past the item brief cap
 // must still be stored and filed, with the board brief shortened and pointing
 // at `swarm bugs <id>` for the full text.
