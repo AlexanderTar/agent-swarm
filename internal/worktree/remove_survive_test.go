@@ -1,0 +1,48 @@
+package worktree
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// Unit 1 red: a clean merged tree whose `git worktree remove` is SIGKILLed
+// mid-delete (the 30 s execx cap, daemon.err.log "git: signal: killed") must
+// end removed, not retained. Today it ends retained/remove_failed.
+func TestRemoveSurvivesKilledWorktreeRemove(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/survive-kill",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := s.Run
+	var removes int
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
+			removes++
+			// Simulate the SIGKILL landing mid-delete: one tracked file is
+			// already gone, so porcelain would show a deletion.
+			_ = os.Remove(filepath.Join(wt.Path, "README.md"))
+			return nil, errors.New("git: signal: killed")
+		}
+		return real(ctx, name, args...)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed (a SIGKILLed delete must not strand the tree)", out)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+	if removes != 0 {
+		t.Fatalf("bulk delete ran through %d capped `git worktree remove` calls, want 0 (Go-side delete)", removes)
+	}
+}

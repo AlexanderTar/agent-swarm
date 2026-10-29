@@ -738,6 +738,31 @@ func (s *Service) removeStray(ctx context.Context, wt Worktree) (Worktree, error
 	return s.markRemoved(ctx, wt)
 }
 
+// deleteTree removes path without a bulk `git worktree remove` subprocess:
+// os.RemoveAll has no 30 s execx cap, and `git worktree prune` only drops
+// the repo's admin entry for the worktree. A watchman cookie landing
+// mid-delete is cleared and the delete retried once, the way the old
+// "Directory not empty" retry did.
+func (s *Service) deleteTree(ctx context.Context, repoPath, path string) error {
+	s.clearWatchman(ctx, path)
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	if fileExists(path) {
+		s.clearWatchman(ctx, path)
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		if fileExists(path) {
+			return fmt.Errorf("worktree: %s still exists after delete", path)
+		}
+	}
+	if _, err := s.git(ctx, repoPath, "worktree", "prune"); err != nil {
+		s.logf("worktree: prune after removing %s failed: %v", path, err)
+	}
+	return nil
+}
+
 // keepReason is remove's dirty and merged checks: "" means safe to delete.
 func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
 	if isStray, cookiesOnly := s.stray(ctx, wt); isStray {
@@ -873,25 +898,10 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	if err != nil {
 		return Worktree{}, err
 	}
-	rmArgs := []string{"worktree", "remove", wt.Path}
-	if s.discardable(ctx, wt) {
-		rmArgs = []string{"worktree", "remove", "--force", wt.Path}
-	}
-	s.clearWatchman(ctx, wt.Path)
-	out, rerr := s.git(ctx, repoPath, rmArgs...)
-	if rerr != nil && strings.Contains(string(out)+rerr.Error(), "Directory not empty") {
-		// A watchman cookie landed while git was deleting the folder.
-		s.clearWatchman(ctx, wt.Path)
-		out, rerr = s.git(ctx, repoPath, rmArgs...)
-		// git may already have taken .git before it failed.
-		if isStray, cookiesOnly := s.stray(ctx, wt); rerr != nil && isStray && cookiesOnly {
-			return s.removeStray(ctx, wt)
-		}
-	}
-	if rerr != nil {
-		s.logf("worktree: remove %s failed: %v: %s", wt.Path, rerr, out)
+	if derr := s.deleteTree(ctx, repoPath, wt.Path); derr != nil {
+		s.logf("worktree: remove %s failed: %v", wt.Path, derr)
 		wt, err := s.retain(ctx, wt, "remove_failed")
-		wt.RemoveError = strings.TrimSpace(rerr.Error() + ": " + string(out))
+		wt.RemoveError = strings.TrimSpace(derr.Error())
 		return wt, err
 	}
 	wt.State, wt.RetainedReason = "removed", ""

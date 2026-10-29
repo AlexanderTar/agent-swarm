@@ -69,8 +69,11 @@ func TestRemoveSurvivesWatchmanCookiesAppearingMidDelete(t *testing.T) {
 	if !slices.Contains(w.watchDels, "--no-spawn watch-del "+wt.Path) {
 		t.Fatalf("watchman watch-del never ran for the path: %v", w.watchDels)
 	}
-	if w.removes != 2 {
-		t.Fatalf("git worktree remove ran %d times, want 2 (one retry)", w.removes)
+	// The bulk delete is Go-side (no 30 s capped subprocess): even with a
+	// cookie present, no `git worktree remove` runs; cookies are cleared
+	// around os.RemoveAll instead.
+	if w.removes != 0 {
+		t.Fatalf("git worktree remove ran %d times, want 0 (Go-side delete)", w.removes)
 	}
 }
 
