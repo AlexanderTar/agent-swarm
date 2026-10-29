@@ -275,6 +275,9 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if s.Now().Sub(r.OldestMessageAt) < delay {
 			continue
 		}
+		// Hooks firing within the delay (muse included) mean the next tool
+		// boundary delivers the batch with its own notice; pasting too would
+		// hand the agent the same notice twice. Only silent hooks get a paste.
 		if r.LastSeenAt != nil && s.Now().Sub(*r.LastSeenAt) < delay {
 			continue
 		}

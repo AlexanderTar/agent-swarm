@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/swarmrun/internal/adapter"
+	"github.com/AlexanderTar/swarmrun/internal/db"
 )
 
 // museLikeFake is a Fake that gates pastes on PasteReady and reports queued
@@ -62,6 +63,38 @@ func TestWakeDuePastesIntoABusyPasteReadyPaneWithinOnePasteDelay(t *testing.T) {
 	}
 	if want := "wake: pasted " + a.Name + " (1 pending)"; !strings.Contains(strings.Join(logs, "\n"), want) {
 		t.Errorf("logs %v missing %q", logs, want)
+	}
+}
+
+// A hooked muse whose hooks are firing gets the batch from its tool-boundary
+// notice, so pasting too would hand it the same notice twice. A muse whose hooks
+// have gone quiet (one long tool call) or an idle one is still pasted.
+func TestWakeDueSkipsThePasteForAMuseWhoseHooksAreFiring(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		capture  string
+		hookAge  time.Duration // how long ago the last hook fired; 0 = none seen
+		wantPast int
+	}{
+		{"busy with a hook inside a wake gap", museBusyPane, wakeGap - time.Second, 0},
+		{"busy with silent hooks", museBusyPane, pasteDelay + 10*time.Second, 1},
+		{"idle with silent hooks", "─────\n❯\n─────\n", pasteDelay + 10*time.Second, 1},
+		{"idle, no hook seen", "─────\n❯\n─────\n", 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, tm, _, ses := museWakeSetup(t)
+			tm.captures[ses.TmuxName] = []string{tc.capture}
+			tm.clk.Advance(pasteDelay + 15*time.Second)
+			if tc.hookAge > 0 {
+				mustExec(t, s.DB, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`, db.Millis(s.Now().Add(-tc.hookAge)), ses.ID)
+			}
+			if err := s.WakeDue(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(tm.pasted) != tc.wantPast {
+				t.Fatalf("pasted = %v, want %d", tm.pasted, tc.wantPast)
+			}
+		})
 	}
 }
 
