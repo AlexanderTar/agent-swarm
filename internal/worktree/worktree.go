@@ -623,8 +623,10 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 // a fresh context: ctx may be the very thing that cancelled the insert.
 func (s *Service) undoAdd(repoPath, path string, newBranch bool, branch string) {
 	ctx := context.Background()
-	if out, err := s.git(ctx, repoPath, "worktree", "remove", "--force", path); err != nil {
-		s.logf("worktree: undo add %s failed: %v: %s", path, err, out)
+	// Go-side delete: the bulk `git worktree remove --force` runs under the
+	// 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
+	if err := s.deleteTree(ctx, repoPath, path); err != nil {
+		s.logf("worktree: undo add %s failed: %v", path, err)
 	}
 	if newBranch {
 		if out, err := s.git(ctx, repoPath, "branch", "-D", branch); err != nil {
@@ -1174,8 +1176,10 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 		}
 		_, _ = s.git(ctx, repoPath, "worktree", "prune")
 	} else if fileExists(wt.Path) {
-		if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", wt.Path); rerr != nil {
-			return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", wt.Path, rerr, strings.TrimSpace(string(out)))
+		// Go-side delete: the bulk `git worktree remove --force` runs under
+		// the 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
+		if derr := s.deleteTree(ctx, repoPath, wt.Path); derr != nil {
+			return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", wt.Path, derr)
 		}
 	}
 	now := s.Now()
@@ -1199,7 +1203,8 @@ func (s *Service) Discard(ctx context.Context, ref string) (Worktree, int, error
 }
 
 // discardUntracked removes a directory under the worktrees dir that has no
-// row, via `git worktree remove` in the repo whose worktree list names it.
+// row, with a Go-side delete in the repo whose worktree list names it (no
+// capped `git worktree remove --force`).
 // The branch is kept. Anything else is an unknown ref.
 func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, int, error) {
 	unknown := fmt.Errorf("Unknown worktree %s. Pass the worktree id or path.", ref)
@@ -1252,8 +1257,10 @@ func (s *Service) discardUntracked(ctx context.Context, ref string) (Worktree, i
 			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &unlanded)
 		}
 	}
-	if out, rerr := s.git(ctx, repoPath, "worktree", "remove", "--force", ref); rerr != nil {
-		return Worktree{}, 0, fmt.Errorf("git worktree remove %s failed: %v: %s", ref, rerr, strings.TrimSpace(string(out)))
+	// Go-side delete: the bulk `git worktree remove --force` runs under the
+	// 30 s execx cap and a SIGKILL there strands the tree (BUG-137).
+	if derr := s.deleteTree(ctx, repoPath, ref); derr != nil {
+		return Worktree{}, 0, fmt.Errorf("worktree: remove %s failed: %w", ref, derr)
 	}
 	now := s.Now()
 	return Worktree{Path: ref, Branch: branch, State: "removed", RemovedAt: &now}, unlanded, nil

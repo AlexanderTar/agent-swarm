@@ -110,3 +110,35 @@ func TestRemoveKeepsRealWorkOnARemoveFailedRetry(t *testing.T) {
 		t.Fatalf("a retained worktree must still exist: %v", err)
 	}
 }
+
+// Unit 3 red: Discard force-removes a tree even when the capped
+// `git worktree remove --force` would be SIGKILLed mid-delete.
+func TestDiscardSurvivesKilledWorktreeRemove(t *testing.T) {
+	s, wt, _ := retainedUnmerged(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	real := s.Run
+	var removes int
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
+			removes++
+			return nil, errors.New("git: signal: killed")
+		}
+		return real(ctx, name, args...)
+	}
+	got, _, err := s.Discard(ctx, wt.Path)
+	if err != nil {
+		t.Fatalf("Discard = %v, want success (a SIGKILLed delete must not strand the tree)", err)
+	}
+	if got.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", got)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("folder left behind: %v", err)
+	}
+	if removes != 0 {
+		t.Fatalf("discard ran through %d capped `git worktree remove` calls, want 0 (Go-side delete)", removes)
+	}
+}
