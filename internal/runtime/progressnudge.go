@@ -18,7 +18,9 @@ const progressNudgeNote = "You have been working for a while without a checkpoin
 	"Write one at least every ~15 minutes of work and at each milestone."
 
 // nudgeProgress asks a busy worker for a progress checkpoint once it has gone
-// progressNudgeAfter without one (or since its start), at most once per window.
+// progressNudgeAfter without one (or since its start), at most once per window
+// and never while an earlier reminder is still pending: a worker inside one long
+// tool call cannot read it, so a second would only stack behind the first.
 // The reminder is an ordinary assignment_update, so it rides the usual wake and
 // hook-notice path and never interrupts a turn. Nothing goes to a worker that is
 // pausing or whose kind is out of usage. The window is read back from the
@@ -36,7 +38,7 @@ func (s *Store) nudgeProgress(ctx context.Context, r liveRow) error {
 	}
 	var recent int
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update'
-		AND origin = 'daemon' AND payload_json LIKE '%"event":"progress_nudge"%' AND created_at > ?`,
+		AND origin = 'daemon' AND payload_json LIKE '%"event":"progress_nudge"%' AND (state = 'pending' OR created_at > ?)`,
 		r.AgentID, db.Millis(s.Now().Add(-progressNudgeAfter))).Scan(&recent); err != nil || recent > 0 {
 		return err
 	}

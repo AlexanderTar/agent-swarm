@@ -217,10 +217,35 @@ func TestBusyWorkerWithoutCheckpointGetsOneNudgePerWindow(t *testing.T) {
 	if n := nudgeCount(s, agentID); n != 1 {
 		t.Fatalf("second tick in the same window: %d nudges, want 1", n)
 	}
+	mustExec(t, s.DB, `UPDATE messages SET state = 'delivered' WHERE to_agent_id = ?`, agentID)
 	at.Advance(time.Minute)
 	reconcileOnce(t, s)
 	if n := nudgeCount(s, agentID); n != 2 {
 		t.Fatalf("next window: %d nudges, want 2", n)
+	}
+}
+
+// A worker inside one long tool call never reaches a tool boundary, so it cannot
+// ack its reminder; a new one must not pile up behind the unacked one.
+func TestNudgeWaitsForThePendingOneToBeRead(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgePileUp")
+	_, agentID := busyLiveRow(t, s, sid)
+	s.ToolStarted(sid)
+	for i := 0; i < 3; i++ {
+		at.Advance(progressNudgeAfter)
+		reconcileOnce(t, s)
+	}
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("45 min in one tool call: %d nudges, want 1", n)
+	}
+	// the tool call ends at a boundary: the reminder is delivered and the next call starts
+	mustExec(t, s.DB, `UPDATE messages SET state = 'delivered' WHERE to_agent_id = ?`, agentID)
+	s.ToolFinished(sid)
+	s.ToolStarted(sid)
+	at.Advance(progressNudgeAfter)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 2 {
+		t.Fatalf("after the first was delivered: %d nudges, want 2", n)
 	}
 }
 
