@@ -510,9 +510,29 @@ func (m *Muse) PasteReady(capture string) bool {
 var museQueuedInput = regexp.MustCompile(`(?m)^\s*◆ Queued input`)
 
 // QueuedInput reports whether a mid-turn paste is still waiting in Muse's queue
-// (runtime noticeStillQueued holds the re-paste of the batch meanwhile).
-func (m *Muse) QueuedInput(capture string) bool {
-	return museQueuedInput.MatchString(StripANSI(capture))
+// and the queued block holds marker (the agent's name, which every Swarm notice
+// carries). Input the agent or operator queued themselves does not count:
+// runtime noticeStillQueued holds the re-paste of the batch only for our notice.
+// Compared whitespace-free because the TUI hard wraps the block.
+func (m *Muse) QueuedInput(capture, marker string) bool {
+	lines := strings.Split(StripANSI(capture), "\n")
+	for i, l := range lines {
+		if !museQueuedInput.MatchString(l) {
+			continue
+		}
+		var block strings.Builder
+		for _, bl := range lines[i+1:] {
+			if t := strings.TrimSpace(bl); strings.HasPrefix(t, "─") || strings.HasPrefix(t, "❯") {
+				break
+			}
+			block.WriteString(bl)
+		}
+		squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+		if want := squash(marker); want != "" && strings.Contains(squash(block.String()), want) {
+			return true
+		}
+	}
+	return false
 }
 
 // ComposerHolds reports whether text (a line just pasted) is still sitting in

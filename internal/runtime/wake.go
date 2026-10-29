@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/swarmrun/internal/adapter"
@@ -185,6 +186,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		}
 		return e
 	}
+	var checks []func()
 	for _, r := range rows {
 		if isExhausted(r.Kind) {
 			continue
@@ -281,8 +283,21 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		}
 		// tryPaste never fails the tick: per-session errors are logged and
 		// counted with backoff inside, so one bad pane cannot starve the rest.
-		_ = s.tryPaste(ctx, ad, r, notice, inboxRendered)
+		if check := s.tryPaste(ctx, ad, r, notice, inboxRendered); check != nil {
+			checks = append(checks, check)
+		}
 	}
+	// The post-paste Enter checks sleep between rounds, so they run here, all
+	// panes at once, and never hold up a later session's paste.
+	var wg sync.WaitGroup
+	for _, check := range checks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			check()
+		}()
+	}
+	wg.Wait()
 	return nil
 }
 
@@ -324,7 +339,8 @@ func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName
 }
 
 // noticeStillQueued reports whether r's batch was already pasted and the pane
-// still shows that paste as queued input. A TUI that queues a mid-turn paste
+// still shows that paste as queued input (a block holding the agent's name, so
+// input the agent or operator queued does not suppress the re-paste). A TUI that queues a mid-turn paste
 // (Muse: "Queued input") replays it at its next model boundary, so pasting the
 // batch again only stacks a duplicate notice (seen live 2026-10-29: a re-paste
 // 31 s after the first, both drained). Held until the queue drains, at most
@@ -333,12 +349,14 @@ func (s *Store) noticeStillQueued(ctx context.Context, r wakeRow) bool {
 	if r.HasControl || r.LastWakeAt == nil || r.NewestPendingAt.After(*r.LastWakeAt) || s.Now().Sub(*r.LastWakeAt) >= repasteCap {
 		return false
 	}
-	ad, ok := s.Adapters[r.Kind].(interface{ QueuedInput(capture string) bool })
+	ad, ok := s.Adapters[r.Kind].(interface {
+		QueuedInput(capture, marker string) bool
+	})
 	if !ok {
 		return false
 	}
 	capture, err := s.Tmux.Capture(ctx, r.TmuxName, 20)
-	return err == nil && ad.QueuedInput(capture)
+	return err == nil && ad.QueuedInput(capture, r.AgentName)
 }
 
 // pasteSessionRenames pastes each live session's pending rename command
@@ -473,8 +491,13 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 // (the same rich Inbox notice native wake gets, or PausePreservationNotice for a
 // control batch — never the bare IdleToken). The daemon never logs a full process listing: other
 // tools' bearer tokens show up there (P0-4).
-func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string, inboxRendered bool) error {
-	fail := func(reason string) error {
+//
+// It never returns an error: failures are logged and counted with backoff. The
+// returned func, nil unless the adapter can read its composer, is the post-paste
+// Enter check (resubmitIfHeld); it sleeps, so the caller runs it after the
+// tick's other pastes.
+func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string, inboxRendered bool) func() {
+	fail := func(reason string) func() {
 		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 		s.logf("wake: paste for %s skipped/failed (%s; fail=%d backoff=%s)", r.AgentName, reason, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
 		return nil
@@ -485,7 +508,6 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")
 	}
-	s.resubmitIfHeld(ctx, ad, r.TmuxName, pasteNotice)
 	if inboxRendered {
 		s.MarkNoticeSeen(r.SessionID)
 	}
@@ -500,7 +522,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 		s.logf("wake: markWoken for %s failed (fail=%d backoff=%s)", r.AgentName, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
 		return nil
 	}
-	return nil
+	return func() { s.resubmitIfHeld(ctx, ad, r.TmuxName, pasteNotice) }
 }
 
 // raiseUndeliverable raises agent.undeliverable once per batch. A notification

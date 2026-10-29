@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,14 +17,18 @@ type museLikeFake struct{ pasteReadyFake }
 
 func (museLikeFake) ComposerHolds(capture, _ string) bool { return strings.Contains(capture, "HELD") }
 
-func (museLikeFake) QueuedInput(capture string) bool {
-	return strings.Contains(capture, "Queued input")
+func (museLikeFake) QueuedInput(capture, marker string) bool {
+	return strings.Contains(capture, "Queued input") && strings.Contains(capture, marker)
 }
 
 const (
-	museBusyPane   = "◇ Running command · Run sleep 25 — running (2s · esc to interrupt)\n─────\n❯\n─────\n"
-	museQueuedPane = "◇ Running command · Run sleep 25 — running (12s · esc to interrupt)\n◆ Queued input · ↑ to edit\n└ 1 new message(s) for X\n─────\n❯\n─────\n"
+	museBusyPane        = "◇ Running command · Run sleep 25 — running (2s · esc to interrupt)\n─────\n❯\n─────\n"
+	museOtherQueuedPane = "◇ Running command · Run sleep 25 — running (12s · esc to interrupt)\n◆ Queued input · ↑ to edit\n└ please also look at the flaky test\n─────\n❯\n─────\n"
 )
+
+func museQueuedPane(name string) string {
+	return "◇ Running command · Run sleep 25 — running (12s · esc to interrupt)\n◆ Queued input · ↑ to edit\n└ 1 new message(s) for " + name + "\n─────\n❯\n─────\n"
+}
 
 func museWakeSetup(t *testing.T) (*Store, *fakeTmux, Agent, Session) {
 	t.Helper()
@@ -66,14 +71,14 @@ func TestWakeDuePastesIntoABusyPasteReadyPaneWithinOnePasteDelay(t *testing.T) {
 // notice queued, the batch is not pasted again; once it drains, the normal
 // cooldown applies.
 func TestWakeDueDoesNotRepasteWhileMuseShowsQueuedInput(t *testing.T) {
-	s, tm, _, ses := museWakeSetup(t)
+	s, tm, a, ses := museWakeSetup(t)
 	ctx := context.Background()
 	tm.captures[ses.TmuxName] = []string{museBusyPane}
 	tm.clk.Advance(pasteDelay + time.Second)
 	if err := s.WakeDue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	tm.captures[ses.TmuxName] = []string{museQueuedPane}
+	tm.captures[ses.TmuxName] = []string{museQueuedPane(a.Name)}
 	for i := 0; i < 3; i++ {
 		tm.clk.Advance(pasteRetry + 5*time.Second)
 		if err := s.WakeDue(ctx); err != nil {
@@ -93,6 +98,63 @@ func TestWakeDueDoesNotRepasteWhileMuseShowsQueuedInput(t *testing.T) {
 	}
 }
 
+// Input the agent or operator queued themselves is not Swarm's notice: it must
+// not hold the re-paste of an unanswered batch for repasteCap.
+func TestWakeDueRepastesWhenTheQueuedInputIsNotTheNotice(t *testing.T) {
+	s, tm, _, ses := museWakeSetup(t)
+	ctx := context.Background()
+	tm.captures[ses.TmuxName] = []string{museBusyPane}
+	tm.clk.Advance(pasteDelay + time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tm.captures[ses.TmuxName] = []string{museOtherQueuedPane}
+	tm.clk.Advance(repasteCooldown(1) + time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 2 {
+		t.Fatalf("pasted = %d, want a re-paste: someone else's queued input is not our notice (%v)", len(tm.pasted), tm.pasted)
+	}
+}
+
+// The post-paste Enter check waits submitCheckGap per round; it must not stall
+// the pastes of the sessions after it in the same tick.
+func TestWakeDuePastesEverySessionBeforeTheSubmitChecksWait(t *testing.T) {
+	s, tm, fa := newStore(t)
+	s.Adapters[Fake] = museLikeFake{pasteReadyFake{fa}}
+	ctx := context.Background()
+	for _, name := range []string{"MuseOne", "MuseTwo"} {
+		_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: name, Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, _ := s.LatestSession(ctx, a.ID)
+		tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+		tm.captures[ses.TmuxName] = []string{museBusyPane}
+		panes(tm, append(tm.panes, Pane{Session: a.Name, Command: "swarm-fake-agent"})...)
+	}
+	var mu sync.Mutex
+	pastedAtFirstWait := -1
+	s.After = func(time.Duration) <-chan time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		if pastedAtFirstWait < 0 {
+			pastedAtFirstWait = len(tm.pasted)
+		}
+		c := make(chan time.Time, 1)
+		c <- time.Time{}
+		return c
+	}
+	tm.clk.Advance(pasteDelay + time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 2 || pastedAtFirstWait != 2 {
+		t.Fatalf("pasted %d, %d of them before the first submit-check wait; want both before it", len(tm.pasted), pastedAtFirstWait)
+	}
+}
+
 // Muse sometimes leaves a pasted line sitting in its composer when the Enter
 // lands too early (probed 2026-10-29). After the paste Swarm looks at the
 // composer and sends Enter again while the text is still there.
@@ -100,8 +162,8 @@ func TestTryPasteResendsEnterWhileTheComposerStillHoldsTheNotice(t *testing.T) {
 	s, tm, a, ses := museWakeSetup(t)
 	tm.captures[ses.TmuxName] = []string{museBusyPane, "HELD", "HELD", museBusyPane}
 	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
-	if err := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); err != nil {
-		t.Fatal(err)
+	if check := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); check != nil {
+		check()
 	}
 	if got := countEnters(tm); got != 2 {
 		t.Fatalf("Enter re-sent %d times, want 2 (keys %v)", got, tm.keys)
@@ -112,8 +174,8 @@ func TestTryPasteResendsEnterAtMostThreeTimes(t *testing.T) {
 	s, tm, a, ses := museWakeSetup(t)
 	tm.captures[ses.TmuxName] = []string{museBusyPane, "HELD"}
 	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
-	if err := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); err != nil {
-		t.Fatal(err)
+	if check := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); check != nil {
+		check()
 	}
 	if got := countEnters(tm); got != 3 {
 		t.Fatalf("Enter re-sent %d times for a notice that never leaves, want the bound of 3", got)
@@ -124,8 +186,8 @@ func TestTryPasteSendsNoExtraEnterWhenTheComposerIsClear(t *testing.T) {
 	s, tm, a, ses := museWakeSetup(t)
 	tm.captures[ses.TmuxName] = []string{museBusyPane}
 	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
-	if err := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); err != nil {
-		t.Fatal(err)
+	if check := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); check != nil {
+		check()
 	}
 	if got := countEnters(tm); got != 0 {
 		t.Fatalf("Enter re-sent %d times with a clear composer", got)

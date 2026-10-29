@@ -1230,8 +1230,8 @@ func TestTryPasteUsesPasteReadyWhenTheAdapterHasIt(t *testing.T) {
 		ses, _ := s.LatestSession(ctx, a.ID)
 		tm.captures[ses.TmuxName] = []string{c.capture}
 		r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
-		if err := s.tryPaste(ctx, c.ad(fa), r, "notice", false); err != nil {
-			t.Fatal(err)
+		if check := s.tryPaste(ctx, c.ad(fa), r, "notice", false); check != nil {
+			check()
 		}
 		if got := len(tm.pasted) > 0; got != c.paste {
 			t.Errorf("%s: pasted = %v, want %v (logs %v)", c.name, got, c.paste, logs)

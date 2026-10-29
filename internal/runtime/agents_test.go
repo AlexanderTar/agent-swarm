@@ -41,7 +41,8 @@ func mustDecodeBase64(s string) []byte {
 
 // fakeTmux records every call and serves scripted captures.
 type fakeTmux struct {
-	started  []string // "<name>|<cwd>|<argv joined>"
+	mu       sync.Mutex // Capture and Keys run from the concurrent post-paste Enter checks
+	started  []string   // "<name>|<cwd>|<argv joined>"
 	env      map[string]map[string]string
 	captures map[string][]string // per session: one capture per poll, the last repeats
 	pasted   []string
@@ -82,6 +83,8 @@ func (f *fakeTmux) Capture(ctx context.Context, name string, lines int) (string,
 	if f.captureErr != nil {
 		return "", f.captureErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	seq := f.captures[name]
 	if len(seq) == 0 {
 		return "─────\n❯ \n─────\n", nil // idle by default
@@ -98,6 +101,8 @@ func (f *fakeTmux) PasteLine(ctx context.Context, name, line string) error {
 	return nil
 }
 func (f *fakeTmux) Keys(ctx context.Context, name string, keys ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.keys = append(f.keys, name+"|"+strings.Join(keys, ","))
 	return nil
 }

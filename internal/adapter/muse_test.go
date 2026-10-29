@@ -1237,10 +1237,14 @@ func TestMusePasteReady(t *testing.T) {
 // its re-paste while the block is on screen.
 func TestMuseQueuedInput(t *testing.T) {
 	a := newMuse(testDeps(t))
-	if !a.QueuedInput(pane(t, "muse", "pane-queued-input.txt")) {
-		t.Error("pane with a Queued input block must report queued input")
+	queued := pane(t, "muse", "pane-queued-input.txt")
+	if !a.QueuedInput(queued, "NOTICE 1") {
+		t.Error("pane with a Queued input block holding the notice must report queued input")
 	}
-	if a.QueuedInput(pane(t, "muse", "pane-idle.txt")) || a.QueuedInput("◈ Running command (12s · esc to interrupt)\n─────\n❯ \n─────\n") {
+	if a.QueuedInput(queued, "some-other-agent") {
+		t.Error("queued input that is not the notice must not report queued input")
+	}
+	if a.QueuedInput(pane(t, "muse", "pane-idle.txt"), "NOTICE 1") || a.QueuedInput("◈ Running command (12s · esc to interrupt)\n─────\n❯ \n─────\nNOTICE 1", "NOTICE 1") {
 		t.Error("a pane without the block must not report queued input")
 	}
 }
