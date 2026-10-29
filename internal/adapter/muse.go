@@ -1031,8 +1031,8 @@ func museModelChange(line []byte) (model, effort string) {
 
 // ObserveModel reports the newest model (and effort, when a change line for it
 // follows the newest model line) from this provider session's session.jsonl.
-// Muse has no hooks into Swarm, so the daemon's reconcile tick calls it;
-// transcriptPath is unused. Each call scans only the bytes appended since the
+// Muse's hooks carry no transcript_path and no model, so the daemon's reconcile
+// tick still polls it; transcriptPath is unused. Each call scans only the bytes appended since the
 // previous one; a shrunk or replaced file is rescanned from the start.
 func (m *Muse) ObserveModel(_, providerSessionID string) (string, string, bool) {
 	if providerSessionID == "" {

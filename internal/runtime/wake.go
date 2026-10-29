@@ -311,15 +311,19 @@ const (
 	submitCheckGap = 700 * time.Millisecond
 )
 
+// composerReader is implemented by adapters that can tell whether text still
+// sits unsent in their composer.
+type composerReader interface {
+	ComposerHolds(capture, text string) bool
+}
+
 // resubmitIfHeld looks at the composer after a paste and sends Enter again
 // while the pasted text is still sitting in it, at most submitChecks times.
 // Muse sometimes ignores an Enter that follows the paste too closely and leaves
 // the notice unsent (probed 2026-10-29); only adapters that can read their
 // composer (ComposerHolds) take part.
 func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName, text string) {
-	ch, ok := ad.(interface {
-		ComposerHolds(capture, text string) bool
-	})
+	ch, ok := ad.(composerReader)
 	if !ok {
 		return
 	}
@@ -523,6 +527,9 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if err := s.markWoken(ctx, r.SessionID, false); err != nil {
 		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 		s.logf("wake: markWoken for %s failed (fail=%d backoff=%s)", r.AgentName, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
+		return nil
+	}
+	if _, ok := ad.(composerReader); !ok {
 		return nil
 	}
 	return func() { s.resubmitIfHeld(ctx, ad, r.TmuxName, pasteNotice) }

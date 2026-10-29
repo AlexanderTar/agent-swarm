@@ -227,6 +227,21 @@ func TestTryPasteSendsNoExtraEnterWhenTheComposerIsClear(t *testing.T) {
 	}
 }
 
+// An adapter that cannot read its composer has nothing to check after a paste,
+// so tryPaste hands back no func for the tick to run.
+func TestTryPasteReturnsNoCheckWithoutComposerHolds(t *testing.T) {
+	s, tm, a, ses := museWakeSetup(t)
+	tm.captures[ses.TmuxName] = []string{museBusyPane}
+	s.Adapters[Fake] = pasteReadyFake{s.Adapters[Fake].(museLikeFake).Fake}
+	r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
+	if check := s.tryPaste(context.Background(), s.Adapters[Fake], r, "notice", false); check != nil {
+		t.Fatal("tryPaste returned a post-paste check for an adapter without ComposerHolds")
+	}
+	if len(tm.pasted) != 1 {
+		t.Fatalf("pasted = %v, want the paste itself to go out", tm.pasted)
+	}
+}
+
 func countEnters(tm *fakeTmux) int {
 	n := 0
 	for _, k := range tm.keys {

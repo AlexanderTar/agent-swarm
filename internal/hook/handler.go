@@ -753,7 +753,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		// A cursor queued follow-up fires beforeSubmitPrompt while a tool still runs
 		// (probe 2026-10-29), so for cursor it is no turn boundary: stop and
 		// sessionStart close the turn, and the ceiling bounds a lost postToolUse.
-		case ev == "UserPromptSubmit" && kind == runtime.Cursor:
+		case ev == "UserPromptSubmit" && s.Kind == runtime.Cursor:
 		case endsTurn(ev) && !d.Block, ev == "UserPromptSubmit", ev == "SessionStart":
 			h.RT.TurnEnded(s.ID)
 		}

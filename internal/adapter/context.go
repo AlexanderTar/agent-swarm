@@ -201,7 +201,8 @@ func ContextWindowTokens(kind kinds.AgentKind, model string) (int, bool) {
 }
 
 // SessionContext reads the newest context sample from this provider session's
-// session.jsonl. Muse has no hooks, so the daemon calls it while the session is live.
+// session.jsonl. Muse's hooks carry no transcript_path, so the daemon still polls
+// it while the session is live.
 func (m *Muse) SessionContext(providerSessionID string) (ContextSample, bool) {
 	if providerSessionID == "" {
 		return ContextSample{}, false
