@@ -12,7 +12,7 @@ Mail normally reaches a busy worker at a tool boundary (the hook notice, at most
 
 1. An urgent message is pending and older than `urgentGrace` (30 s).
 2. The session's `last_seen_at` is older than `urgentGrace`: a worker whose hooks still fire gets the notice at its next tool gap and needs no interrupt.
-3. The worker is busy by the shared signal `Store.BusySince` (internal/runtime/busy.go: an open PreToolUse, or the grok leader's "working" push). There is no second busy signal; the 60-minute busy ceiling does not apply, because a hung tool is exactly when to interrupt.
+3. The worker is busy by the shared signal `Store.BusySince` (internal/runtime/busy.go: an open PreToolUse, the grok leader's "working" push, or, for kinds without hooks such as muse, the adapter's `Busy()` footer on the pane as sampled by the reconcile tick). There is no second busy signal; the 60-minute busy ceiling does not apply, because a hung tool is exactly when to interrupt.
 4. Nobody is being waited on: no open `question` or `prompt` row for the session (`prompt` is a terminal permission dialog, opened by `OpenDialogPrompt`; Escape would reject the permission the person is being asked for), and for grok no card on screen (`PasteReady`). A question dialog is dismissed by the pause path (`dismissQuestionDialog`), not here.
 5. The pane runs the agent's process and is not at its idle prompt, read from a fresh capture right before the keys go out.
 
