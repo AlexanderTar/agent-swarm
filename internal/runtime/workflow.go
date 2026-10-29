@@ -1819,13 +1819,19 @@ func (s *Store) BriefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]B
 		if _, err := s.checkWorktreePath(ctx, id, false); err != nil {
 			return nil, err
 		}
-		var repo, path, branch, base string
-		err = s.DB.QueryRowContext(ctx, `SELECT r.name, wt.path, COALESCE(wt.branch, ''), COALESCE(wt.base_sha, '')
-			FROM worktrees wt JOIN repos r ON r.id = wt.repo_id WHERE wt.id = ?`, id).Scan(&repo, &path, &branch, &base)
+		var repo, path, branch, base, detached string
+		err = s.DB.QueryRowContext(ctx, `SELECT r.name, wt.path, COALESCE(wt.branch, ''), COALESCE(wt.base_sha, ''),
+			COALESCE(wt.detached_sha, '')
+			FROM worktrees wt JOIN repos r ON r.id = wt.repo_id WHERE wt.id = ?`, id).Scan(&repo, &path, &branch, &base, &detached)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, BriefWorktree{Repo: repo, Path: path, Branch: branch, BaseSHA7: workflow.SHA7(base), Mode: w.Mode})
+		head := detached
+		if head == "" {
+			head = base
+		}
+		out = append(out, BriefWorktree{Repo: repo, Path: path, Branch: branch, BaseSHA7: workflow.SHA7(base),
+			HeadSHA7: workflow.SHA7(head), Mode: w.Mode})
 	}
 	return out, nil
 }
