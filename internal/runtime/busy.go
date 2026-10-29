@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 )
 
 // busyCeiling is how long a worker may read busy before the stuck alerts come
@@ -22,6 +24,7 @@ type busyState struct {
 	tools       int       // PreToolUse calls with no PostToolUse yet
 	toolSince   time.Time // when tools went from 0 to 1
 	leaderSince time.Time // first poll that saw the grok leader "working" (up to one tick after it started); zero when idle
+	paneSince   time.Time // first reconcile tick whose pane showed the adapter's busy footer and no dialog; zero otherwise
 	shown       bool      // busy_since was last published as shown on the board (agent.changed)
 	waiting     int       // pending messages as of that publish, shown with the busy label
 }
@@ -66,8 +69,54 @@ func (s *Store) TurnEnded(sessionID string) {
 	}
 }
 
+// paneBusy reports whether a capture shows the adapter's busy footer with no
+// dialog on screen: a prompt or card means the worker waits for a person.
+func paneBusy(ad adapter.Adapter, capture string) bool {
+	bz := ad.Busy()
+	plain := adapter.StripANSI(capture)
+	if bz == nil || !bz.MatchString(plain) {
+		return false
+	}
+	for _, m := range ad.PromptPatterns() {
+		if m.Match != nil && m.Match.MatchString(plain) && (m.Exclude == nil || !m.Exclude.MatchString(plain)) {
+			return false
+		}
+	}
+	if pr, ok := ad.(interface{ PasteReady(capture string) bool }); ok && !pr.PasteReady(capture) {
+		return false
+	}
+	return true
+}
+
+// samplePaneBusy records what the pane says: the fallback busy evidence for kinds
+// without tool hooks (muse), and a cross-check for the rest. The reconcile tick
+// calls it with the capture it already took.
+func (s *Store) samplePaneBusy(sessionID string, ad adapter.Adapter, capture string) {
+	busy := paneBusy(ad, capture)
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	b := s.busy[sessionID]
+	if b == nil {
+		if !busy {
+			return
+		}
+		if s.busy == nil {
+			s.busy = map[string]*busyState{}
+		}
+		b = &busyState{}
+		s.busy[sessionID] = b
+	}
+	switch {
+	case !busy:
+		b.paneSince = time.Time{}
+	case b.paneSince.IsZero():
+		b.paneSince = s.Now()
+	}
+}
+
 // BusySince reports whether the session is busy, from an open tool call or the
-// grok leader's "working" push, and since when (the earliest evidence).
+// grok leader's "working" push, and since when (the earliest evidence). With
+// neither, the last pane sample's busy footer counts, since the first sample that saw it.
 func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 	leader := false
 	for _, ad := range s.Adapters {
@@ -100,6 +149,9 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 	}
 	if !b.leaderSince.IsZero() && (since.IsZero() || b.leaderSince.Before(since)) {
 		since = b.leaderSince
+	}
+	if since.IsZero() {
+		since = b.paneSince
 	}
 	return since, !since.IsZero()
 }

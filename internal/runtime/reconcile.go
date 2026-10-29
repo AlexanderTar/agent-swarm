@@ -1196,6 +1196,7 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 		idle = ad.Idle(capture)
+		s.samplePaneBusy(r.SessionID, ad, capture)
 		if o, ok := ad.(interface {
 			ObserveCapture(sessionID, capture string)
 		}); ok {
