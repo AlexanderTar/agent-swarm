@@ -18,6 +18,8 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
+An adapter that isolates HOME must link the shared swarm folders with `linkSwarmShared` (`internal/adapter/swarmhome.go`); never link `run/` (cycle). Details: docs/adding-an-agent-kind.md section 9, "From isolating HOME".
+
 A grok launch that fails with "Couldn't start agent." usually means macOS `fseventsd` is overloaded (grok's startup waits on it for minutes), not a broken grok or config; the Swarm grok home must never self-update away from the probed build. Cause, detection (`grep '"connect finished"' ~/.swarm/grok/logs/unified.jsonl | tail -5`, `swarm doctor`) and the traps: docs/adding-an-agent-kind.md, the TASK-1438 grok notes.
 
 A Claude agent stuck Running with "swarm MCP CONNECT_TIMEOUT" is usually Claude Code freezing at startup, not the shim or daemon: sessions get `MCP_TIMEOUT=600000`, and the daemon relays `mcp_down` to the parent for a Claude session that never listed tools. Cause, detection (`grep -h 'Connection timeout triggered' ~/Library/Caches/claude-cli-nodejs/-Users-*-swarm-work-<agent>/mcp-logs-swarm/*.jsonl`), workaround (`swarm_control retry`) and traps: docs/adding-an-agent-kind.md, the TASK-1458 notes.

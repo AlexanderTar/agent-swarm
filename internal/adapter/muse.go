@@ -368,6 +368,16 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 		return nil, err
 	}
 
+	// The agent-facing shared swarm folders (screenshots, specs, ...) live
+	// under the real swarm home, but skills address them as ~/.swarm/... --
+	// which resolves inside this isolated HOME without the links below (the
+	// generic loop above deliberately excludes the whole swarm home: it would
+	// cycle, since this HOME lives under <swarm home>/run/launch/). run/,
+	// db files and config.json are never linked.
+	if err := linkSwarmShared(homeDir, m.d.UserHome, m.d.Home, m.d.Log); err != nil {
+		return nil, err
+	}
+
 	// XDG_DATA_HOME/STATE/CACHE must be pinned to the real, UserHome-rooted
 	// paths explicitly, not left unset: muse's own fallback for each is
 	// $HOME/.local/share etc. (binary's embedded docs strings), and HOME is
