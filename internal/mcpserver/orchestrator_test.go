@@ -2582,7 +2582,7 @@ func TestSwarmItemsCreateProposesTopLevelItem(t *testing.T) {
 			if it.Status != "draft" {
 				t.Fatalf("%s: status = %q, want draft", tc.typ, it.Status)
 			}
-			if len(it.Repos) != 0 || len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID {
+			if len(it.Repos) != 1 || it.Repos[0] != seed.RepoID || len(it.SuggestedRepos) != 0 {
 				t.Fatalf("%s: repos = %v, suggested = %v", tc.typ, it.Repos, it.SuggestedRepos)
 			}
 			f := s.RT.Notify.(*fakeNotifier)

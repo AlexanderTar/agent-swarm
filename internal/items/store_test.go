@@ -222,8 +222,8 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 }
 
 // TestOrchestratorCanProposeRoot is the 2026-09-26 top-level-items spec: an
-// orchestrator proposing a new root item lands Draft, with any repos moved
-// to suggested (never confirmed) and origin_spike_id set to its own root.
+// orchestrator proposing a new root item lands Draft, with any repos kept
+// confirmed and origin_spike_id set to its own root.
 func TestOrchestratorCanProposeRoot(t *testing.T) {
 	s := newStore(t)
 	root := mk(t, s, items.Epic, "", "Root")
@@ -247,8 +247,11 @@ func TestOrchestratorCanProposeRoot(t *testing.T) {
 			t.Errorf("%s: origin_spike_id = %s, want %s", in.Type, it.OriginSpikeID, root.ID)
 		}
 		if len(in.Repos) > 0 {
-			if !slices.Equal(it.SuggestedRepos, in.Repos) || len(it.Repos) != 0 {
+			if !slices.Equal(it.Repos, in.Repos) || len(it.SuggestedRepos) != 0 {
 				t.Errorf("%s: repos = %v, suggested = %v", in.Type, it.Repos, it.SuggestedRepos)
+			}
+			if it.ReposVersion != 1 {
+				t.Errorf("%s: repos_version = %d, want 1", in.Type, it.ReposVersion)
 			}
 		}
 		if it.RootID != it.ID {
@@ -257,8 +260,54 @@ func TestOrchestratorCanProposeRoot(t *testing.T) {
 	}
 }
 
-// TestProposeRootRefusesUnknownRepoID: a propose call's repos are suggestions,
-// but each must still name a real catalog repo (id, unique name or path) --
+// TestOrchestratorProposalKeepsReposConfirmed (TASK-1496 unit 2): an
+// orchestrator proposing a new root item with repos lands them confirmed
+// (repos_version 1), not as suggestions.
+func TestOrchestratorProposalKeepsReposConfirmed(t *testing.T) {
+	s := newStore(t)
+	root := mk(t, s, items.Epic, "", "Root")
+	orch := items.Orchestrator("agt_1", root.ID)
+	exec(t, s.DB, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+		VALUES ('repo_a', 'repo_a', '/tmp/repo_a', 'main', 'manual', 1, 1)`)
+	for _, in := range []items.CreateInput{
+		{Type: items.Epic, Title: "New epic", Repos: []string{"repo_a"}},
+		{Type: items.Bug, Title: "New bug", Repos: []string{"repo_a"}},
+		{Type: items.Chore, Title: "New chore", Repos: []string{"repo_a"}},
+		{Type: items.Spike, Title: "New spike", SpikeIntent: "feature", Repos: []string{"repo_a"}},
+	} {
+		it, err := s.Create(ctx, in, orch)
+		if err != nil {
+			t.Fatalf("%s: %v", in.Type, err)
+		}
+		if !slices.Equal(it.Repos, []string{"repo_a"}) {
+			t.Errorf("%s: repos = %v, want [repo_a]", in.Type, it.Repos)
+		}
+		if len(it.SuggestedRepos) != 0 {
+			t.Errorf("%s: suggested = %v, want none", in.Type, it.SuggestedRepos)
+		}
+		if it.ReposVersion != 1 {
+			t.Errorf("%s: repos_version = %d, want 1", in.Type, it.ReposVersion)
+		}
+		if it.Status != items.Draft || it.OriginSpikeID != root.ID {
+			t.Errorf("%s: status = %s, origin = %s", in.Type, it.Status, it.OriginSpikeID)
+		}
+		if in.Type == items.Epic {
+			// A pre-confirmed proposal starts cleanly from the board:
+			// the user moves it Draft -> Ready with repos intact.
+			ready := items.Ready
+			started, err := s.Update(ctx, it.Key, items.Patch{Status: &ready, Revision: it.Revision}, user)
+			if err != nil {
+				t.Fatalf("start epic proposal: %v", err)
+			}
+			if !slices.Equal(started.Repos, []string{"repo_a"}) || started.ReposVersion != 1 {
+				t.Errorf("started epic: repos = %v (version %d)", started.Repos, started.ReposVersion)
+			}
+		}
+	}
+}
+
+// TestProposeRootRefusesUnknownRepoID: a propose call's repos are confirmed,
+// so each must still name a real catalog repo (id, unique name or path) --
 // not a typo or anything else a confirm_repos gate downstream can never satisfy.
 func TestProposeRootRefusesUnknownRepoID(t *testing.T) {
 	s := newStore(t)
