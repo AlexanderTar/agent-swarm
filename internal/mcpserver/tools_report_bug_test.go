@@ -132,8 +132,9 @@ func TestReportBugBoardTrueAlsoCreatesDraftBugAndRecordsKey(t *testing.T) {
 			t.Fatalf("brief has empty field %q:\n%s", unwanted, it.Brief)
 		}
 	}
-	if len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID || len(it.Repos) != 0 {
-		t.Fatalf("repos = %v suggested = %v", it.Repos, it.SuggestedRepos)
+	if len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID ||
+		len(it.Repos) != 1 || it.Repos[0] != seed.RepoID || it.ReposVersion != 1 {
+		t.Fatalf("repos = %v (version %d) suggested = %v", it.Repos, it.ReposVersion, it.SuggestedRepos)
 	}
 	if it.OriginSpikeID != "itm_chore" {
 		t.Fatalf("origin = %q, want the reporter's root", it.OriginSpikeID)
@@ -429,6 +430,29 @@ func TestReportBugBoardTrueSuggestsRepoByRemoteURL(t *testing.T) {
 		if !seen[id] {
 			t.Fatalf("suggested = %v, want %v", it.SuggestedRepos, want)
 		}
+	}
+}
+
+// TASK-1496 unit 1: a board:true report confirms the swarmrun catalog repo.
+func TestReportBugBoardTrueConfirmsSwarmrunRepo(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug",
+		`{"title":"Sync drops acks","what_happened":"ack ignored","board":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	it, err := s.RT.Items.Get(ctx, got.ItemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(it.Repos) != 1 || it.Repos[0] != seed.RepoID {
+		t.Fatalf("repos = %v, want [%s] confirmed", it.Repos, seed.RepoID)
+	}
+	if it.ReposVersion != 1 {
+		t.Fatalf("repos_version = %d, want 1", it.ReposVersion)
 	}
 }
 

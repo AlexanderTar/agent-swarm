@@ -150,7 +150,7 @@ func (s *Server) createBoardBug(ctx context.Context, tx *sql.Tx, a runtime.Agent
 	}
 	it, err := s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
 		Type: items.Bug, Title: title, Brief: brief,
-		SuggestedRepos: suggested, OriginSpikeID: a.RootItemID,
+		Repos: suggested, SuggestedRepos: suggested, OriginSpikeID: a.RootItemID,
 	}, items.Daemon())
 	if err != nil {
 		return "", err
