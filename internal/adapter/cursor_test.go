@@ -312,19 +312,18 @@ func TestCursorMCPEnvPlaceholdersAreDocumentedInOneMap(t *testing.T) {
 	}
 }
 
-// Live probe 2026-10-29 (cursor-agent 2026.10.22, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
-// after a server error a pasted prompt sat in the "follow-ups" box and never ran,
-// the pane showing "→ Add a follow-up" and no busy footer. The fixtures are composed
-// from that probe's description (box hint "enter steer · ↑ select/edit · esc cancel"),
-// not captured live. An idle pane holding a queued item is not idle (no more pastes
-// stack on it) and gets Up+Enter; the same box under a busy footer is a normal
+// Live probes 2026-10-29 (cursor-agent 2026.10.22, /Users/alexandertar/.swarm/research/CHORE-167/2026-10-29-cursor-agy-mid-turn.md):
+// after a server error a pasted prompt sat in the "follow-ups" box and never ran.
+// Two stranded variants. B: hint "enter steer · ↑ select/edit · esc cancel" and an
+// empty composer ("→ Add a follow-up"): one plain Enter submits it (Up opens the
+// line for editing and Enter then only closes the edit, so Up+Enter never works).
+// A: hint "↑ to edit" and the composer refilled with the cancelled prompt: Enter
+// would replay that prompt, so no keys are sent. The fixtures are composed from
+// those descriptions, not captured byte for byte. Neither variant reads idle (a
+// notice must not stack on it); the same box under a busy footer is a normal
 // queued follow-up and is left alone.
-func TestCursorStrandedFollowUpIsSubmitted(t *testing.T) {
+func TestCursorStrandedFollowUpIsSubmittedWithPlainEnter(t *testing.T) {
 	a := newCursor(testDeps(t))
-	stranded := pane(t, "cursor", "pane-followups-stranded.txt")
-	if a.Idle(stranded) {
-		t.Error("a pane whose follow-ups box holds a queued item must not read idle: a paste would stack on it")
-	}
 	var pm *PromptMatcher
 	for _, p := range a.PromptPatterns() {
 		if p.Title == "Stranded follow-up" {
@@ -336,13 +335,24 @@ func TestCursorStrandedFollowUpIsSubmitted(t *testing.T) {
 		t.Fatal("no PromptPatterns entry titled \"Stranded follow-up\"")
 	}
 	hits := func(capture string) bool {
-		return pm.Match.MatchString(capture) && (pm.Exclude == nil || !pm.Exclude.MatchString(capture))
+		return pm.Match.MatchString(capture) && (pm.Require == nil || pm.Require.MatchString(capture)) &&
+			(pm.Exclude == nil || !pm.Exclude.MatchString(capture))
 	}
-	if !hits(stranded) {
-		t.Error("the stranded pane must match")
+	variantB := pane(t, "cursor", "pane-followups-stranded.txt")
+	variantA := pane(t, "cursor", "pane-followups-stranded-edit.txt")
+	for name, p := range map[string]string{"B (empty composer)": variantB, "A (cancelled prompt in the composer)": variantA} {
+		if a.Idle(p) {
+			t.Errorf("variant %s: a pane whose follow-ups box holds an item must not read idle", name)
+		}
 	}
-	if pm.Action != "Up+Enter" {
-		t.Errorf("Action = %q, want Up+Enter (select the queued item, submit it)", pm.Action)
+	if !hits(variantB) {
+		t.Error("variant B, the empty composer, must match")
+	}
+	if pm.Action != "Enter" {
+		t.Errorf("Action = %q, want a plain Enter", pm.Action)
+	}
+	if hits(variantA) {
+		t.Error("variant A must get no keys: Enter replays the cancelled prompt")
 	}
 	if hits(pane(t, "cursor", "pane-followups-busy.txt")) {
 		t.Error("a follow-up queued behind a running turn must be left alone")

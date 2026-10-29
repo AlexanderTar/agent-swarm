@@ -30,7 +30,7 @@ Queued agents and parked operations (capacity pauses, resumes, retries) start on
 
 Swarm cancels a running turn only for a pending pause or handoff request (`IsUrgent`) to a busy worker whose hooks have been silent for 30 s, once per message, never for an idle worker, an open question, a permission dialog or a grok card, and grok gets one `C-c` only (a second quits it). When and how, per kind: docs/urgent-interrupt.md.
 
-Delivery to a busy cursor or agy session (probed 2026-10-29): never natively wake a busy agy (`Agy.Wake` starts a hidden parallel agent on the same conversation; `WakeDue` skips it while `BusyNow`), never emit `injectSteps` for agy PreToolUse (it fails the tool call), and a cursor `beforeSubmitPrompt` mid-tool is a queued follow-up, not a turn end. A cursor pane with a stranded follow-up (the "enter steer" box and no busy footer) reads non-idle and is submitted with Up+Enter. Details and the research notes path: docs/adding-an-agent-kind.md section 9, "From cursor and Antigravity".
+Delivery to a busy cursor or agy session (probed 2026-10-29): never natively wake a busy agy (`Agy.Wake` starts a hidden parallel agent on the same conversation; `WakeDue` skips it while `BusyNow`), never emit `injectSteps` for agy PreToolUse (it fails the tool call), and a cursor `beforeSubmitPrompt` mid-tool is a queued follow-up, not a turn end. A cursor pane with a stranded follow-up (the "enter steer" box and no busy footer) reads non-idle and is submitted with a plain Enter when its composer is empty (never Up+Enter; the "↑ to edit" variant with a refilled composer gets no keys). Details and the research notes path: docs/adding-an-agent-kind.md section 9, "From cursor and Antigravity".
 
 # /api/state stays bounded
 

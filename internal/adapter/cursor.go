@@ -124,6 +124,11 @@ var (
 	// cursorQueued is the follow-ups box hint (probe 2026-10-29): a line pasted or
 	// queued while no turn runs can sit there and never start.
 	cursorQueued = regexp.MustCompile(`enter steer\s*·[^\n]*esc cancel`)
+	// cursorQueuedEdit is the box hint when the cancelled prompt was left in the
+	// composer (probe 2026-10-29): not idle either, but Enter would replay that prompt.
+	cursorQueuedEdit = regexp.MustCompile(`↑ to edit`)
+	// cursorEmptyComposer is the composer's placeholder: only then is Enter safe.
+	cursorEmptyComposer = regexp.MustCompile(`(?m)^\s*→ Add a follow-up`)
 )
 
 func (c *Cursor) ProcessNames() []*regexp.Regexp { return cursorProcess }
@@ -131,9 +136,10 @@ func (c *Cursor) IdlePrompt() *regexp.Regexp     { return cursorIdle }
 func (c *Cursor) Busy() *regexp.Regexp           { return cursorBusy }
 
 // Idle is false while the follow-ups box holds an item, so a notice never stacks
-// on a stranded one; the "Stranded follow-up" prompt pattern submits it.
+// on a stranded one; the "Stranded follow-up" prompt pattern submits the one it can.
 func (c *Cursor) Idle(capture string) bool {
-	return idle(c, capture) && !cursorQueued.MatchString(StripANSI(capture))
+	plain := StripANSI(capture)
+	return idle(c, capture) && !cursorQueued.MatchString(plain) && !cursorQueuedEdit.MatchString(plain)
 }
 
 var (
@@ -155,8 +161,11 @@ func (c *Cursor) PromptPatterns() []PromptMatcher {
 		{Match: cursorAllowDeny, Title: "Permission prompt (Allow/Deny)", Action: "Enter"},
 		{Match: cursorContinue, Title: "Continue confirmation", Action: "y"},
 		// Behind a running turn the queued item runs by itself; with no busy footer it
-		// is stranded (server error, probe 2026-10-29): select it and submit.
-		{Match: cursorQueued, Exclude: cursorBusy, Title: "Stranded follow-up", Action: "Up+Enter"},
+		// is stranded (server error, probe 2026-10-29). One plain Enter with the
+		// composer empty submits it; Up+Enter never does (Up opens the line for
+		// editing, Enter only closes the edit). The "↑ to edit" variant holds the
+		// cancelled prompt in the composer, where Enter would replay it: no keys.
+		{Match: cursorQueued, Require: cursorEmptyComposer, Exclude: cursorBusy, Title: "Stranded follow-up", Action: "Enter"},
 		{Match: cursorTrust, Require: cursorTrustQuit, Title: "Trust this workspace"},
 	}
 }
