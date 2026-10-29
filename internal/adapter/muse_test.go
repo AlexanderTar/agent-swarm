@@ -696,12 +696,93 @@ func TestMuseSetupEnvExcludesSwarmHomeByPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := l.Env["HOME"]
-	if _, err := os.Lstat(filepath.Join(home, ".swarm")); !os.IsNotExist(err) {
-		t.Errorf("isolated HOME must not carry the swarm home (.swarm) through, got err=%v", err)
+	// The generic loop must still exclude the swarm home by absolute path:
+	// .swarm in the isolated HOME is the real dir linkSwarmShared builds
+	// (holding only the allowlisted links), never a whole-dir symlink back
+	// to the real home -- that symlink is the find -L cycle this test was
+	// written for, and it would shadow the allowlisted links.
+	fi, err := os.Lstat(filepath.Join(home, ".swarm"))
+	if err != nil {
+		t.Fatalf("linkSwarmShared must create the isolated .swarm base dir: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("isolated HOME must not symlink the swarm home (.swarm) through whole")
 	}
 	p := filepath.Join(home, ".gitconfig")
 	if target, err := os.Readlink(p); err != nil || target != filepath.Join(d.UserHome, ".gitconfig") {
 		t.Errorf(".gitconfig symlink target = %q, %v; want %q", target, err, filepath.Join(d.UserHome, ".gitconfig"))
+	}
+}
+
+// TestMuseSetupEnvLinksSharedSwarmDirs: with the swarm home nested under
+// the user home, the isolated HOME's .swarm/<dir> must resolve to the real
+// swarm home's agent-facing dirs (screenshots, specs, plans, research,
+// designs, kb), run/ must stay absent, and a second setupEnv for the same
+// session (Resume) must succeed and keep the links.
+func TestMuseSetupEnvLinksSharedSwarmDirs(t *testing.T) {
+	d := testDeps(t)
+	d.Home = filepath.Join(d.UserHome, ".swarm")
+	if err := os.MkdirAll(d.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s := museSpec(t)
+	l, err := newMuse(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := l.Env["HOME"]
+	for _, sub := range []string{"screenshots", "specs", "plans", "research", "designs", "kb"} {
+		got, err := filepath.EvalSymlinks(filepath.Join(home, ".swarm", sub))
+		if err != nil {
+			t.Errorf("%s: EvalSymlinks: %v", sub, err)
+			continue
+		}
+		// Both sides are evaluated: on macOS t.TempDir() sits under /var,
+		// itself a symlink to /private/var.
+		want, err := filepath.EvalSymlinks(filepath.Join(d.Home, sub))
+		if err != nil {
+			t.Errorf("%s: EvalSymlinks(real): %v", sub, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s resolves to %q, want %q", sub, got, want)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".swarm", "run")); !os.IsNotExist(err) {
+		t.Errorf("isolated HOME's .swarm must not carry run, got err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".swarm", "config.json")); !os.IsNotExist(err) {
+		t.Errorf("isolated HOME's .swarm must not carry config.json, got err=%v", err)
+	}
+
+	// Resume reruns setupEnv against the same launchDir: it must succeed and
+	// keep every link.
+	s.ProviderSessionID = "prov-xyz"
+	resume, err := newMuse(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"screenshots", "specs", "plans", "research", "designs", "kb"} {
+		got, err := filepath.EvalSymlinks(filepath.Join(resume.Env["HOME"], ".swarm", sub))
+		want, werr := filepath.EvalSymlinks(filepath.Join(d.Home, sub))
+		if err != nil || werr != nil || got != want {
+			t.Errorf("after Resume %s resolves to %q, %v", sub, got, err)
+		}
+	}
+}
+
+// TestMuseSetupEnvNoSwarmDirWhenHomeOutsideUserHome: a swarm home that does
+// not sit under the user home (custom --home) leaves the isolated HOME
+// without any .swarm.
+func TestMuseSetupEnvNoSwarmDirWhenHomeOutsideUserHome(t *testing.T) {
+	d := testDeps(t) // Home is a scratch dir outside UserHome
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(l.Env["HOME"], ".swarm")); !os.IsNotExist(err) {
+		t.Errorf("isolated HOME must have no .swarm, got err=%v", err)
 	}
 }
 
