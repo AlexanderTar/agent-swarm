@@ -342,6 +342,31 @@ func TestMuseIdleAndBusy(t *testing.T) {
 	}
 }
 
+// The placeholder after ❯ is dim grey in a live capture-pane -e of muse
+// 1.4.14 (prompt colour 38;2;90;160;255, dim 2, grey 38;2;138;144;152). The
+// suggestion words are the string that binary draws; the captured session's
+// composer was empty, so the words are joined to those bytes here. Typed
+// text and the same words without that styling are a draft, not idle.
+func TestMusePlaceholderSuggestionReadsIdle(t *testing.T) {
+	a := newMuse(testDeps(t))
+	placeholder := pane(t, "muse", "pane-idle-placeholder.txt")
+	if !a.Idle(placeholder) {
+		t.Error("dim grey placeholder after ❯ should be idle")
+	}
+	greyOnly := "\x1b[0m\x1b[38;2;90;160;255m❯ \x1b[38;2;138;144;152mAsk to monitor a running build or log and get pinged on changes"
+	if !a.Idle(greyOnly) {
+		t.Error("grey placeholder without dim should be idle")
+	}
+	unstyled := "\x1b[0m\x1b[38;2;90;160;255m❯ Ask to monitor a running build or log and get pinged on changes"
+	if a.Idle(unstyled) {
+		t.Error("the suggestion words without dim or grey styling are typed text")
+	}
+	typed := "\x1b[0m\x1b[38;2;90;160;255m❯ look at the failing test"
+	if a.Idle(typed) {
+		t.Error("typed text after ❯ should not be idle")
+	}
+}
+
 // D7 (dialog-needs-you spec): --trust-workspace is on argv for both Launch
 // and Resume, every time (TestMuseLaunchArgv/TestMuseResumeArgv already pin
 // the exact argv; this is a dedicated regression name so a future change

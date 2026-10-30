@@ -142,6 +142,18 @@ func TestUrgentMessageNeverInterruptsAnIdleWorker(t *testing.T) {
 	}
 }
 
+// An idle-looking prompt is not a finished turn when a hook says the turn is
+// still open. The worker is busy (an open tool) and should be interrupted.
+func TestUrgentInterruptFiresWhenTheHookSaysTheTurnIsOpen(t *testing.T) {
+	s, tm, ses, a := urgentSession(t, Fake, "swarm-fake-agent", "─────\n❯ \n─────\n")
+	s.NoteHookTurn(ses.ID, Fake, "UserPromptSubmit", false, "")
+	enq(t, s, a.ID, a.RootItemID, "control", pauseControl, 0)
+	tickWake(t, s, tm, 2*urgentGrace)
+	if got := interruptsSent(tm, ses.TmuxName); len(got) != 1 || got[0] != "Escape" {
+		t.Fatalf("hook-open turn at an idle prompt: keys = %v, want one Escape", got)
+	}
+}
+
 // A worker waiting on a question card is waiting on a person: the dismissal
 // path owns that case, an interrupt would only throw its answer away.
 func TestUrgentMessageNeverInterruptsAWorkerWaitingOnAQuestion(t *testing.T) {

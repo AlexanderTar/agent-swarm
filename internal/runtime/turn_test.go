@@ -259,3 +259,80 @@ func TestQuotaResetWakeFollowsTheHookTurn(t *testing.T) {
 		t.Fatalf("woken = %d pasted = %v, an open turn must not be pasted", n, tm.pasted)
 	}
 }
+
+// Paste gating follows the hook turn: a closed turn accepts a paste even while
+// the pane looks busy, and a question dialog still refuses, including when the
+// prompt line under it would read idle. An open turn on an idle pane still
+// accepts one, because the paste that opened the turn has to be repeatable
+// until the notice lands.
+func TestPasteGateFollowsTheHookTurnAndRefusesADialog(t *testing.T) {
+	s, tm, _ := newStore(t)
+	withRealAdapters(t, s)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "PasteGate", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ? WHERE id = ?`, Claude, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ad := s.Adapters[Claude]
+	const (
+		idle   = "❯ \n"
+		busy   = "✻ Beboppin'… (48s · ↓ 114 tokens)\n"
+		dialog = "Is this a project you created or one you trust?\nYes, I trust this folder\n❯ \n"
+	)
+	if !ad.Idle(idle) || ad.Idle(busy) || !ad.Idle(dialog) {
+		t.Fatalf("fixtures: idle=%v busy=%v dialog=%v", ad.Idle(idle), ad.Idle(busy), ad.Idle(dialog))
+	}
+	paste := func(capture string) bool {
+		t.Helper()
+		tm.pasted = nil
+		tm.captures[ses.TmuxName] = []string{capture}
+		r := wakeRow{SessionID: ses.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "claude"}
+		if check := s.tryPaste(ctx, ad, r, "notice", false); check != nil {
+			check()
+		}
+		return len(tm.pasted) > 0
+	}
+	s.NoteHookTurn(ses.ID, Claude, "UserPromptSubmit", false, "")
+	if !paste(idle) {
+		t.Error("an open turn on an idle pane was not pasted into")
+	}
+	if paste(busy) {
+		t.Error("an open turn on a busy pane was pasted into")
+	}
+	s.NoteHookTurn(ses.ID, Claude, "Stop", false, "")
+	if !paste(busy) {
+		t.Error("a closed turn was not pasted into while the pane still looks busy")
+	}
+	s.NoteHookTurn(ses.ID, Claude, "Stop", false, "")
+	if paste(dialog) {
+		t.Error("a closed turn was pasted over a question dialog")
+	}
+}
+
+// A muse reading is an end of turn when the hook closed it, even if the pane
+// has no idle prompt. The placeholder prompt is the pane fallback's job.
+func TestMuseTurnEndedFollowsAClosedHook(t *testing.T) {
+	s, tm, _ := newStore(t)
+	withRealAdapters(t, s)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "MuseEnd", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm.captures[ses.TmuxName] = []string{"still working, no prompt\n"}
+	s.NoteHookTurn(ses.ID, Muse, "Stop", false, "")
+	if !s.museTurnEnded(ctx, ses.ID, ses.TmuxName, 7) {
+		t.Fatal("a closed hook did not end the muse turn while the pane looks busy")
+	}
+}

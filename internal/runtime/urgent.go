@@ -19,7 +19,7 @@ const urgentGrace = 30 * time.Second
 //   - the worker is busy by the shared busy signal (open tool call or grok
 //     leader "working"), not merely quiet;
 //   - nobody is being waited on (no open question or permission dialog, no grok card);
-//   - the pane runs the agent and is not at its idle prompt, rechecked right
+//   - the pane runs the agent and the turn is not over, rechecked right
 //     before the keys: grok's C-c at idle arms quit and a second one exits it.
 //
 // The adapter's own InterruptKeys are used (Escape for claude and codex, one C-c
@@ -51,7 +51,13 @@ func (s *Store) interruptForUrgent(ctx context.Context, r wakeRow) {
 	if pr, ok := ad.(interface{ PasteReady(capture string) bool }); ok && !pr.PasteReady(capture) {
 		return // a card is up: someone is meant to answer it
 	}
-	if ad.Idle(capture) {
+	if s.SessionIdle(r.SessionID, ad, capture) {
+		return
+	}
+	// Grok's interrupt is one C-c, and C-c at its idle prompt arms quit. A
+	// paste opens the hook turn while that prompt is still on screen, so the
+	// pane stays the guard for grok even when the hook says the turn is open.
+	if r.Kind == Grok && ad.Idle(capture) {
 		return
 	}
 	if err := s.Tmux.Keys(ctx, r.TmuxName, ad.InterruptKeys()...); err != nil {

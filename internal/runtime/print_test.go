@@ -210,6 +210,24 @@ func TestPrintTurnTickMuseStyle(t *testing.T) {
 	}
 }
 
+// A closed hook is the end of the turn for a reply sample, even when the pane
+// has no idle prompt.
+func TestPrintTurnTickFollowsAClosedHookOnABusyPane(t *testing.T) {
+	s, tm, fa, ses, req := printSectionAll(t)
+	if _, err := s.DB.Exec(`UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, req.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	tm.captures[ses.TmuxName] = []string{"still working, no prompt\n"}
+	s.NoteHookTurn(ses.ID, Fake, "Stop", false, "")
+	fa.LastReplyReadable, fa.LastReplyFound, fa.LastReplyText = true, true, req.ChatBlock
+	if err := s.PrintTurnTick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := relayFor(t, s, req.AgentID, req.ID); p["event"] != "request_ask" {
+		t.Fatalf("relay = %v, want request_ask from the closed hook", p)
+	}
+}
+
 func TestPrintTurnTickUnreadableReplyAsks(t *testing.T) {
 	s, tm, fa, ses, req := printSectionAll(t)
 	s.DB.Exec(`UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, req.AgentID)

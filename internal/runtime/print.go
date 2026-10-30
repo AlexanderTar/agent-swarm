@@ -365,7 +365,7 @@ func (s *Store) PrintTurnTick(ctx context.Context) error {
 			since = max(since, r.printAt)
 		}
 		capture, err := s.Tmux.Capture(ctx, c.tmux, 15)
-		if err != nil || !s.Adapters[AgentKind(c.kind)].Idle(capture) {
+		if err != nil || !s.SessionIdle(c.id, s.Adapters[AgentKind(c.kind)], capture) {
 			continue
 		}
 		text, found, readable := reader.LastReply(c.provider, db.FromMillis(since))
