@@ -211,7 +211,7 @@ func (s *Store) museTurnEnded(ctx context.Context, sessionID, tmuxName string, s
 		return false
 	}
 	capture, err := s.Tmux.Capture(ctx, tmuxName, 15)
-	if err != nil || !ad.Idle(capture) {
+	if err != nil || !s.SessionIdle(sessionID, ad, capture) {
 		return false
 	}
 	s.bookkeepingMu.Lock()

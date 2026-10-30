@@ -18,6 +18,8 @@ When a package falls below its threshold, add real behaviour tests that assert o
 
 Adding or changing an agent kind: follow docs/adding-an-agent-kind.md
 
+A finished turn is a hook close (`Store.SessionIdle`, internal/runtime/turn.go), not a pane that looks idle. No hook state, or an open turn with no hook for 15 minutes and an idle pane, falls back to the pane. `BusyNow` is a separate signal and stays in busy.go. The progress nudge reads the same hook turn only to mark idle when a tool call is still open and the turn is stale; it does not store turn open or close. A muse placeholder after ❯ is idle only when it is dim or grey. Cause, the per-kind stop events, and the muse repro: docs/adding-an-agent-kind.md, "Idle is the hook turn".
+
 An adapter that isolates HOME must link the shared swarm folders with `linkSwarmShared` (`internal/adapter/swarmhome.go`); never link `run/` (cycle). Details: docs/adding-an-agent-kind.md section 9, "From isolating HOME".
 
 A grok launch that fails with "Couldn't start agent." usually means macOS `fseventsd` is overloaded (grok's startup waits on it for minutes), not a broken grok or config; the Swarm grok home must never self-update away from the probed build. Cause, detection (`grep '"connect finished"' ~/.swarm/grok/logs/unified.jsonl | tail -5`, `swarm doctor`) and the traps: docs/adding-an-agent-kind.md, the TASK-1438 grok notes.

@@ -322,7 +322,7 @@ type composerReader interface {
 // Muse sometimes ignores an Enter that follows the paste too closely and leaves
 // the notice unsent (probed 2026-10-29); only adapters that can read their
 // composer (ComposerHolds) take part.
-func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName, text string) {
+func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, sessionID, tmuxName, text string) {
 	ch, ok := ad.(composerReader)
 	if !ok {
 		return
@@ -341,6 +341,7 @@ func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName
 			s.logf("wake: resubmit Enter for %s: %v", tmuxName, err)
 			return
 		}
+		s.MarkPromptSubmitted(sessionID)
 		s.logf("wake: notice still in the composer of %s; sent Enter again (%d of %d)", tmuxName, i+1, submitChecks)
 	}
 }
@@ -433,7 +434,7 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 			}
 			continue
 		}
-		if why := s.panePasteReady(ctx, ad, p.tmux, command[p.tmux]); why != "" {
+		if why := s.panePasteReady(ctx, p.id, ad, p.tmux, command[p.tmux]); why != "" {
 			s.logf("wake: rename for %s deferred (%s)", p.tmux, why)
 			continue
 		}
@@ -441,6 +442,7 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 			s.logf("wake: rename paste for %s: %v", p.tmux, err)
 			continue
 		}
+		s.MarkPromptSubmitted(p.id)
 		if err := clear(); err != nil {
 			s.logf("wake: clear pending name for %s: %v", p.tmux, err)
 			continue
@@ -452,7 +454,7 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 
 // panePasteReady is tryPaste's pane gate: "" when the pane may take a paste,
 // otherwise the reason it may not.
-func (s *Store) panePasteReady(ctx context.Context, ad adapter.Adapter, tmuxName, paneCommand string) string {
+func (s *Store) panePasteReady(ctx context.Context, sessionID string, ad adapter.Adapter, tmuxName, paneCommand string) string {
 	if !(matchesAny(ad.ProcessNames(), paneCommand) && !isShell(paneCommand)) {
 		return fmt.Sprintf("pane command %q matches no ProcessNames pattern", paneCommand)
 	}
@@ -460,16 +462,41 @@ func (s *Store) panePasteReady(ctx context.Context, ad adapter.Adapter, tmuxName
 	if err != nil {
 		return "capture failed"
 	}
-	// An adapter whose TUI safely steers or queues a paste mid-turn (Muse)
-	// gates on PasteReady instead of Idle; everyone else needs a real idle pane.
+	// An adapter whose TUI safely steers or queues a paste mid-turn (Muse,
+	// and Grok when no card is up) gates on PasteReady instead of the turn.
+	// Everyone else may paste when the hook says the turn is over or the pane
+	// is idle. The pane check stays: a paste opens the turn, and a notice
+	// that never landed has to be pasted again while the prompt is still up.
+	// A dialog refuses either way. A hook close cannot see one.
 	if pr, ok := ad.(interface{ PasteReady(capture string) bool }); ok {
 		if !pr.PasteReady(capture) {
 			return "question dialog open"
 		}
-	} else if !ad.Idle(capture) {
-		return "pane not idle"
+		return ""
 	}
-	return ""
+	if promptDialogOpen(ad, capture) {
+		return "question dialog open"
+	}
+	if s.SessionIdle(sessionID, ad, capture) || ad.Idle(capture) {
+		return ""
+	}
+	return "pane not idle"
+}
+
+// promptDialogOpen reports a PromptPatterns dialog on the pane, including one
+// still mid-render. Require is for the keypress, not for refusing a paste.
+func promptDialogOpen(ad adapter.Adapter, capture string) bool {
+	plain := stripANSI(capture)
+	for _, m := range ad.PromptPatterns() {
+		if m.Match == nil || !m.Match.MatchString(plain) {
+			continue
+		}
+		if m.Exclude != nil && m.Exclude.MatchString(plain) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // isShell rejects a bare shell prompt from the idle-paste check (I2).
@@ -509,12 +536,13 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 		s.logf("wake: paste for %s skipped/failed (%s; fail=%d backoff=%s)", r.AgentName, reason, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
 		return nil
 	}
-	if why := s.panePasteReady(ctx, ad, r.TmuxName, r.PaneCommand); why != "" {
+	if why := s.panePasteReady(ctx, r.SessionID, ad, r.TmuxName, r.PaneCommand); why != "" {
 		return fail(why)
 	}
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")
 	}
+	s.MarkPromptSubmitted(r.SessionID)
 	if inboxRendered {
 		s.MarkNoticeSeen(r.SessionID)
 	}
@@ -532,7 +560,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if _, ok := ad.(composerReader); !ok {
 		return nil
 	}
-	return func() { s.resubmitIfHeld(ctx, ad, r.TmuxName, pasteNotice) }
+	return func() { s.resubmitIfHeld(ctx, ad, r.SessionID, r.TmuxName, pasteNotice) }
 }
 
 // raiseUndeliverable raises agent.undeliverable once per batch. A notification
@@ -887,8 +915,9 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		switch {
 		case err != nil:
 			s.logf("wake: quota-reset capture for %s (session %s): %v", agentName, sessionID, err)
-		case ok && ad.Idle(capture):
+		case ok && s.SessionIdle(sessionID, ad, capture):
 			if err := s.Tmux.PasteLine(ctx, tmuxName, notice); err == nil {
+				s.MarkPromptSubmitted(sessionID)
 				s.markWoken(ctx, sessionID, false)
 				woken++
 			}

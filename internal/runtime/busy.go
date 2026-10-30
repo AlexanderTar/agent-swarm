@@ -87,19 +87,45 @@ func (s *Store) ToolFinished(sessionID string) {
 // when it is not. A turn cut off with no Stop (a usage limit; Claude registers
 // no StopFailure hook) gets its first TurnEnded only at that wake. The idle
 // mark from the last tool drop stays where it is, so the gap is the hours
-// since the tool, not the seconds since the wake.
+// since the tool, not the seconds since the wake. A tool call still open at
+// that wake (Escape or a crash, no PostToolUse and no Stop) has no earlier
+// drop: the mark is the open call's start when the hook turn is still open
+// and stale. A daemon paste refreshes the hook before this runs, so
+// MarkPromptSubmitted records that mark first and noteIdle keeps it. The
+// handler notes a real Stop before calling here, so a long tool that ends
+// normally keeps the mark at the Stop.
 func (s *Store) TurnEnded(sessionID string) {
+	now := s.Now()
+	ht := s.HookTurn(sessionID)
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
 	if b := s.busy[sessionID]; b != nil {
 		if b.tools > 0 {
-			b.noteIdle(s.Now())
+			b.noteIdle(openCallIdle(b, ht, now))
 		}
 		b.tools = 0
 		if b.turnEndedAt.IsZero() {
-			b.turnEndedAt = s.Now()
+			b.turnEndedAt = now
 		}
 	}
+}
+
+// turnOpenStale reports a known open turn whose last hook is missing or older
+// than hookTurnStale: the Stop never arrived.
+func turnOpenStale(ht HookTurn, now time.Time) bool {
+	return ht.Known && ht.Open && (ht.LastHook.IsZero() || now.Sub(ht.LastHook) > hookTurnStale)
+}
+
+// openCallIdle is the idle mark for a tool call still open at TurnEnded. A
+// stale open turn never received the Stop: the idle started when the call did.
+// Anything else (unknown hook state, a turn this Stop just closed, a hook a
+// paste already refreshed) marks now. noteIdle keeps the earlier mark, so a
+// paste that settled the call first is not overwritten.
+func openCallIdle(b *busyState, ht HookTurn, now time.Time) time.Time {
+	if turnOpenStale(ht, now) && !b.toolSince.IsZero() {
+		return b.toolSince
+	}
+	return now
 }
 
 // noteIdle keeps the earliest moment tools sat at 0 since the last tool call.

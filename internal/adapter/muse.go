@@ -444,8 +444,10 @@ func (m *Muse) Resume(s Spec) (Launch, error) {
 
 var (
 	// Pinned against live tmux captures 2026-09-23 (v1.3.0, fixtures in
-	// testdata/muse/). Idle is a bare ❯ line; a submitted prompt puts text
-	// after ❯ so it no longer matches. Busy runs against StripANSI (see
+	// testdata/muse/). A bare ❯ line is idle. A dim or grey placeholder after
+	// ❯ is still idle (1.4.14 capture-pane -e: prompt 38;2;90;160;255, dim
+	// SGR 2, grey 38;2;138;144;152 and the two nearby greys). Typed text has
+	// neither, so it does not match. Busy runs against StripANSI (see
 	// idle()), which is what makes the per-letter truecolor escapes in the
 	// spinner line harmless: ◈/◇ + "(Ns · esc to interrupt)".
 	// P0-4: `muse` is a launcher script whose last line `exec`s the real
@@ -456,8 +458,10 @@ var (
 	// "muse-bin-1.3.0-". `.*` matches the empty tail, so this also covers the
 	// truncated form. Confirmed live 2026-09-23.
 	museProcess = []*regexp.Regexp{regexp.MustCompile(`^muse(-bin.*)?$`)}
-	museIdle    = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*❯(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*$")
-	museBusy    = regexp.MustCompile(`(?m)^[^\n]*[◈◇][^\n]*interrupt[^\n]*$`)
+	museIdle    = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*❯(?:" +
+		"(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*$" +
+		"|(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*(?:\x1b\\[2m|\x1b\\[38;2;(?:103;108;116|124;130;138|138;144;152)m)[^\n]*$)")
+	museBusy = regexp.MustCompile(`(?m)^[^\n]*[◈◇][^\n]*interrupt[^\n]*$`)
 	// museQuestionDialog marks Muse's request_user_input dialog. Its footer,
 	// from the 1.4.0 probe: "Enter to select · ↑/↓ to move · Tab for an
 	// optional note". With it on screen a paste is unsafe: typed letters move

@@ -407,3 +407,87 @@ func TestNudgeCountsSequentialShortCallsAsOneStretch(t *testing.T) {
 		t.Fatalf("15 one-minute calls in one turn: %d nudges, want 1", n)
 	}
 }
+
+// A daemon paste calls MarkPromptSubmitted, which refreshes the hook, and only
+// then does UserPromptSubmit run TurnEnded. An Escape during a tool call has
+// no Stop, so that wake must not remind the agent for the hours it sat idle.
+func TestNudgeRestartsAfterAnInterruptedTurnWhenTheDaemonPastes(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgePaste")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	s.NoteHookTurn(sid, Fake, "PreToolUse", false, "")
+	at.Advance(6 * time.Hour)
+	s.MarkPromptSubmitted(sid) // tryPaste, before the prompt's hook
+	at.Advance(2 * time.Second)
+	s.TurnEnded(sid)
+	s.NoteHookTurn(sid, Fake, "UserPromptSubmit", false, "")
+	at.Advance(10 * time.Second)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after a daemon paste woke an interrupted turn: %d nudges, want 0", n)
+	}
+}
+
+// An Escape or a crash during a tool call emits no PostToolUse and no Stop.
+// The wake's UserPromptSubmit is the first TurnEnded, hours later, and it
+// runs before that event refreshes the hook. The first tool call of the new
+// stretch is not a reminder for the silence.
+func TestNudgeRestartsAfterAnInterruptedOpenToolCall(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeInterrupt")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	s.NoteHookTurn(sid, Fake, "PreToolUse", false, "")
+	at.Advance(6 * time.Hour)
+	s.TurnEnded(sid) // wake, before UserPromptSubmit refreshes the hook
+	at.Advance(10 * time.Second)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after an interrupted turn sat idle 6h: %d nudges, want 0", n)
+	}
+}
+
+// A tool that runs longer than the stale-hook fallback and then Stops is
+// still this stretch. The Stop is on the hook record before TurnEnded, so
+// the idle mark stays at the Stop and a wake a few seconds later does not
+// start a new clock.
+func TestNudgeKeepsTheClockWhenStopClosesALongOpenTool(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeLongStop")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	s.NoteHookTurn(sid, Fake, "PreToolUse", false, "")
+	at.Advance(20 * time.Minute)
+	s.NoteHookTurn(sid, Fake, "Stop", false, "")
+	s.TurnEnded(sid)
+	at.Advance(30 * time.Second)
+	s.TurnEnded(sid) // UserPromptSubmit on the wake
+	s.ToolStarted(sid)
+	at.Advance(6 * time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("20 min tool, Stop, 30s gap, 6 min more: %d nudges, want 1", n)
+	}
+}
+
+// A think with the tools put down and the turn still open keeps the nudge
+// clock. The next tool call is the same stretch, so the hours of the think
+// count. stretchIdle must not treat idleAt as the end of the stretch while
+// turnEndedAt is still zero.
+func TestNudgeKeepsTheClockThroughALongThink(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeThink")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	at.Advance(time.Minute)
+	s.ToolFinished(sid)
+	at.Advance(6 * time.Hour)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("tool, then a 6h think, then another tool: %d nudges, want 1", n)
+	}
+}

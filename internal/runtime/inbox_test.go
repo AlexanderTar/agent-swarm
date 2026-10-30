@@ -1383,3 +1383,36 @@ func TestSendCrossRootRefusals(t *testing.T) {
 		t.Error("approval must stay parent-only")
 	}
 }
+
+// pruneNoticeSeen drops the turn entry of an ended session with the notice,
+// busy and mcpSeen entries: otherwise the turns map grows by one entry per
+// session for the daemon's lifetime.
+func TestPruneNoticeSeenDropsTurnState(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Prune", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.NoteHookTurn(ses.ID, Claude, "UserPromptSubmit", false, "")
+	s.bookkeepingMu.Lock()
+	_, ok := s.turns[ses.ID]
+	s.bookkeepingMu.Unlock()
+	if !ok {
+		t.Fatal("no turn entry to prune")
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET ended_at = 1 WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneNoticeSeen(ctx)
+	s.bookkeepingMu.Lock()
+	_, ok = s.turns[ses.ID]
+	s.bookkeepingMu.Unlock()
+	if ok {
+		t.Fatal("ended session's turn entry survived the prune")
+	}
+}

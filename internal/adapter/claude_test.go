@@ -141,7 +141,7 @@ func TestClaudeSettingsJSONTurnsAttributionOffAndListsEveryHook(t *testing.T) {
 	if cfg.AdvisorModel != "fable" {
 		t.Errorf("advisorModel = %q", cfg.AdvisorModel)
 	}
-	for _, e := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop"} {
+	for _, e := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop", "StopFailure"} {
 		if _, ok := cfg.Hooks[e]; !ok {
 			t.Errorf("hook %s missing: %s", e, b)
 		}

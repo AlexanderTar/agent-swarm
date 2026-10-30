@@ -1923,6 +1923,10 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		if limited, err := s.endIfUsageLimited(ctx, a, ses, ad, capture); limited || err != nil {
 			return err
 		}
+		// This is startup-finished, not "the turn is over". SessionIdle would
+		// read a session that has not hooked yet as a pane idle check, which
+		// is the same signal, and a hook-closed turn must not skip the busy
+		// footer that proves the process got past its trust dialog.
 		if ad.Idle(capture) || (ad.Busy() != nil && ad.Busy().MatchString(stripANSI(capture))) {
 			for i, d := range ad.StartupDialogs() {
 				if dst := st[i]; dst != nil && dst.reqID != "" {

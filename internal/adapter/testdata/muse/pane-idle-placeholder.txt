@@ -1,0 +1,1 @@
+[0m[38;2;90;160;255m❯ [2m[38;2;138;144;152mAsk to monitor a running build or log and get pinged on changes

@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +144,18 @@ func TestUrgentMessageNeverInterruptsAnIdleWorker(t *testing.T) {
 	}
 }
 
+// An idle-looking prompt is not a finished turn when a hook says the turn is
+// still open. The worker is busy (an open tool) and should be interrupted.
+func TestUrgentInterruptFiresWhenTheHookSaysTheTurnIsOpen(t *testing.T) {
+	s, tm, ses, a := urgentSession(t, Fake, "swarm-fake-agent", "─────\n❯ \n─────\n")
+	s.NoteHookTurn(ses.ID, Fake, "UserPromptSubmit", false, "")
+	enq(t, s, a.ID, a.RootItemID, "control", pauseControl, 0)
+	tickWake(t, s, tm, 2*urgentGrace)
+	if got := interruptsSent(tm, ses.TmuxName); len(got) != 1 || got[0] != "Escape" {
+		t.Fatalf("hook-open turn at an idle prompt: keys = %v, want one Escape", got)
+	}
+}
+
 // A worker waiting on a question card is waiting on a person: the dismissal
 // path owns that case, an interrupt would only throw its answer away.
 func TestUrgentMessageNeverInterruptsAWorkerWaitingOnAQuestion(t *testing.T) {
@@ -194,6 +208,42 @@ func TestUrgentInterruptUsesTheAdapterKeyPerKind(t *testing.T) {
 			t.Fatalf("C-c sent to an idle grok: %v", got)
 		}
 	})
+}
+
+// Cursor and muse interrupt with C-c, which at an idle prompt can quit: an
+// idle pane is never sent C-c, even when a fresh open hook turn says the
+// turn is still open (a paste opened the turn while that prompt was on
+// screen).
+func TestUrgentInterruptNeverSendsCCToAnIdlePane(t *testing.T) {
+	cases := []struct {
+		name    string
+		kind    AgentKind
+		command string
+		fixture string
+	}{
+		{"cursor", Cursor, "node", "cursor/pane-idle-ansi.txt"},
+		{"muse", Muse, "muse", "muse/pane-idle.txt"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, err := os.ReadFile(filepath.Join("..", "adapter", "testdata", c.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, tm, ses, a := urgentSession(t, c.kind, c.command, string(b))
+			if !s.Adapters[c.kind].Idle(string(b)) {
+				t.Fatalf("fixture %s does not read idle", c.fixture)
+			}
+			s.NoteHookTurn(ses.ID, c.kind, "PreToolUse", false, "")
+			enq(t, s, a.ID, a.RootItemID, "control", pauseControl, 0)
+			for i := 0; i < 8; i++ {
+				tickWake(t, s, tm, 10*time.Second)
+			}
+			if got := interruptsSent(tm, ses.TmuxName); len(got) != 0 {
+				t.Fatalf("C-c sent to an idle %s pane: %v", c.name, got)
+			}
+		})
+	}
 }
 
 // A terminal permission dialog is an open 'prompt' row: the person is being
