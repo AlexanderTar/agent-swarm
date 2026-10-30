@@ -890,7 +890,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		switch {
 		case err != nil:
 			s.logf("wake: quota-reset capture for %s (session %s): %v", agentName, sessionID, err)
-		case ok && ad.Idle(capture):
+		case ok && s.SessionIdle(sessionID, ad, capture):
 			if err := s.Tmux.PasteLine(ctx, tmuxName, notice); err == nil {
 				s.MarkPromptSubmitted(sessionID)
 				s.markWoken(ctx, sessionID, false)

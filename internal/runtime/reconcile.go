@@ -1183,6 +1183,8 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	}
 	ad, ok := s.Adapters[r.Kind]
 	idle := false
+	turnOver := false
+	var capture string
 	matchedTitle := ""
 	// A spawning session's dialogs belong to watchStartup, which is already
 	// polling this pane: matching here too would double-press keys and open
@@ -1194,11 +1196,15 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	// longer exists.
 	ownedByWatchStartup := r.State == Spawning && s.hasActiveWatchStartup(r.SessionID)
 	if ok {
-		capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
+		var err error
+		capture, err = s.Tmux.Capture(ctx, r.TmuxName, 15)
 		if err != nil {
 			return err
 		}
 		idle = ad.Idle(capture)
+		// Reaping and the waiting title ask whether the turn is over.
+		// Dialog matching below keeps the pane read: a hook cannot see a question.
+		turnOver = s.SessionIdle(r.SessionID, ad, capture)
 		s.samplePaneBusy(r.SessionID, ad, capture)
 		if o, ok := ad.(interface {
 			ObserveCapture(sessionID, capture string)
@@ -1258,8 +1264,8 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		}
 	}
 	// A completed session's pane is killed once the 60 s grace has passed AND
-	// the pane reads idle (adapter Idle, not LeaderBusy), so post-merge work
-	// survives Done; the hard cap kills it even if still busy (TASK-1494).
+	// the turn is over (hook state, else the pane). LeaderBusy still counts
+	// as working. The hard cap kills it even if the turn is open (TASK-1494).
 	// This covers daemon-written root-done and agent-written completed
 	// checkpoints alike: both land in CompletedCheckpointAt the same way.
 	if r.CompletedCheckpointAt != nil {
@@ -1267,7 +1273,7 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		if elapsed >= killCompletedBusyCap {
 			return s.Tmux.Kill(ctx, r.TmuxName)
 		}
-		if elapsed >= killCompletedAfter && idle {
+		if elapsed >= killCompletedAfter && turnOver {
 			return s.Tmux.Kill(ctx, r.TmuxName)
 		}
 	}
@@ -1285,7 +1291,7 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	if err := s.nudgeProgress(ctx, r); err != nil {
 		s.logf("reconcile: progress nudge for %s: %v", r.AgentName, err)
 	}
-	waiting := idle && owesNothing
+	waiting := turnOver && owesNothing
 	if title := sessionTitle(waiting, r.Role, r.RootItemID, r.AgentName); title != s.getLastTitle(r.SessionID) {
 		if err := s.Tmux.RenameWindow(ctx, r.TmuxName, title); err != nil {
 			s.logf("reconcile: rename-window %s: %v", r.SessionID, err)
