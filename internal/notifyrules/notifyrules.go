@@ -57,6 +57,9 @@ var Rules = map[string]Rule{
 	"request.accept_fix":      {"action", "Finish {KEY}?", "{KEY}: {summary}", "swarm.approval"},
 	"pr.checks_failed":        {"attention", "PR checks failed", "{KEY}: {repo} #{N} — {checks}", "swarm.agent"},
 	"item.merged":             {"info", "{KEY} done", "{summary}", "swarm.info"},
+	// Added by CHORE-171 (orchestrator final note): the first daemon nudge
+	// to an idle orchestrator on a Done root raises this once.
+	"agent.final_note": {"attention", "Final note needed", "{name} finished {KEY} but hasn't written its final completed note.", "swarm.agent"},
 }
 
 // placeholderRe finds every {name} in a template.

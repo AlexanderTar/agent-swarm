@@ -34,6 +34,7 @@ func TestRulesCoverSection175(t *testing.T) {
 		"agent.failed":           {"attention", "Agent failed", "{name} couldn't finish {KEY}. Review the error.", "swarm.agent"},
 		"agent.crashed":          {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},
 		"agent.stale":            {"attention", "No recent activity", "{name} has been quiet for 30 minutes on {KEY}.", "swarm.agent"},
+		"agent.final_note":       {"attention", "Final note needed", "{name} finished {KEY} but hasn't written its final completed note.", "swarm.agent"},
 		"agent.no_ack":           {"attention", "No response from agent", "{name} hasn't checkpointed in 2 minutes on {KEY}.", "swarm.agent"},
 		"agent.mcp_down":         {"attention", "Agent can't reach Swarm", "{name}'s Swarm tools never connected on {KEY}. Retry it.", "swarm.agent"},
 		"agent.message_unacked":  {"attention", "Message unacknowledged", "{name} hasn't acknowledged a {kind} message on {KEY} after 3 deliveries.", "swarm.agent"},

@@ -1285,6 +1285,12 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	if err := s.nudgeProgress(ctx, r); err != nil {
 		s.logf("reconcile: progress nudge for %s: %v", r.AgentName, err)
 	}
+	// CHORE-171: ask an idle orchestrator on a Done root for its final
+	// note. This only enqueues an assignment_update (plus one attention
+	// notification on the first nudge); it never kills.
+	if err := s.nudgeFinalNote(ctx, r, idle); err != nil {
+		s.logf("reconcile: final-note nudge for %s: %v", r.AgentName, err)
+	}
 	waiting := idle && owesNothing
 	if title := sessionTitle(waiting, r.Role, r.RootItemID, r.AgentName); title != s.getLastTitle(r.SessionID) {
 		if err := s.Tmux.RenameWindow(ctx, r.TmuxName, title); err != nil {

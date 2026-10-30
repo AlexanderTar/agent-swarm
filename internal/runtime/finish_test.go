@@ -108,7 +108,9 @@ func TestRootDoneLiveAgentsEndCompletedAfterGrace(t *testing.T) {
 	}
 }
 
-// Spec R2.
+// Spec R2, as amended by CHORE-171: a pausing coder still finishes at once,
+// but a paused or interrupted orchestrator is left resumable (no daemon
+// checkpoint, no operation cancel), so its final note can still close it.
 func TestRootDoneFinishesPausedAndPausingAgentsAtOnce(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -127,20 +129,26 @@ func TestRootDoneFinishesPausedAndPausingAgentsAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishRoot(t, s, "EPIC-1")
-	for _, a := range []Agent{orch, w} {
-		ses, _ := s.LatestSession(ctx, a.ID)
-		got, _ := s.Agent(ctx, a.Name)
-		if ses.State != Completed || got.State != AgentFinished {
-			t.Fatalf("%s: session %s, agent %s; want completed/finished", a.Name, ses.State, got.State)
-		}
-		if n := daemonCompleted(t, s, a.ID); n != 0 {
-			t.Fatalf("%s got %d daemon checkpoints on the direct path, want 0", a.Name, n)
-		}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	got, _ := s.Agent(ctx, w.Name)
+	if ses.State != Completed || got.State != AgentFinished {
+		t.Fatalf("%s: session %s, agent %s; want completed/finished", w.Name, ses.State, got.State)
+	}
+	if n := daemonCompleted(t, s, w.ID); n != 0 {
+		t.Fatalf("%s got %d daemon checkpoints on the direct path, want 0", w.Name, n)
+	}
+	ses, _ = s.LatestSession(ctx, orch.ID)
+	got, _ = s.Agent(ctx, orch.Name)
+	if ses.State != Paused || got.State != AgentActive {
+		t.Fatalf("%s: session %s, agent %s; want paused/active (resumable)", orch.Name, ses.State, got.State)
+	}
+	if n := daemonCompleted(t, s, orch.ID); n != 0 {
+		t.Fatalf("%s got %d daemon checkpoints, want 0", orch.Name, n)
 	}
 	var phase string
 	s.DB.QueryRowContext(ctx, `SELECT phase FROM agent_operations WHERE id = 'op_root_done'`).Scan(&phase)
-	if phase != "cancelled" {
-		t.Fatalf("operation phase = %q, want cancelled", phase)
+	if phase != "ready" {
+		t.Fatalf("operation phase = %q, want ready (not cancelled)", phase)
 	}
 }
 
