@@ -33,6 +33,10 @@ For grok never send `C-c` twice and never to an idle pane. That is why the idle-
 
 ACP `session/cancel` through the grok leader would avoid keystrokes but is **not probed**; do not switch to it without a recorded live probe. Grok steer mode (`follow_up_behavior = "steer"`) already lets a pasted message join a running turn at the next tool gap, so the interrupt only matters inside one long tool call.
 
+## Orchestrators end only on their own final note
+
+Root Done never ends an orchestrator (`OnRootDone`, internal/runtime/finish.go; spec docs/specs/2026-09-26-root-finish-and-cancel-cascade.md decision 1, as amended 2026-10-30): no daemon `completed`, no operation cancel, so the 60 s idle kill and the 2 h busy cap never arm; a paused or interrupted orchestrator stays resumable. The orchestrator closes itself by writing `completed` once its root is Done (accepted only then; the approved-finish refusal still applies before Done), and that checkpoint ends the session through the normal grace + idle path. An idle orchestrator on a Done root with no final note gets a daemon `assignment_update` nudge (`nudgeFinalNote`, internal/runtime/finalnote.go): first after 5 min idle, then after 15 min, 30 min, then hourly; never more than one pending; one `agent.final_note` attention notification on the first nudge; never a kill, never a wake.go change. Never add a kill path for orchestrators on Done roots. Guarded by `go test ./internal/runtime/ -run 'TestFinalNoteNudge|TestRootDone|TestOrchestratorCompleted'`.
+
 ## Tests
 
 `go test ./internal/runtime -run 'Urgent|Ordinary'` covers urgency marking, the grace, the hook-silence rule, the once-only rule, the idle, question, permission-dialog and ordinary-mail exclusions, the pause notice being pasted after the interrupt, pruning of the memory, and the per-kind keys (including grok at its idle prompt). To check a live worker, queue a pause for an agent running `sleep 120` and watch `~/.swarm/logs/daemon.err.log` for `wake: interrupted`.

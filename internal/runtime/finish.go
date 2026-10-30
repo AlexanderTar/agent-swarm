@@ -24,15 +24,17 @@ func (s *Store) rootIsDone(ctx context.Context, q txQuerier, rootID string) (boo
 	return st == string(items.Done), err
 }
 
-// OnRootDone is items.Store.RootDone (spec locked decision 1): rootID just
-// reached Done, so every agent still queued or active on it finishes. A
-// spawning/running session gets a daemon-written completed checkpoint on its
-// own item and attempt; resolveAlive kills the pane once the killCompletedAfter
-// grace (60 s) has passed and the pane reads idle, or at killCompletedBusyCap
-// (2 h) even if still busy, and resolveDeadInner ends it completed, which
-// leaves the orchestrator room to read approval_result, post its final
-// message, and do post-merge work (deploys, beta builds, cleanup) before
-// going idle.
+// OnRootDone is items.Store.RootDone (spec locked decision 1, as amended by
+// CHORE-171): rootID just reached Done. Non-orchestrator agents still queued
+// or active on it finish: a spawning/running session gets a daemon-written
+// completed checkpoint on its own item and attempt, and resolveAlive kills
+// the pane once the killCompletedAfter grace (60 s) has passed and the pane
+// reads idle, or at killCompletedBusyCap (2 h) even if still busy. An
+// orchestrator is never finished here: no daemon completed, no operation
+// cancel, so the kill paths never arm; a paused or interrupted orchestrator
+// stays resumable. Once the root is Done, an orchestrator's own completed is
+// accepted and ends the session through the normal grace + idle path, and an
+// idle one is nudged for it (nudgeFinalNote).
 func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error {
 	var rootKey string
 	if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, rootID).Scan(&rootKey); err != nil {
