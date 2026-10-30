@@ -107,19 +107,26 @@ func TestScenarioEpicApprovalLane(t *testing.T) {
 	}
 
 	// Root finish (docs/specs/2026-09-26-root-finish-and-cancel-cascade.md
-	// R1, R3): the daemon wrote the orchestrator's completed on its own item,
-	// a late handoff is refused, and once the pane goes (killPane stands in
+	// R1, R3, CHORE-171 amendment): the daemon writes no completed for the
+	// orchestrator, a late handoff is refused, the orchestrator's own
+	// completed is its final note, and once the pane goes (killPane stands in
 	// for the 60 s reaper) the session ends completed.
 	var daemonCompleted int
 	h.db(t).QueryRow(`SELECT COUNT(*) FROM checkpoints c JOIN agents a ON a.id = c.agent_id
 		WHERE a.name = ? AND c.item_id = a.item_id AND c.kind = 'completed' AND c.daemon_written = 1`,
 		orch).Scan(&daemonCompleted)
-	if daemonCompleted != 1 {
-		t.Fatalf("%d daemon completed checkpoints for %s, want 1", daemonCompleted, orch)
+	if daemonCompleted != 0 {
+		t.Fatalf("%d daemon completed checkpoints for %s, want 0", daemonCompleted, orch)
+	}
+	if got := h.agentState(t, orch); got != "active" {
+		t.Fatalf("orchestrator agent on a Done root = %s, want active until its final note", got)
 	}
 	err := h.tool(t, orch, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "saving my place"})
 	if err == nil || !strings.Contains(err.Error(), "Root accepted; write completed.") {
 		t.Fatalf("late handoff err = %v, want the root-accepted refusal", err)
+	}
+	if err := h.tool(t, orch, "swarm_checkpoint", map[string]any{"kind": "completed", "summary": "post-merge work finished"}); err != nil {
+		t.Fatalf("final note on a Done root: %v", err)
 	}
 	h.killPane(t, orch)
 	if !h.waitForSessionState(t, orch, "completed", 30*time.Second) {
