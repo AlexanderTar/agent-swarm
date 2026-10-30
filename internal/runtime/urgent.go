@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 )
@@ -20,7 +21,8 @@ const urgentGrace = 30 * time.Second
 //     leader "working"), not merely quiet;
 //   - nobody is being waited on (no open question or permission dialog, no grok card);
 //   - the pane runs the agent and the turn is not over, rechecked right
-//     before the keys: grok's C-c at idle arms quit and a second one exits it.
+//     before the keys: one C-c at idle arms quit (grok) or can quit
+//     (cursor, muse), so no C-c kind is ever interrupted at its idle pane.
 //
 // The adapter's own InterruptKeys are used (Escape for claude and codex, one C-c
 // for grok: the TASK-1126 probe showed C-c mid-turn cancels the turn). One
@@ -54,10 +56,11 @@ func (s *Store) interruptForUrgent(ctx context.Context, r wakeRow) {
 	if s.SessionIdle(r.SessionID, ad, capture) {
 		return
 	}
-	// Grok's interrupt is one C-c, and C-c at its idle prompt arms quit. A
-	// paste opens the hook turn while that prompt is still on screen, so the
-	// pane stays the guard for grok even when the hook says the turn is open.
-	if r.Kind == Grok && ad.Idle(capture) {
+	// An interrupt of one C-c at an idle prompt arms quit (grok) or can
+	// quit (cursor, muse). A paste opens the hook turn while that prompt is
+	// still on screen, so the pane stays the guard for every C-c kind even
+	// when the hook says the turn is open.
+	if slices.Contains(ad.InterruptKeys(), "C-c") && ad.Idle(capture) {
 		return
 	}
 	if err := s.Tmux.Keys(ctx, r.TmuxName, ad.InterruptKeys()...); err != nil {
