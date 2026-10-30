@@ -103,3 +103,54 @@ func TestStopNotedBeforeTurnEndedKeepsTheNudgeClock(t *testing.T) {
 		t.Fatalf("20 min tool, Stop, 30s wake, 6 min more: %d nudges, want 1", n)
 	}
 }
+
+// An Escape during a tool call emits no Stop. The wake is UserPromptSubmit or
+// SessionStart, and TurnEnded has to run before NoteHookTurn. Noting the wake
+// first refreshes lastHook, so the open call looks current, the idle mark is
+// the wake, and the first tool after hours idle is nudged for the old stretch.
+// PreToolUse, 6h, the wake, PreToolUse, 6 min is zero nudges when the order holds.
+func TestWakeTurnEndedBeforeNoteHookTurnRestartsAnInterruptedStretch(t *testing.T) {
+	for _, ev := range []struct{ name, stdin string }{
+		{"UserPromptSubmit", `{"prompt":""}`},
+		{"SessionStart", `{"session_id":"p1","source":"startup"}`},
+	} {
+		t.Run(ev.name, func(t *testing.T) {
+			clk := newStopOrderClock()
+			h, ses := seed(t, 0, runtime.Running)
+			if _, err := h.DB.ExecContext(context.Background(), `UPDATE agents SET kind = 'fake' WHERE id = 'agt_1'`); err != nil {
+				t.Fatal(err)
+			}
+			h.Now = clk.Now
+			h.RT.Now = clk.Now
+			h.RT.Tmux = paneStub{sessionID: ses, name: "login-form-coder"}
+			h.RT.Events = events.New(h.DB, clk.Now)
+			h.RT.Items = &items.Store{DB: h.DB, Events: h.RT.Events, Now: clk.Now}
+			h.RT.Settings = &settings.Store{DB: h.DB, Events: h.RT.Events, Now: clk.Now}
+			h.Adapters = adapter.All(adapter.Deps{Home: t.TempDir(), UserHome: t.TempDir(),
+				Bin: "/usr/local/bin/swarm", Log: func(string, ...any) {}})
+
+			hook := func(event, stdin string) {
+				t.Helper()
+				if _, err := h.Handle(context.Background(), runtime.Fake, event, ses, []byte(stdin)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hook("PreToolUse", `{"tool_name":"Read","tool_input":{"file_path":"x"}}`)
+			clk.Advance(6 * time.Hour)
+			hook(ev.name, ev.stdin)
+			hook("PreToolUse", `{"tool_name":"Read","tool_input":{"file_path":"y"}}`)
+			clk.Advance(6 * time.Minute)
+			if err := h.RT.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var n int
+			if err := h.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM messages WHERE to_agent_id = 'agt_1'
+				AND kind = 'assignment_update' AND origin = 'daemon' AND payload_json LIKE '%"event":"progress_nudge"%'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatalf("%s after an interrupted open tool call, then 6 min: %d nudges, want 0", ev.name, n)
+			}
+		})
+	}
+}
