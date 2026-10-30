@@ -446,6 +446,7 @@ type Store struct {
 	batchPastes        map[string]int          // pastes of the session's current batch; spaces same-batch re-pastes (BUG-64)
 	busy               map[string]*busyState   // open tool calls and grok leader "working" per session (busy.go)
 	turns              map[string]*turnRec     // hook turn open/closed per session (turn.go); the row is the durable copy
+	turnMu             sync.Mutex              // serializes setTurn's memory transition with its row write (turn.go), so a concurrent close and open cannot persist out of order
 	wakeSubs           map[string][]chan string
 	mcpSeen            map[string]map[string]bool // session -> JSON-RPC methods its shim has sent to /mcp (mcpdown.go)
 	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw

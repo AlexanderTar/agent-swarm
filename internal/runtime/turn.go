@@ -113,9 +113,19 @@ func (s *Store) SessionIdle(sessionID string, ad adapter.Adapter, capture string
 }
 
 // HookTurn reports the session's hook turn, loading it from the session row
-// when this process has not seen the session yet.
+// when this process has not seen the session yet. The fields are copied while
+// holding bookkeepingMu: setTurn and touchLastHook write them under the same
+// lock, so reading the shared record after the lock is released races.
 func (s *Store) HookTurn(sessionID string) HookTurn {
-	rec := s.turn(sessionID)
+	s.bookkeepingMu.Lock()
+	rec := s.turns[sessionID]
+	if rec == nil {
+		s.bookkeepingMu.Unlock()
+		s.loadTurn(sessionID)
+		s.bookkeepingMu.Lock()
+		rec = s.turns[sessionID]
+	}
+	defer s.bookkeepingMu.Unlock()
 	if rec == nil || !rec.known {
 		return HookTurn{}
 	}
@@ -182,11 +192,17 @@ func (s *Store) touchLastHook(sessionID string, now time.Time) {
 }
 
 // setTurn records an open or close. A repeat of the current state only
-// refreshes LastHook; the row is written on a transition.
+// refreshes LastHook; the row is written on a transition. turnMu is held
+// across the memory transition and the row write, so a concurrent close and
+// open persist in the same order memory took them: without it the row could
+// end closed while memory is open, and a restart would reap a woken session
+// mid-turn.
 func (s *Store) setTurn(sessionID string, open bool, closeEvent string, now time.Time) {
 	if open {
 		closeEvent = ""
 	}
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
 	rec := s.turn(sessionID)
 	s.bookkeepingMu.Lock()
 	if s.turns == nil {

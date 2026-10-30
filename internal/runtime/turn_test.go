@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -313,6 +314,82 @@ func TestPasteGateFollowsTheHookTurnAndRefusesADialog(t *testing.T) {
 	s.NoteHookTurn(ses.ID, Claude, "Stop", false, "")
 	if paste(dialog) {
 		t.Error("a closed turn was pasted over a question dialog")
+	}
+}
+
+// Concurrent hook writes and turn reads must not race: HookTurn copies the
+// record's fields while holding bookkeepingMu instead of reading the shared
+// record after the lock is released (setTurn and touchLastHook write those
+// fields under the same lock). Run with -race: before the fix the detector
+// reports a write at setTurn racing a read at HookTurn.
+func TestHookTurnConcurrentWithNoteHookTurn(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Race", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			if i%2 == 0 {
+				s.NoteHookTurn(ses.ID, Claude, "Stop", false, "")
+			} else {
+				s.NoteHookTurn(ses.ID, Claude, "PreToolUse", false, "")
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			_ = s.HookTurn(ses.ID)
+		}
+	}()
+	wg.Wait()
+}
+
+// A concurrent close and open must not persist out of order: after both land,
+// the row must agree with memory, or a restart would read the row and reap a
+// woken session mid-turn.
+func TestTurnRowMatchesMemoryAfterConcurrentCloseOpen(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Order", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			<-start
+			s.setTurn(ses.ID, false, "Stop", s.Now())
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			s.setTurn(ses.ID, true, "", s.Now())
+		}()
+		close(start)
+		wg.Wait()
+		mem := s.HookTurn(ses.ID)
+		disk := (&Store{DB: s.DB}).HookTurn(ses.ID)
+		if mem.Known != disk.Known || mem.Open != disk.Open ||
+			!mem.Since.Equal(disk.Since) || mem.CloseEvent != disk.CloseEvent {
+			t.Fatalf("iter %d: memory %+v != row %+v", i, mem, disk)
+		}
 	}
 }
 
