@@ -23,6 +23,7 @@ const busyShownAfter = 5 * time.Minute
 type busyState struct {
 	tools       int       // PreToolUse calls with no PostToolUse yet
 	toolSince   time.Time // when tools went from 0 to 1
+	turnSince   time.Time // first ToolStarted of the current turn; zero at a turn boundary
 	leaderSince time.Time // first poll that saw the grok leader "working" (up to one tick after it started); zero when idle
 	paneSince   time.Time // first reconcile tick whose pane showed the adapter's busy footer and no dialog; zero otherwise
 	shown       bool      // busy_since was last published as shown on the board (agent.changed)
@@ -44,6 +45,9 @@ func (s *Store) ToolStarted(sessionID string) {
 	if b.tools == 0 {
 		b.toolSince = s.Now()
 	}
+	if b.turnSince.IsZero() {
+		b.turnSince = s.Now()
+	}
 	b.tools++
 }
 
@@ -60,12 +64,14 @@ func (s *Store) ToolFinished(sessionID string) {
 }
 
 // TurnEnded clears the open tool calls: the turn is over, so a PostToolUse that
-// never came (a cancelled tool) must not read busy forever.
+// never came (a cancelled tool) must not read busy forever. It also ends the
+// working stretch, so the next turn's first tool call restarts its clock.
 func (s *Store) TurnEnded(sessionID string) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
 	if b := s.busy[sessionID]; b != nil {
 		b.tools = 0
+		b.turnSince = time.Time{}
 	}
 }
 
@@ -162,6 +168,49 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 	if !b.leaderSince.IsZero() && (since.IsZero() || b.leaderSince.Before(since)) {
 		since = b.leaderSince
 	}
+	if since.IsZero() {
+		since = b.paneSince
+	}
+	return since, !since.IsZero()
+}
+
+// workingSince reports when the current working stretch started: the first tool
+// call of this turn for kinds with tool hooks, else the leader or pane fallback
+// (both already mean "busy stretch since"). A ToolFinished in the middle of a
+// turn does not restart it, so sequential short calls in one turn keep one
+// clock; only TurnEnded does. A UserPromptSubmit or SessionStart also ends the
+// turn (hook/handler.go), and no daemon path fires either mid-work, so the
+// anchor is a real turn boundary rather than an idle gap.
+func (s *Store) workingSince(sessionID string) (time.Time, bool) {
+	leader := false
+	for _, ad := range s.Adapters {
+		if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(sessionID) {
+			leader = true
+			break
+		}
+	}
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	b := s.busy[sessionID]
+	if b == nil {
+		if !leader {
+			return time.Time{}, false
+		}
+		if s.busy == nil {
+			s.busy = map[string]*busyState{}
+		}
+		b = &busyState{}
+		s.busy[sessionID] = b
+	}
+	if !b.turnSince.IsZero() {
+		return b.turnSince, true
+	}
+	if leader && b.leaderSince.IsZero() {
+		b.leaderSince = s.Now()
+	} else if !leader {
+		b.leaderSince = time.Time{}
+	}
+	since := b.leaderSince
 	if since.IsZero() {
 		since = b.paneSince
 	}

@@ -291,3 +291,29 @@ func TestNudgeSkipsPausedAndExhausted(t *testing.T) {
 		t.Fatalf("exhausted kind: %d nudges, want 0", n)
 	}
 }
+
+// An agent that went idle for hours and wakes with its first tool call starts a
+// fresh working stretch: the nudge clock restarts at the wake, not at the last
+// checkpoint from before the idle gap.
+func TestNudgeRestartsAtTheCurrentWorkingStretch(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeWake")
+	ctx := context.Background()
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	if _, err := s.WriteCheckpoint(ctx, sid, CheckpointInput{Kind: Progress, Summary: "halfway"}); err != nil {
+		t.Fatal(err)
+	}
+	s.TurnEnded(sid)
+	at.Advance(6 * time.Hour)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after 6h idle: %d nudges, want 0", n)
+	}
+	at.Advance(progressNudgeAfter)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("15 min into the new stretch: %d nudges, want 1", n)
+	}
+}

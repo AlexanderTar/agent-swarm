@@ -33,6 +33,12 @@ func (s *Store) nudgeProgress(ctx context.Context, r liveRow) error {
 	if r.LastCheckpointAt != nil && r.LastCheckpointAt.After(last) {
 		last = *r.LastCheckpointAt
 	}
+	// The window starts at the current working stretch: an agent idle for
+	// hours that wakes with its first tool call must not be nudged for the
+	// silence before it woke.
+	if ws, ok := s.workingSince(r.SessionID); ok && ws.After(last) {
+		last = ws
+	}
 	if s.Now().Sub(last) < progressNudgeAfter || !s.busyWithinCeiling(r.SessionID) || s.kindExhausted(ctx, r.Kind) {
 		return nil
 	}
