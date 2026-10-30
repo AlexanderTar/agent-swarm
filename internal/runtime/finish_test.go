@@ -43,7 +43,9 @@ func daemonCompleted(t *testing.T, s *Store, agentID string) int {
 	return n
 }
 
-// Spec R1.
+// Spec R1, as amended by CHORE-171: root Done still ends a live coder with a
+// daemon-written completed after the 60 s grace, but a live orchestrator gets
+// no daemon checkpoint and stays active until its own final note.
 func TestRootDoneLiveAgentsEndCompletedAfterGrace(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
@@ -54,18 +56,18 @@ func TestRootDoneLiveAgentsEndCompletedAfterGrace(t *testing.T) {
 	}
 	finishRoot(t, s, "EPIC-1")
 
+	if n := daemonCompleted(t, s, orch.ID); n != 0 {
+		t.Fatalf("orchestrator got %d daemon completed checkpoints, want 0", n)
+	}
 	var summary string
 	var attempt int
 	if err := s.DB.QueryRowContext(ctx, `SELECT summary, attempt FROM checkpoints
 		WHERE agent_id = ? AND item_id = ? AND kind = 'completed' AND daemon_written = 1`,
-		orch.ID, orch.ItemID).Scan(&summary, &attempt); err != nil {
+		w.ID, w.ItemID).Scan(&summary, &attempt); err != nil {
 		t.Fatal(err)
 	}
-	if summary != "EPIC-1 is done; Swarm finished this agent." || attempt != orchSes.Attempt {
-		t.Fatalf("checkpoint = %q at attempt %d, want the root-done summary at %d", summary, attempt, orchSes.Attempt)
-	}
-	if daemonCompleted(t, s, w.ID) != 1 {
-		t.Fatal("the live worker got no daemon completed checkpoint")
+	if summary != "EPIC-1 is done; Swarm finished this agent." || attempt != wSes.Attempt {
+		t.Fatalf("checkpoint = %q at attempt %d, want the root-done summary at %d", summary, attempt, wSes.Attempt)
 	}
 
 	panes(tm, Pane{Session: orchSes.TmuxName, Command: "swarm-fake-agent"},
@@ -83,20 +85,26 @@ func TestRootDoneLiveAgentsEndCompletedAfterGrace(t *testing.T) {
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(tm.killed[before:], orchSes.TmuxName) {
-		t.Fatalf("killed = %v, want %s after the grace", tm.killed[before:], orchSes.TmuxName)
+	if !slices.Contains(tm.killed[before:], wSes.TmuxName) {
+		t.Fatalf("killed = %v, want %s after the grace", tm.killed[before:], wSes.TmuxName)
 	}
-	panes(tm) // both panes are gone now
+	if slices.Contains(tm.killed[before:], orchSes.TmuxName) {
+		t.Fatalf("killed = %v, the orchestrator pane must survive root Done", tm.killed[before:])
+	}
+	panes(tm, Pane{Session: orchSes.TmuxName, Command: "swarm-fake-agent"}) // only the coder pane is gone now
 	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, a := range []Agent{orch, w} {
-		ses, _ := s.LatestSession(ctx, a.ID)
-		got, _ := s.Agent(ctx, a.Name)
-		if ses.State != Completed || got.State != AgentFinished {
-			t.Fatalf("%s: session %s, agent %s; want completed/finished", a.Name, ses.State, got.State)
-		}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	got, _ := s.Agent(ctx, w.Name)
+	if ses.State != Completed || got.State != AgentFinished {
+		t.Fatalf("%s: session %s, agent %s; want completed/finished", w.Name, ses.State, got.State)
+	}
+	ses, _ = s.LatestSession(ctx, orch.ID)
+	got, _ = s.Agent(ctx, orch.Name)
+	if !ses.State.Live() || got.State != AgentActive {
+		t.Fatalf("%s: session %s, agent %s; want live/active", orch.Name, ses.State, got.State)
 	}
 }
 

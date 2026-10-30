@@ -1840,17 +1840,26 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		}
 
 		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator && a.ParentAgentID == "" && it.ID == a.RootItemID {
-			// the user approved the finish: only a finishing checkpoint moves the root on
-			if fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID); err != nil {
+			// CHORE-171: once the root is Done the orchestrator's own
+			// completed is its final note (OnRootDone never writes a daemon
+			// one for orchestrators), so accept it and let the normal 60 s
+			// grace + idle path end the session. Before Done the approved
+			// finish still needs a finishing checkpoint first.
+			if done, err := s.rootIsDone(ctx, tx, a.RootItemID); err != nil {
 				return err
-			} else if ok && fa.Merge != "" {
-				recorded, err := s.finishRecordedTx(ctx, tx, it.ID, fa.CheckpointID)
-				if err != nil {
+			} else if !done {
+				// the user approved the finish: only a finishing checkpoint moves the root on
+				if fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, it.ID); err != nil {
 					return err
-				}
-				if !recorded {
-					return &items.Error{Code: items.CodeBadRequest,
-						Message: "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`."}
+				} else if ok && fa.Merge != "" {
+					recorded, err := s.finishRecordedTx(ctx, tx, it.ID, fa.CheckpointID)
+					if err != nil {
+						return err
+					}
+					if !recorded {
+						return &items.Error{Code: items.CodeBadRequest,
+							Message: "The user approved the finish. Write a `finishing` checkpoint (prs, merged or kept), not `completed`."}
+					}
 				}
 			}
 		}

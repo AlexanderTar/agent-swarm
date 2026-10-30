@@ -34,8 +34,8 @@ func (s *Store) rootIsDone(ctx context.Context, q txQuerier, rootID string) (boo
 // message, and do post-merge work (deploys, beta builds, cleanup) before
 // going idle.
 func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error {
-	var rootKey, rootType string
-	if err := tx.QueryRowContext(ctx, `SELECT key, type FROM items WHERE id = ?`, rootID).Scan(&rootKey, &rootType); err != nil {
+	var rootKey string
+	if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, rootID).Scan(&rootKey); err != nil {
 		return err
 	}
 	type agentRow struct {
@@ -68,11 +68,16 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	}
 	now := db.Millis(s.now())
 	for _, r := range todo {
-		// The spike's own live orchestrator is inside swarm_materialize, or it
-		// already wrote completed with a resolution (close_spike); it ends
-		// through that checkpoint, not a daemon one (spec decision 1c). Other
-		// roles on the spike item (reviewer, researcher) finish as usual.
-		if rootType == string(items.Spike) && r.role == string(RoleOrchestrator) && r.itemID == rootID && r.state.Live() {
+		// CHORE-171: orchestrators end only on their own final note. A live
+		// orchestrator (root or child) on a Done root gets no daemon
+		// completed and its operations are not cancelled, so
+		// CompletedCheckpointAt stays nil and neither the 60 s idle kill
+		// nor the 2 h busy cap arms. This generalises the spike carve-out
+		// (spec decision 1c) to every root type. Paused or interrupted
+		// orchestrators are left resumable on the same grounds: finishing
+		// them here would end an agent the user never saw a final note
+		// from. Other roles finish exactly as before.
+		if r.role == string(RoleOrchestrator) {
 			continue
 		}
 		// ponytail: in-tx, so no lockAgentOperations; a driver already past
