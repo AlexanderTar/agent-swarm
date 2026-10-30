@@ -364,6 +364,30 @@ func TestNudgeIgnoresAStaleStretchWhenLeaderWakesAfterIdle(t *testing.T) {
 	}
 }
 
+// A usage limit cuts the turn off with no Stop, so TurnEnded never runs until
+// the quota-reset wake (UserPromptSubmit), which stamps the end at the wake.
+// The hours since the last tool are the idle gap: the first tool call is a
+// new stretch, and the old clock must not nudge it.
+func TestNudgeRestartsWhenATurnIsCutOffBeforeTheWake(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeQuotaCut")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	s.ToolFinished(sid)
+	at.Advance(6 * time.Hour)
+	s.TurnEnded(sid) // wake prompt, the first end this turn ever got
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after a turn cut off 6h ago: %d nudges, want 0", n)
+	}
+	at.Advance(progressNudgeAfter)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("15 min into the new stretch: %d nudges, want 1", n)
+	}
+}
+
 // Sequential short tool calls in one turn share one clock. Finishing and
 // starting a tool every minute for fifteen minutes, with no turn end, is
 // one nudge. A workingSince that returned toolSince would restart on each
