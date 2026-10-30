@@ -745,6 +745,15 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	// a denied PreToolUse never runs, and a turn end or new prompt closes any
 	// call whose PostToolUse was lost
 	if h.RT != nil {
+		// A real Stop is on the hook record before TurnEnded. Otherwise a long
+		// tool with no hook for hookTurnStale looks like an interrupted open
+		// call, and the nudge idle mark jumps back to the tool start. A wake
+		// (UserPromptSubmit, SessionStart) is the opposite: TurnEnded has to
+		// see the stale open turn before this event refreshes lastHook.
+		ends := endsTurn(ev) && !d.Block
+		if ends {
+			h.RT.NoteHookTurn(s.ID, s.Kind, ev, d.Block, in.Reason)
+		}
 		switch {
 		case ev == "PreToolUse" && !d.Block:
 			h.RT.ToolStarted(s.ID)
@@ -754,10 +763,12 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		// (probe 2026-10-29), so for cursor it is no turn boundary: stop and
 		// sessionStart close the turn, and the ceiling bounds a lost postToolUse.
 		case ev == "UserPromptSubmit" && s.Kind == runtime.Cursor:
-		case endsTurn(ev) && !d.Block, ev == "UserPromptSubmit", ev == "SessionStart":
+		case ends, ev == "UserPromptSubmit", ev == "SessionStart":
 			h.RT.TurnEnded(s.ID)
 		}
-		h.RT.NoteHookTurn(s.ID, s.Kind, ev, d.Block, in.Reason)
+		if !ends {
+			h.RT.NoteHookTurn(s.ID, s.Kind, ev, d.Block, in.Reason)
+		}
 	}
 	// every session records its context size at a real end of turn: a blocked
 	// Stop continues the turn and fires again, so it must not sample (or strike)
