@@ -450,3 +450,22 @@ func TestNudgeKeepsTheClockWhenStopClosesALongOpenTool(t *testing.T) {
 		t.Fatalf("20 min tool, Stop, 30s gap, 6 min more: %d nudges, want 1", n)
 	}
 }
+
+// A think with the tools put down and the turn still open keeps the nudge
+// clock. The next tool call is the same stretch, so the hours of the think
+// count. stretchIdle must not treat idleAt as the end of the stretch while
+// turnEndedAt is still zero.
+func TestNudgeKeepsTheClockThroughALongThink(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeThink")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	at.Advance(time.Minute)
+	s.ToolFinished(sid)
+	at.Advance(6 * time.Hour)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("tool, then a 6h think, then another tool: %d nudges, want 1", n)
+	}
+}
