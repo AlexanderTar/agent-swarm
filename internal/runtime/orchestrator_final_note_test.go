@@ -206,3 +206,22 @@ func TestRootDoneFinishesQueuedOrchestrator(t *testing.T) {
 		t.Fatalf("queued orchestrator agent = %s, want finished", got.State)
 	}
 }
+
+// CHORE-171 final review: an open question of the orchestrator's own no longer
+// blocks its final note once the root is Done, so it cannot be left to be
+// nudged forever.
+func TestOrchestratorFinalNoteSkipsOpenQuestionsOnDoneRoot(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id, prompt, state, created_at)
+		VALUES ('req_open_q', 'question', 1, ?, ?, ?, 'Which way?', 'open', 1)`, orch.ID, orchSes.ID, orch.ItemID)
+	finishRoot(t, s, "EPIC-1")
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "post-merge work finished"}); err != nil {
+		t.Fatalf("final note on a Done root with an open question: %v", err)
+	}
+}

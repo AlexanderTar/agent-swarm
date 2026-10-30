@@ -1780,7 +1780,15 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err != nil {
 				return err
 			}
-			if len(blocking) > 0 && !waived(it, "open_questions") {
+			// CHORE-171: an orchestrator's final note on a Done root is not
+			// held back by its own open questions (it would be nudged forever).
+			finalNote := false
+			if len(blocking) > 0 && a.Role == RoleOrchestrator {
+				if finalNote, err = s.rootIsDone(ctx, tx, a.RootItemID); err != nil {
+					return err
+				}
+			}
+			if len(blocking) > 0 && !finalNote && !waived(it, "open_questions") {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: fmt.Sprintf("completed is blocked by open question %s; answer or withdraw it first.",
 						strings.Join(blocking, ", ")) + waiveHint}
