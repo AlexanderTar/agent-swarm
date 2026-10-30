@@ -291,3 +291,119 @@ func TestNudgeSkipsPausedAndExhausted(t *testing.T) {
 		t.Fatalf("exhausted kind: %d nudges, want 0", n)
 	}
 }
+
+// An agent that went idle for hours and wakes with its first tool call starts a
+// fresh working stretch: the nudge clock restarts at the wake, not at the last
+// checkpoint from before the idle gap.
+func TestNudgeRestartsAtTheCurrentWorkingStretch(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeWake")
+	ctx := context.Background()
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	if _, err := s.WriteCheckpoint(ctx, sid, CheckpointInput{Kind: Progress, Summary: "halfway"}); err != nil {
+		t.Fatal(err)
+	}
+	s.TurnEnded(sid) // Stop
+	at.Advance(6 * time.Hour)
+	// A real wake fires UserPromptSubmit, which ends the turn again, then the
+	// first tool call a few seconds later. The idle gap is from the Stop.
+	s.TurnEnded(sid)
+	at.Advance(10 * time.Second)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after 6h idle: %d nudges, want 0", n)
+	}
+	at.Advance(progressNudgeAfter)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("15 min into the new stretch: %d nudges, want 1", n)
+	}
+}
+
+// A Stop and a wake seconds later are one working stretch. Ten minutes, a
+// turn end, thirty seconds idle, then six more minutes with no checkpoint
+// is one nudge: the clock does not restart on a short turn boundary.
+func TestNudgeKeepsTheClockAcrossAShortTurnGap(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeGap")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	at.Advance(10 * time.Minute)
+	s.TurnEnded(sid) // Stop
+	at.Advance(30 * time.Second)
+	s.TurnEnded(sid) // UserPromptSubmit on the wake
+	s.ToolStarted(sid)
+	at.Advance(6 * time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("10 min, 30s gap, 6 min more: %d nudges, want 1", n)
+	}
+}
+
+// Hours after a stretch ended, leader evidence on the wake is a new stretch.
+// The old turnSince must not anchor the window while the turn is still ended,
+// or the worker is nudged the moment the leader looks busy, before any tool call.
+func TestNudgeIgnoresAStaleStretchWhenLeaderWakesAfterIdle(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeLeaderWake")
+	ctx := context.Background()
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	if _, err := s.WriteCheckpoint(ctx, sid, CheckpointInput{Kind: Progress, Summary: "before idle"}); err != nil {
+		t.Fatal(err)
+	}
+	s.TurnEnded(sid)
+	at.Advance(6 * time.Hour)
+	s.TurnEnded(sid) // UserPromptSubmit
+	s.Adapters[Fake] = &leaderBusyAdapter{Adapter: s.Adapters[Fake], busy: map[string]bool{sid: true}}
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("leader busy at a wake 6h after the stretch ended: %d nudges, want 0", n)
+	}
+}
+
+// A usage limit cuts the turn off with no Stop, so TurnEnded never runs until
+// the quota-reset wake (UserPromptSubmit), which stamps the end at the wake.
+// The hours since the last tool are the idle gap: the first tool call is a
+// new stretch, and the old clock must not nudge it.
+func TestNudgeRestartsWhenATurnIsCutOffBeforeTheWake(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeQuotaCut")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	s.ToolFinished(sid)
+	at.Advance(6 * time.Hour)
+	s.TurnEnded(sid) // wake prompt, the first end this turn ever got
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after a turn cut off 6h ago: %d nudges, want 0", n)
+	}
+	at.Advance(progressNudgeAfter)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("15 min into the new stretch: %d nudges, want 1", n)
+	}
+}
+
+// Sequential short tool calls in one turn share one clock. Finishing and
+// starting a tool every minute for fifteen minutes, with no turn end, is
+// one nudge. A workingSince that returned toolSince would restart on each
+// 0→1 transition and report zero.
+func TestNudgeCountsSequentialShortCallsAsOneStretch(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeSeq")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	for range 15 {
+		at.Advance(time.Minute)
+		s.ToolFinished(sid)
+		s.ToolStarted(sid)
+	}
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("15 one-minute calls in one turn: %d nudges, want 1", n)
+	}
+}

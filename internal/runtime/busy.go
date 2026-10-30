@@ -17,12 +17,21 @@ const busyCeiling = 60 * time.Minute
 // label (and its flicker) waits until the worker would otherwise look stuck.
 const busyShownAfter = 5 * time.Minute
 
+// stretchIdleGap is how long a turn may stay ended before the next tool call
+// starts a new working stretch. A Stop followed seconds later by an inbox wake
+// keeps the nudge clock; a longer idle starts it over, so hours of silence
+// before that wake are not reminded.
+const stretchIdleGap = 5 * time.Minute
+
 // busyState is one session's in-memory busy evidence (no schema column, like
 // the rest of the bookkeeping block: a restart forgets it and the alerts fall
 // back to their plain timers).
 type busyState struct {
 	tools       int       // PreToolUse calls with no PostToolUse yet
 	toolSince   time.Time // when tools went from 0 to 1
+	turnSince   time.Time // first ToolStarted of the current working stretch; zero before any tool call
+	turnEndedAt time.Time // earliest TurnEnded since the last tool call; zero while a turn is open
+	idleAt      time.Time // earliest time tools dropped to 0 since the last ToolStarted; zero while a call is open
 	leaderSince time.Time // first poll that saw the grok leader "working" (up to one tick after it started); zero when idle
 	paneSince   time.Time // first reconcile tick whose pane showed the adapter's busy footer and no dialog; zero otherwise
 	shown       bool      // busy_since was last published as shown on the board (agent.changed)
@@ -44,6 +53,13 @@ func (s *Store) ToolStarted(sessionID string) {
 	if b.tools == 0 {
 		b.toolSince = s.Now()
 	}
+	// A short gap after the turn went idle is still this stretch. A long one,
+	// or the first tool call, starts the clock here.
+	if b.turnSince.IsZero() || b.stretchIdle(s.Now()) {
+		b.turnSince = s.Now()
+	}
+	b.turnEndedAt = time.Time{}
+	b.idleAt = time.Time{}
 	b.tools++
 }
 
@@ -56,17 +72,58 @@ func (s *Store) ToolFinished(sessionID string) {
 	defer s.bookkeepingMu.Unlock()
 	if b := s.busy[sessionID]; b != nil && b.tools > 0 {
 		b.tools--
+		if b.tools == 0 {
+			b.noteIdle(s.Now())
+		}
 	}
 }
 
 // TurnEnded clears the open tool calls: the turn is over, so a PostToolUse that
-// never came (a cancelled tool) must not read busy forever.
+// never came (a cancelled tool) must not read busy forever. It records when the
+// turn ended, once: a wake fires UserPromptSubmit and SessionStart through here
+// again (hook/handler.go), and moving the mark up to that wake would hide the
+// idle gap. The next ToolStarted keeps the working stretch when the gap since
+// the earliest idle mark is shorter than stretchIdleGap, and starts a new one
+// when it is not. A turn cut off with no Stop (a usage limit; Claude registers
+// no StopFailure hook) gets its first TurnEnded only at that wake. The idle
+// mark from the last tool drop stays where it is, so the gap is the hours
+// since the tool, not the seconds since the wake.
 func (s *Store) TurnEnded(sessionID string) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
 	if b := s.busy[sessionID]; b != nil {
+		if b.tools > 0 {
+			b.noteIdle(s.Now())
+		}
 		b.tools = 0
+		if b.turnEndedAt.IsZero() {
+			b.turnEndedAt = s.Now()
+		}
 	}
+}
+
+// noteIdle keeps the earliest moment tools sat at 0 since the last tool call.
+func (b *busyState) noteIdle(now time.Time) {
+	if b.idleAt.IsZero() {
+		b.idleAt = now
+	}
+}
+
+// stretchIdle reports whether the turn has ended and stayed idle for
+// stretchIdleGap. A turn that has not ended is still this stretch: a think
+// with tools at 0, however long, does not start a new clock. Once the turn
+// has ended, the idle started at the earlier of the turn end and the moment
+// tools last dropped to 0. A wake that records the end late therefore does
+// not hide a gap that began when the last tool finished.
+func (b *busyState) stretchIdle(now time.Time) bool {
+	if b.turnEndedAt.IsZero() {
+		return false
+	}
+	mark := b.turnEndedAt
+	if !b.idleAt.IsZero() && b.idleAt.Before(mark) {
+		mark = b.idleAt
+	}
+	return now.Sub(mark) >= stretchIdleGap
 }
 
 // paneBusy reports whether a capture shows the adapter's busy footer with no
@@ -126,10 +183,12 @@ func (s *Store) busyAfterPaneLook(ctx context.Context, r wakeRow) bool {
 	return s.busyWithinCeiling(r.SessionID)
 }
 
-// BusySince reports whether the session is busy, from an open tool call or the
-// grok leader's "working" push, and since when (the earliest evidence). With
-// neither, the last pane sample's busy footer counts, since the first sample that saw it.
-func (s *Store) BusySince(sessionID string) (time.Time, bool) {
+// leaderState scans whether the grok leader is working (outside the lock), then
+// under bookkeepingMu applies that working/idle transition and returns the
+// session's busyState. The caller releases the lock with the returned function.
+// A session with no state and an idle leader stays absent. Both BusySince and
+// workingSince go through this, so the scan and the transition cannot drift.
+func (s *Store) leaderState(sessionID string) (*busyState, func()) {
 	leader := false
 	for _, ad := range s.Adapters {
 		if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(sessionID) {
@@ -138,11 +197,10 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 		}
 	}
 	s.bookkeepingMu.Lock()
-	defer s.bookkeepingMu.Unlock()
 	b := s.busy[sessionID]
 	if b == nil {
 		if !leader {
-			return time.Time{}, false
+			return nil, s.bookkeepingMu.Unlock
 		}
 		if s.busy == nil {
 			s.busy = map[string]*busyState{}
@@ -155,6 +213,18 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 	} else if !leader {
 		b.leaderSince = time.Time{}
 	}
+	return b, s.bookkeepingMu.Unlock
+}
+
+// BusySince reports whether the session is busy, from an open tool call or the
+// grok leader's "working" push, and since when (the earliest evidence). With
+// neither, the last pane sample's busy footer counts, since the first sample that saw it.
+func (s *Store) BusySince(sessionID string) (time.Time, bool) {
+	b, unlock := s.leaderState(sessionID)
+	defer unlock()
+	if b == nil {
+		return time.Time{}, false
+	}
 	var since time.Time
 	if b.tools > 0 {
 		since = b.toolSince
@@ -162,6 +232,33 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 	if !b.leaderSince.IsZero() && (since.IsZero() || b.leaderSince.Before(since)) {
 		since = b.leaderSince
 	}
+	if since.IsZero() {
+		since = b.paneSince
+	}
+	return since, !since.IsZero()
+}
+
+// workingSince reports when the current working stretch started: the first tool
+// call of this stretch for kinds with tool hooks, else the leader or pane
+// fallback (both already mean "busy stretch since"). A ToolFinished does not
+// restart it, so sequential short calls in one turn keep one clock, and a
+// think with tools at 0 keeps it too: the stretch ends only after the turn
+// has ended and stretchIdleGap has passed since the earliest idle mark.
+// A stretch already idle that long does not anchor the window: leader or pane
+// evidence on the wake is the new stretch, so a busy pane before the first
+// tool call is not nudged for the hours before it. A UserPromptSubmit or
+// SessionStart also ends the turn (hook/handler.go) and does not move a mark
+// that is already set.
+func (s *Store) workingSince(sessionID string) (time.Time, bool) {
+	b, unlock := s.leaderState(sessionID)
+	defer unlock()
+	if b == nil {
+		return time.Time{}, false
+	}
+	if !b.turnSince.IsZero() && !b.stretchIdle(s.Now()) {
+		return b.turnSince, true
+	}
+	since := b.leaderSince
 	if since.IsZero() {
 		since = b.paneSince
 	}
