@@ -493,8 +493,11 @@ func (s *Store) withdrawOrphanedRequests(ctx context.Context) error {
 // assignment is done.
 func (s *Store) terminalCheckpointKind(ctx context.Context, agentID, itemID string, attempt int) (CheckpointKind, bool, error) {
 	var kind string
-	err := s.DB.QueryRowContext(ctx, `SELECT kind FROM checkpoints WHERE agent_id = ? AND item_id = ? AND attempt = ?
-		AND kind IN ('completed', 'failed') ORDER BY created_at DESC, rowid DESC LIMIT 1`, agentID, itemID, attempt).Scan(&kind)
+	// An orchestrator's completed counts only when it wrote it (CHORE-172).
+	err := s.DB.QueryRowContext(ctx, `SELECT c.kind FROM checkpoints c JOIN agents a ON a.id = c.agent_id
+		WHERE c.agent_id = ? AND c.item_id = ? AND c.attempt = ? AND c.kind IN ('completed', 'failed')
+		  AND (a.role <> 'orchestrator' OR c.daemon_written = 0)
+		ORDER BY c.created_at DESC, c.rowid DESC LIMIT 1`, agentID, itemID, attempt).Scan(&kind)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}

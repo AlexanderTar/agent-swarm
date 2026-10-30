@@ -241,11 +241,8 @@ func TestReconcileIgnoresDaemonCompletedOnOrchestrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishRoot(t, s, "EPIC-1")
-	// The old build's OnRootDone: a daemon completed note and a finished agent.
-	mustExec(t, s.DB, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary,
-		daemon_written, created_at) VALUES ('ckp_old', ?, ?, ?, 'completed', ?, 'EPIC-1 is done; Swarm finished this agent.', 1, ?)`,
-		orchSes.ID, orch.ID, orch.ItemID, orchSes.Attempt, db.Millis(s.Now()))
-	mustExec(t, s.DB, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, db.Millis(s.Now()), orch.ID)
+	// The old build's OnRootDone on a live session: a daemon completed note.
+	insertLegacyRootDoneNote(t, s, orch, orchSes)
 
 	panes(tm, Pane{Session: orchSes.TmuxName, Command: "swarm-fake-agent"})
 	tm.env[orchSes.TmuxName] = map[string]string{"SWARM_SESSION": orchSes.ID}
@@ -278,5 +275,46 @@ func TestReconcileIgnoresDaemonCompletedOnOrchestrator(t *testing.T) {
 	}
 	if !slices.Contains(tm.killed[before:], orchSes.TmuxName) {
 		t.Fatalf("killed = %v, want the orchestrator pane after its own final note", tm.killed[before:])
+	}
+}
+
+// insertLegacyRootDoneNote writes what a pre-CHORE-171 OnRootDone wrote for a
+// live orchestrator session: a daemon completed checkpoint, agent left active.
+func insertLegacyRootDoneNote(t *testing.T, s *Store, orch Agent, ses Session) {
+	t.Helper()
+	mustExec(t, s.DB, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary,
+		daemon_written, created_at) VALUES ('ckp_old', ?, ?, ?, 'completed', ?, 'EPIC-1 is done; Swarm finished this agent.', 1, ?)`,
+		ses.ID, orch.ID, orch.ItemID, ses.Attempt, db.Millis(s.Now()))
+}
+
+// CHORE-172 review: an orchestrator whose pane dies before its own final note
+// crashed, even with a daemon-written completed on record. Read as finished,
+// it would get no crash notice and no nudge, and the user no final note.
+func TestDeadOrchestratorWithDaemonCompletedIsCrashed(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishRoot(t, s, "EPIC-1")
+	insertLegacyRootDoneNote(t, s, orch, orchSes)
+	panes(tm, Pane{Session: orchSes.TmuxName, Command: "swarm-fake-agent"})
+	tm.env[orchSes.TmuxName] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pane dies before the orchestrator wrote its own note.
+	panes(tm)
+	at.Advance(spawnGracePeriod + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, orch.ID)
+	got, _ := s.Agent(ctx, orch.Name)
+	if ses.State != Crashed || got.State == AgentFinished {
+		t.Fatalf("orchestrator session %s / agent %s; want crashed and not finished", ses.State, got.State)
 	}
 }
