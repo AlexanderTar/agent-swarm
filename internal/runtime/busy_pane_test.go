@@ -317,3 +317,42 @@ func TestNudgeRestartsAtTheCurrentWorkingStretch(t *testing.T) {
 		t.Fatalf("15 min into the new stretch: %d nudges, want 1", n)
 	}
 }
+
+// A Stop and a wake seconds later are one working stretch. Ten minutes, a
+// turn end, thirty seconds idle, then six more minutes with no checkpoint
+// is one nudge: the clock does not restart on a short turn boundary.
+func TestNudgeKeepsTheClockAcrossAShortTurnGap(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeGap")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	at.Advance(10 * time.Minute)
+	s.TurnEnded(sid)
+	at.Advance(30 * time.Second)
+	s.ToolStarted(sid)
+	at.Advance(6 * time.Minute)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("10 min, 30s gap, 6 min more: %d nudges, want 1", n)
+	}
+}
+
+// Sequential short tool calls in one turn share one clock. Finishing and
+// starting a tool every minute for fifteen minutes, with no turn end, is
+// one nudge. A workingSince that returned toolSince would restart on each
+// 0→1 transition and report zero.
+func TestNudgeCountsSequentialShortCallsAsOneStretch(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeSeq")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	for range 15 {
+		at.Advance(time.Minute)
+		s.ToolFinished(sid)
+		s.ToolStarted(sid)
+	}
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 1 {
+		t.Fatalf("15 one-minute calls in one turn: %d nudges, want 1", n)
+	}
+}
