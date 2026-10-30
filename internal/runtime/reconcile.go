@@ -100,7 +100,7 @@ func (s *Store) liveSessionRows(ctx context.Context) ([]liveRow, error) {
 		ses.state, ses.attempt, ses.waiting, ses.started_at, ses.last_seen_at,
 		(SELECT MAX(created_at) FROM checkpoints c
 			WHERE c.agent_id = a.id AND c.attempt = ses.attempt AND c.kind = 'completed'
-			  AND c.item_id = a.item_id),
+			  AND c.item_id = a.item_id AND (a.role <> 'orchestrator' OR c.daemon_written = 0)),
 		lc.id, lc.kind, lc.created_at, lc.summary, lc.next_json
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		LEFT JOIN checkpoints lc ON lc.id = (
@@ -1267,7 +1267,10 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	// the turn is over (hook state, else the pane). LeaderBusy still counts
 	// as working. The hard cap kills it even if the turn is open (TASK-1494).
 	// This covers daemon-written root-done and agent-written completed
-	// checkpoints alike: both land in CompletedCheckpointAt the same way.
+	// checkpoints alike, except on an orchestrator: only its own final note
+	// lands in CompletedCheckpointAt (liveSessionRows), so a daemon-written
+	// one, such as a pre-CHORE-171 build's root-done note, never ends it
+	// (CHORE-172).
 	if r.CompletedCheckpointAt != nil {
 		elapsed := s.Now().Sub(*r.CompletedCheckpointAt)
 		if elapsed >= killCompletedBusyCap {

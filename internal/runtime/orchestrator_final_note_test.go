@@ -225,3 +225,58 @@ func TestOrchestratorFinalNoteSkipsOpenQuestionsOnDoneRoot(t *testing.T) {
 		t.Fatalf("final note on a Done root with an open question: %v", err)
 	}
 }
+
+// CHORE-172: a daemon-written completed on an orchestrator (what a pre-CHORE-171
+// daemon left behind when the orchestrator's own finish took its root Done)
+// must not arm the 60 s idle kill or the 2 h busy cap. Only the orchestrator's
+// own final note ends it. The incident: the orchestrator restarted the daemon
+// onto the fixed build, and the fixed build killed it 73 s later on the old
+// build's row.
+func TestReconcileIgnoresDaemonCompletedOnOrchestrator(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishRoot(t, s, "EPIC-1")
+	// The old build's OnRootDone: a daemon completed note and a finished agent.
+	mustExec(t, s.DB, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary,
+		daemon_written, created_at) VALUES ('ckp_old', ?, ?, ?, 'completed', ?, 'EPIC-1 is done; Swarm finished this agent.', 1, ?)`,
+		orchSes.ID, orch.ID, orch.ItemID, orchSes.Attempt, db.Millis(s.Now()))
+	mustExec(t, s.DB, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, db.Millis(s.Now()), orch.ID)
+
+	panes(tm, Pane{Session: orchSes.TmuxName, Command: "swarm-fake-agent"})
+	tm.env[orchSes.TmuxName] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	before := len(tm.killed)
+	at.Advance(61 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(tm.killed[before:], orchSes.TmuxName) {
+		t.Fatalf("killed = %v, a daemon-written completed must not end an orchestrator", tm.killed[before:])
+	}
+	at.Advance(2 * time.Hour)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(tm.killed[before:], orchSes.TmuxName) {
+		t.Fatalf("killed = %v, a daemon-written completed must not arm the busy cap", tm.killed[before:])
+	}
+	if ses, _ := s.LatestSession(ctx, orch.ID); !ses.State.Live() {
+		t.Fatalf("orchestrator session = %s, want live", ses.State)
+	}
+
+	// Its own final note still ends it on the normal grace.
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "post-merge work finished"}); err != nil {
+		t.Fatalf("own final note: %v", err)
+	}
+	at.Advance(61 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(tm.killed[before:], orchSes.TmuxName) {
+		t.Fatalf("killed = %v, want the orchestrator pane after its own final note", tm.killed[before:])
+	}
+}
