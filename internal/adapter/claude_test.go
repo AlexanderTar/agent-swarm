@@ -1561,3 +1561,53 @@ func TestClaudeCoderLaunchLinksOnlyItsRoleSwarmSkills(t *testing.T) {
 		}
 	}
 }
+
+// Every launch and resume skips Claude Code's bypass-permissions accept
+// dialog via the --settings (flag) layer. The key is read from user, local or
+// managed scope; since 2.1.314 --setting-sources project,local really drops
+// the user's own ~/.claude/settings.json, so without it a headless pane stops
+// at the dialog and the kickoff paste fails ("pane not idle").
+func TestClaudeSkipsBypassPermissionsPromptOnLaunchAndResume(t *testing.T) {
+	d := testDeps(t)
+	c := newClaude(d)
+	skip := func(l Launch) *bool {
+		t.Helper()
+		var path string
+		for i, v := range l.Argv {
+			if v == "--settings" {
+				path = l.Argv[i+1]
+			}
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			Skip *bool `json:"skipDangerousModePermissionPrompt"`
+		}
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Fatalf("settings JSON does not parse: %v\n%s", err, b)
+		}
+		return cfg.Skip
+	}
+	for _, role := range []string{"orchestrator", "coder", ""} {
+		s := claudeSpec(t, d)
+		s.Role = role
+		l, err := c.Launch(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := skip(l); v == nil || !*v {
+			t.Errorf("Launch role %q: skipDangerousModePermissionPrompt = %v, want true", role, v)
+		}
+		s.SessionID = "ses_02"
+		s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
+		l, err = c.Resume(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := skip(l); v == nil || !*v {
+			t.Errorf("Resume role %q: skipDangerousModePermissionPrompt = %v, want true", role, v)
+		}
+	}
+}

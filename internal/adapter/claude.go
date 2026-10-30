@@ -35,6 +35,11 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 	cfg := map[string]any{
 		"attribution":         map[string]string{"commit": "", "pr": ""},
 		"includeCoAuthoredBy": &no,
+		// Skip the bypass-permissions accept dialog that --dangerously-skip-permissions
+		// raises: nobody is in the pane to answer it. Claude Code reads this key from
+		// user/local/managed scope (and --settings); since 2.1.314 --setting-sources
+		// project,local really drops the user's ~/.claude/settings.json copy.
+		"skipDangerousModePermissionPrompt": true,
 		// Blank the user's global status line (e.g. ccstatusline via npx every 10s)
 		// in agent panes. A no-output command, not null: null is rejected by Claude Code.
 		"statusLine": map[string]any{"type": "command", "command": "true"},
