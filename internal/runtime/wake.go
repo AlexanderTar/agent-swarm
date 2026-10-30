@@ -322,7 +322,7 @@ type composerReader interface {
 // Muse sometimes ignores an Enter that follows the paste too closely and leaves
 // the notice unsent (probed 2026-10-29); only adapters that can read their
 // composer (ComposerHolds) take part.
-func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName, text string) {
+func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, sessionID, tmuxName, text string) {
 	ch, ok := ad.(composerReader)
 	if !ok {
 		return
@@ -341,6 +341,7 @@ func (s *Store) resubmitIfHeld(ctx context.Context, ad adapter.Adapter, tmuxName
 			s.logf("wake: resubmit Enter for %s: %v", tmuxName, err)
 			return
 		}
+		s.MarkPromptSubmitted(sessionID)
 		s.logf("wake: notice still in the composer of %s; sent Enter again (%d of %d)", tmuxName, i+1, submitChecks)
 	}
 }
@@ -441,6 +442,7 @@ func (s *Store) pasteSessionRenames(ctx context.Context) (map[string]bool, error
 			s.logf("wake: rename paste for %s: %v", p.tmux, err)
 			continue
 		}
+		s.MarkPromptSubmitted(p.id)
 		if err := clear(); err != nil {
 			s.logf("wake: clear pending name for %s: %v", p.tmux, err)
 			continue
@@ -515,6 +517,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 		return fail("paste failed")
 	}
+	s.MarkPromptSubmitted(r.SessionID)
 	if inboxRendered {
 		s.MarkNoticeSeen(r.SessionID)
 	}
@@ -532,7 +535,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if _, ok := ad.(composerReader); !ok {
 		return nil
 	}
-	return func() { s.resubmitIfHeld(ctx, ad, r.TmuxName, pasteNotice) }
+	return func() { s.resubmitIfHeld(ctx, ad, r.SessionID, r.TmuxName, pasteNotice) }
 }
 
 // raiseUndeliverable raises agent.undeliverable once per batch. A notification
@@ -889,6 +892,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 			s.logf("wake: quota-reset capture for %s (session %s): %v", agentName, sessionID, err)
 		case ok && ad.Idle(capture):
 			if err := s.Tmux.PasteLine(ctx, tmuxName, notice); err == nil {
+				s.MarkPromptSubmitted(sessionID)
 				s.markWoken(ctx, sessionID, false)
 				woken++
 			}

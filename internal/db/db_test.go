@@ -139,6 +139,12 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 0035_session_turn.sql adds the hook turn columns with plain ALTER TABLE (same precedent).
+	for _, col := range []string{"turn_open", "turn_since", "turn_close_event"} {
+		if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// 0030_low_token.sql adds agents.low_token and sessions context columns with plain ALTER TABLE (same precedent).
 	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN low_token`); err != nil {
 		t.Fatal(err)

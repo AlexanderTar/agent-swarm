@@ -757,6 +757,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 		case endsTurn(ev) && !d.Block, ev == "UserPromptSubmit", ev == "SessionStart":
 			h.RT.TurnEnded(s.ID)
 		}
+		h.RT.NoteHookTurn(s.ID, s.Kind, ev, d.Block, in.Reason)
 	}
 	// every session records its context size at a real end of turn: a blocked
 	// Stop continues the turn and fires again, so it must not sample (or strike)

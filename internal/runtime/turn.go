@@ -1,0 +1,174 @@
+package runtime
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"github.com/AlexanderTar/swarmrun/internal/db"
+	"github.com/AlexanderTar/swarmrun/internal/kinds"
+)
+
+// HookTurn is one session's hook verdict. Known is false until a hook or a
+// daemon paste has opened or closed the turn. LastHook is memory only: a
+// restart keeps Open and CloseEvent and zeroes LastHook.
+type HookTurn struct {
+	Known      bool
+	Open       bool
+	Since      time.Time
+	CloseEvent string
+	LastHook   time.Time
+}
+
+// turnRec is the in-memory copy. loaded marks a row we have already read,
+// including "no hook state yet", so a restart is the only time we hit the DB.
+type turnRec struct {
+	known      bool
+	open       bool
+	since      time.Time
+	closeEvent string
+	lastHook   time.Time
+}
+
+// hookEndsTurn matches hook.endsTurn. runtime cannot import hook.
+func hookEndsTurn(ev string) bool {
+	return ev == "Stop" || ev == "StopCancelled" || ev == "StopFailure"
+}
+
+// NoteHookTurn applies one normalized hook event. A blocked Stop keeps the
+// turn open. cursor's UserPromptSubmit (beforeSubmitPrompt) is not a turn
+// start. grok's shutdown Stop is not a turn end.
+func (s *Store) NoteHookTurn(sessionID string, kind kinds.AgentKind, event string, blocked bool, reason string) {
+	now := s.now()
+	if event == "Stop" && kind == Grok && reason == "shutdown" {
+		s.touchLastHook(sessionID, now)
+		return
+	}
+	switch {
+	case hookEndsTurn(event) && !blocked:
+		s.setTurn(sessionID, false, event, now)
+	case event == "PreToolUse" && !blocked:
+		s.setTurn(sessionID, true, "", now)
+	case event == "UserPromptSubmit" && kind != Cursor:
+		s.setTurn(sessionID, true, "", now)
+	case event == "SessionStart":
+		s.setTurn(sessionID, true, "", now)
+	default:
+		s.touchLastHook(sessionID, now)
+	}
+}
+
+// MarkPromptSubmitted opens the turn after a pane delivery that submits a
+// prompt, before that prompt's hook lands. It also refreshes LastHook so a
+// just-woken session is not treated as a lost Stop while its pane still
+// looks idle.
+func (s *Store) MarkPromptSubmitted(sessionID string) {
+	s.setTurn(sessionID, true, "", s.now())
+}
+
+// HookTurn reports the session's hook turn, loading it from the session row
+// when this process has not seen the session yet.
+func (s *Store) HookTurn(sessionID string) HookTurn {
+	rec := s.turn(sessionID)
+	if rec == nil || !rec.known {
+		return HookTurn{}
+	}
+	return HookTurn{
+		Known: true, Open: rec.open, Since: rec.since,
+		CloseEvent: rec.closeEvent, LastHook: rec.lastHook,
+	}
+}
+
+func (s *Store) turn(sessionID string) *turnRec {
+	s.bookkeepingMu.Lock()
+	rec := s.turns[sessionID]
+	s.bookkeepingMu.Unlock()
+	if rec != nil {
+		return rec
+	}
+	return s.loadTurn(sessionID)
+}
+
+func (s *Store) loadTurn(sessionID string) *turnRec {
+	rec := &turnRec{}
+	if s.DB == nil {
+		return rec
+	}
+	var open sql.NullInt64
+	var since int64
+	var ev string
+	err := s.DB.QueryRowContext(context.Background(),
+		`SELECT turn_open, turn_since, turn_close_event FROM sessions WHERE id = ?`, sessionID).
+		Scan(&open, &since, &ev)
+	if err != nil {
+		return rec
+	}
+	if open.Valid {
+		rec.known = true
+		rec.open = open.Int64 != 0
+		rec.since = db.FromMillis(since)
+		rec.closeEvent = ev
+	}
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.turns == nil {
+		s.turns = map[string]*turnRec{}
+	}
+	if have := s.turns[sessionID]; have != nil {
+		return have
+	}
+	s.turns[sessionID] = rec
+	return rec
+}
+
+func (s *Store) touchLastHook(sessionID string, now time.Time) {
+	rec := s.turn(sessionID)
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.turns == nil {
+		s.turns = map[string]*turnRec{}
+	}
+	if have := s.turns[sessionID]; have != nil {
+		rec = have
+	}
+	rec.lastHook = now
+	s.turns[sessionID] = rec
+}
+
+// setTurn records an open or close. A repeat of the current state only
+// refreshes LastHook; the row is written on a transition.
+func (s *Store) setTurn(sessionID string, open bool, closeEvent string, now time.Time) {
+	if open {
+		closeEvent = ""
+	}
+	rec := s.turn(sessionID)
+	s.bookkeepingMu.Lock()
+	if s.turns == nil {
+		s.turns = map[string]*turnRec{}
+	}
+	if have := s.turns[sessionID]; have != nil {
+		rec = have
+	}
+	same := rec.known && rec.open == open && rec.closeEvent == closeEvent
+	rec.lastHook = now
+	if same {
+		s.turns[sessionID] = rec
+		s.bookkeepingMu.Unlock()
+		return
+	}
+	rec.known = true
+	rec.open = open
+	rec.since = now
+	rec.closeEvent = closeEvent
+	s.turns[sessionID] = rec
+	s.bookkeepingMu.Unlock()
+
+	if s.DB == nil {
+		return
+	}
+	if _, err := s.DB.ExecContext(context.Background(),
+		`UPDATE sessions SET turn_open = ?, turn_since = ?, turn_close_event = ? WHERE id = ?`,
+		boolToInt(open), db.Millis(now), closeEvent, sessionID); err != nil {
+		s.logf("turn: persist %s: %v", sessionID, err)
+	}
+}
