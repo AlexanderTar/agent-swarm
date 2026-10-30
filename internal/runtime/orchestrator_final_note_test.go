@@ -165,3 +165,25 @@ func TestOrchestratorCompletedAcceptedOnceRootIsDone(t *testing.T) {
 		t.Fatalf("orchestrator session %s / agent %s; want completed/finished", ses2.State, got.State)
 	}
 }
+
+// CHORE-171 review: the required-artifact gate (an epic's plan, a bug's debug
+// report) no longer applies once the root is Done, so the final note of an
+// epic orchestrator without a plan is accepted instead of leaving it to be
+// nudged forever.
+func TestOrchestratorFinalNoteSkipsRequiredArtifactOnDoneRoot(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "early"}); err == nil ||
+		!strings.Contains(err.Error(), "registered plan") {
+		t.Fatalf("completed before Done: err = %v, want the required plan refusal", err)
+	}
+	finishRoot(t, s, "EPIC-1")
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "post-merge work finished"}); err != nil {
+		t.Fatalf("final note on a Done epic without a plan: %v", err)
+	}
+}

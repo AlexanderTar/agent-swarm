@@ -1864,7 +1864,13 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 		if in.Kind == CompletedCkp && a.Role == RoleOrchestrator {
-			if kind := requiredArtifactKind(it); kind != "" && !waived(it, "required_artifact") {
+			// CHORE-171: on a Done root this completed is only the final
+			// note, so the plan/debug-report gate no longer applies.
+			rootDone, err := s.rootIsDone(ctx, tx, a.RootItemID)
+			if err != nil {
+				return err
+			}
+			if kind := requiredArtifactKind(it); kind != "" && !rootDone && !waived(it, "required_artifact") {
 				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)
 				if err != nil {
 					return err
