@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/AlexanderTar/swarmrun/internal/adapter"
 	"github.com/AlexanderTar/swarmrun/internal/db"
 	"github.com/AlexanderTar/swarmrun/internal/kinds"
 )
@@ -64,6 +65,29 @@ func (s *Store) NoteHookTurn(sessionID string, kind kinds.AgentKind, event strin
 // looks idle.
 func (s *Store) MarkPromptSubmitted(sessionID string) {
 	s.setTurn(sessionID, true, "", s.now())
+}
+
+// hookTurnStale is how long an open turn may go without a hook before an idle
+// pane counts as a lost Stop. 15 minutes covers a long tool call; past that,
+// the pane is the fallback.
+const hookTurnStale = 15 * time.Minute
+
+// SessionIdle is the turn-over verdict. A hook close is idle. A hook open is
+// not, unless the last hook is older than hookTurnStale and the pane is idle.
+// No hook state falls back to the pane. grok LeaderBusy is never idle.
+func (s *Store) SessionIdle(sessionID string, ad adapter.Adapter, capture string) bool {
+	if lb, ok := ad.(interface{ LeaderBusy(sessionID string) bool }); ok && lb.LeaderBusy(sessionID) {
+		return false
+	}
+	ht := s.HookTurn(sessionID)
+	if !ht.Known {
+		return ad.Idle(capture)
+	}
+	if !ht.Open {
+		return true
+	}
+	stale := ht.LastHook.IsZero() || s.now().Sub(ht.LastHook) > hookTurnStale
+	return stale && ad.Idle(capture)
 }
 
 // HookTurn reports the session's hook turn, loading it from the session row

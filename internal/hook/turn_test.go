@@ -72,3 +72,20 @@ func TestHookEventsOpenAndCloseTheTurn(t *testing.T) {
 		t.Fatalf("after a new Store: %+v, want the closed Stop that was written", got)
 	}
 }
+
+// Claude Code's StopFailure is the turn end on an API or usage error. It
+// closes the turn the same way Stop does.
+func TestClaudeStopFailureClosesTheTurn(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+	if _, err := h.Handle(ctx, runtime.Claude, "SessionStart", ses, []byte(`{"session_id":"p1","source":"startup"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Claude, "StopFailure", ses, []byte(`{"session_id":"p1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	got := h.RT.HookTurn(ses)
+	if !got.Known || got.Open || got.CloseEvent != "StopFailure" {
+		t.Fatalf("after StopFailure: %+v, want the turn closed by StopFailure", got)
+	}
+}

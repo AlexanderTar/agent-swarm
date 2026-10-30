@@ -47,6 +47,9 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 			"SessionStart": hook("SessionStart"), "UserPromptSubmit": hook("UserPromptSubmit"),
 			"PreToolUse": hook("PreToolUse"), "PostToolUse": hook("PostToolUse"),
 			"PreCompact": hook("PreCompact"), "Stop": hook("Stop"),
+			// StopFailure is Claude Code's turn end on an API or usage error
+			// (hooks reference, 2026-10). It cannot be blocked.
+			"StopFailure": hook("StopFailure"),
 		},
 	}
 	// The session cwd (~/.swarm/work/<name>) sits under $HOME, so Claude Code's
