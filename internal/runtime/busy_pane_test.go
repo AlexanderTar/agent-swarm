@@ -304,8 +304,12 @@ func TestNudgeRestartsAtTheCurrentWorkingStretch(t *testing.T) {
 	if _, err := s.WriteCheckpoint(ctx, sid, CheckpointInput{Kind: Progress, Summary: "halfway"}); err != nil {
 		t.Fatal(err)
 	}
-	s.TurnEnded(sid)
+	s.TurnEnded(sid) // Stop
 	at.Advance(6 * time.Hour)
+	// A real wake fires UserPromptSubmit, which ends the turn again, then the
+	// first tool call a few seconds later. The idle gap is from the Stop.
+	s.TurnEnded(sid)
+	at.Advance(10 * time.Second)
 	s.ToolStarted(sid)
 	reconcileOnce(t, s)
 	if n := nudgeCount(s, agentID); n != 0 {
@@ -327,13 +331,36 @@ func TestNudgeKeepsTheClockAcrossAShortTurnGap(t *testing.T) {
 
 	s.ToolStarted(sid)
 	at.Advance(10 * time.Minute)
-	s.TurnEnded(sid)
+	s.TurnEnded(sid) // Stop
 	at.Advance(30 * time.Second)
+	s.TurnEnded(sid) // UserPromptSubmit on the wake
 	s.ToolStarted(sid)
 	at.Advance(6 * time.Minute)
 	reconcileOnce(t, s)
 	if n := nudgeCount(s, agentID); n != 1 {
 		t.Fatalf("10 min, 30s gap, 6 min more: %d nudges, want 1", n)
+	}
+}
+
+// Hours after a stretch ended, leader evidence on the wake is a new stretch.
+// The old turnSince must not anchor the window while the turn is still ended,
+// or the worker is nudged the moment the leader looks busy, before any tool call.
+func TestNudgeIgnoresAStaleStretchWhenLeaderWakesAfterIdle(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgeLeaderWake")
+	ctx := context.Background()
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	if _, err := s.WriteCheckpoint(ctx, sid, CheckpointInput{Kind: Progress, Summary: "before idle"}); err != nil {
+		t.Fatal(err)
+	}
+	s.TurnEnded(sid)
+	at.Advance(6 * time.Hour)
+	s.TurnEnded(sid) // UserPromptSubmit
+	s.Adapters[Fake] = &leaderBusyAdapter{Adapter: s.Adapters[Fake], busy: map[string]bool{sid: true}}
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("leader busy at a wake 6h after the stretch ended: %d nudges, want 0", n)
 	}
 }
 

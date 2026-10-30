@@ -30,7 +30,7 @@ type busyState struct {
 	tools       int       // PreToolUse calls with no PostToolUse yet
 	toolSince   time.Time // when tools went from 0 to 1
 	turnSince   time.Time // first ToolStarted of the current working stretch; zero before any tool call
-	turnEndedAt time.Time // last TurnEnded; zero while a turn is open
+	turnEndedAt time.Time // earliest TurnEnded since the last tool call; zero while a turn is open
 	leaderSince time.Time // first poll that saw the grok leader "working" (up to one tick after it started); zero when idle
 	paneSince   time.Time // first reconcile tick whose pane showed the adapter's busy footer and no dialog; zero otherwise
 	shown       bool      // busy_since was last published as shown on the board (agent.changed)
@@ -76,14 +76,19 @@ func (s *Store) ToolFinished(sessionID string) {
 
 // TurnEnded clears the open tool calls: the turn is over, so a PostToolUse that
 // never came (a cancelled tool) must not read busy forever. It records when the
-// turn ended. The next ToolStarted keeps the working stretch when the gap is
-// shorter than stretchIdleGap, and starts a new one when it is not.
+// turn ended, once: a wake fires UserPromptSubmit and SessionStart through here
+// again (hook/handler.go), and moving the mark up to that wake would hide the
+// idle gap. The next ToolStarted keeps the working stretch when the gap since
+// the earliest end is shorter than stretchIdleGap, and starts a new one when
+// it is not.
 func (s *Store) TurnEnded(sessionID string) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
 	if b := s.busy[sessionID]; b != nil {
 		b.tools = 0
-		b.turnEndedAt = s.Now()
+		if b.turnEndedAt.IsZero() {
+			b.turnEndedAt = s.Now()
+		}
 	}
 }
 
@@ -203,15 +208,18 @@ func (s *Store) BusySince(sessionID string) (time.Time, bool) {
 // call of this stretch for kinds with tool hooks, else the leader or pane
 // fallback (both already mean "busy stretch since"). A ToolFinished does not
 // restart it, so sequential short calls in one turn keep one clock. TurnEnded
-// restarts it only after stretchIdleGap of idle. A UserPromptSubmit or
-// SessionStart also ends the turn (hook/handler.go).
+// restarts it only after stretchIdleGap of idle. A stretch already idle that
+// long does not anchor the window: leader or pane evidence on the wake is the
+// new stretch, so a busy pane before the first tool call is not nudged for the
+// hours before it. A UserPromptSubmit or SessionStart also ends the turn
+// (hook/handler.go) and does not move the idle mark.
 func (s *Store) workingSince(sessionID string) (time.Time, bool) {
 	b, unlock := s.leaderState(sessionID)
 	defer unlock()
 	if b == nil {
 		return time.Time{}, false
 	}
-	if !b.turnSince.IsZero() {
+	if !b.turnSince.IsZero() && (b.turnEndedAt.IsZero() || s.Now().Sub(b.turnEndedAt) < stretchIdleGap) {
 		return b.turnSince, true
 	}
 	since := b.leaderSince
