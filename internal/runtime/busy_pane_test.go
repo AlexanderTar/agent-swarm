@@ -408,6 +408,28 @@ func TestNudgeCountsSequentialShortCallsAsOneStretch(t *testing.T) {
 	}
 }
 
+// A daemon paste calls MarkPromptSubmitted, which refreshes the hook, and only
+// then does UserPromptSubmit run TurnEnded. An Escape during a tool call has
+// no Stop, so that wake must not remind the agent for the hours it sat idle.
+func TestNudgeRestartsAfterAnInterruptedTurnWhenTheDaemonPastes(t *testing.T) {
+	s, _, at, sid := busySession(t, "NudgePaste")
+	_, agentID := busyLiveRow(t, s, sid)
+
+	s.ToolStarted(sid)
+	s.NoteHookTurn(sid, Fake, "PreToolUse", false, "")
+	at.Advance(6 * time.Hour)
+	s.MarkPromptSubmitted(sid) // tryPaste, before the prompt's hook
+	at.Advance(2 * time.Second)
+	s.TurnEnded(sid)
+	s.NoteHookTurn(sid, Fake, "UserPromptSubmit", false, "")
+	at.Advance(10 * time.Second)
+	s.ToolStarted(sid)
+	reconcileOnce(t, s)
+	if n := nudgeCount(s, agentID); n != 0 {
+		t.Fatalf("first tool call after a daemon paste woke an interrupted turn: %d nudges, want 0", n)
+	}
+}
+
 // An Escape or a crash during a tool call emits no PostToolUse and no Stop.
 // The wake's UserPromptSubmit is the first TurnEnded, hours later, and it
 // runs before that event refreshes the hook. The first tool call of the new

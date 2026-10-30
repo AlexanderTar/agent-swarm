@@ -62,9 +62,31 @@ func (s *Store) NoteHookTurn(sessionID string, kind kinds.AgentKind, event strin
 // MarkPromptSubmitted opens the turn after a pane delivery that submits a
 // prompt, before that prompt's hook lands. It also refreshes LastHook so a
 // just-woken session is not treated as a lost Stop while its pane still
-// looks idle.
+// looks idle. A tool call still open on a stale turn is marked idle first:
+// the wake's TurnEnded would otherwise see this refresh and treat the hours
+// since the call as still working.
 func (s *Store) MarkPromptSubmitted(sessionID string) {
+	s.noteStaleOpenCall(sessionID)
 	s.setTurn(sessionID, true, "", s.now())
+}
+
+// noteStaleOpenCall records the nudge idle mark for a tool call still open
+// when a paste is about to refresh LastHook. The mark is the call's start.
+// A turn a Stop already closed is not open, so a long tool that ends
+// normally is left for TurnEnded to mark at the Stop.
+func (s *Store) noteStaleOpenCall(sessionID string) {
+	now := s.now()
+	ht := s.HookTurn(sessionID)
+	if !turnOpenStale(ht, now) {
+		return
+	}
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	b := s.busy[sessionID]
+	if b == nil || b.tools == 0 || b.toolSince.IsZero() {
+		return
+	}
+	b.noteIdle(b.toolSince)
 }
 
 // hookTurnStale is how long an open turn may go without a hook before an idle
