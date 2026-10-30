@@ -187,3 +187,22 @@ func TestOrchestratorFinalNoteSkipsRequiredArtifactOnDoneRoot(t *testing.T) {
 		t.Fatalf("final note on a Done epic without a plan: %v", err)
 	}
 }
+
+// CHORE-171 review: an orchestrator still queued for a slot (no session yet)
+// on a root that goes Done never started, so it finishes as before instead of
+// launching later onto a Done root only to be nudged.
+func TestRootDoneFinishesQueuedOrchestrator(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `DELETE FROM sessions WHERE agent_id = ?`, orch.ID)
+	mustExec(t, s.DB, `UPDATE agents SET state = 'queued' WHERE id = ?`, orch.ID)
+	finishRoot(t, s, "EPIC-1")
+	if got, _ := s.Agent(ctx, orch.Name); got.State != AgentFinished {
+		t.Fatalf("queued orchestrator agent = %s, want finished", got.State)
+	}
+}

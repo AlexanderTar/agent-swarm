@@ -78,8 +78,9 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 		// (spec decision 1c) to every root type. Paused or interrupted
 		// orchestrators are left resumable on the same grounds: finishing
 		// them here would end an agent the user never saw a final note
-		// from. Other roles finish exactly as before.
-		if r.role == string(RoleOrchestrator) {
+		// from. One still queued with no session never started, so it
+		// finishes as before. Other roles finish exactly as before.
+		if r.role == string(RoleOrchestrator) && r.sesID != "" {
 			continue
 		}
 		// ponytail: in-tx, so no lockAgentOperations; a driver already past
